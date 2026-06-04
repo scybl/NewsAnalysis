@@ -128,6 +128,12 @@ button:disabled {
   border-color: #17202a;
 }
 
+#multiAgentBtn {
+  background: #2f80ed;
+  color: #fff;
+  border-color: #2f80ed;
+}
+
 #readAnalysisBtn,
 #loadDataBtn,
 #updateDataBtn {

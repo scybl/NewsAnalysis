@@ -5,6 +5,8 @@ import json
 import time
 import hmac
 import hashlib
+import threading
+import uuid
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,6 +14,8 @@ from urllib.parse import parse_qs, urlparse
 from http.cookies import SimpleCookie
 
 from .analyst import StockAnalyst, session_path_for
+from .agents import MultiAgentRunner, list_agent_runs, read_agent_run
+from .agents.multi_agent import MultiAgentOptions
 from .analysis_frameworks import get_analysis_framework, list_analysis_frameworks
 from .collector import StockDataCollector
 from .config import PROJECT_ROOT, get_settings
@@ -37,6 +41,101 @@ class StockWebApp:
         self.sessions: dict[str, float] = {}
         self.session_ttl_seconds = 60 * 60 * 12
         self.auth_secret = self.settings.web_session_secret or secrets.token_urlsafe(32)
+        self.multi_agent_jobs: dict[str, dict] = {}
+        self.multi_agent_jobs_lock = threading.Lock()
+
+    def _build_multi_agent_result(self, payload: dict, progress_callback=None) -> dict:
+        ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
+        analysis_type = str(payload.get("analysis_type") or "value_speculation")
+        years, full_history = self._parse_history_scope_value(payload.get("years"))
+        allow_dynamic_fetch = payload.get("allow_dynamic_fetch", True) is not False
+        max_parallel_agents = int(payload.get("max_parallel_agents") or 8)
+        llm_client = (
+            DeepSeekClient(
+                self.settings.deepseek_api_key,
+                self.settings.deepseek_base_url,
+                model=self.settings.deepseek_model,
+            )
+            if self.settings.deepseek_api_key
+            else None
+        )
+        return MultiAgentRunner(self.tushare, llm_client=llm_client, progress_callback=progress_callback).run(
+            ts_code,
+            MultiAgentOptions(
+                analysis_type=analysis_type,
+                allow_dynamic_fetch=allow_dynamic_fetch,
+                use_llm_agents=bool(llm_client),
+                years=years,
+                full_history=full_history,
+                max_parallel_agents=max_parallel_agents,
+            ),
+        )
+
+    def _start_multi_agent_job(self, payload: dict) -> dict:
+        job_id = uuid.uuid4().hex
+        now = timestamp()
+        job = {
+            "ok": True,
+            "job_id": job_id,
+            "status": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "progress": [{"time": now, "stage": "queued", "message": "后台任务已创建，等待开始运行。", "details": {}}],
+            "result": None,
+            "error": "",
+        }
+        with self.multi_agent_jobs_lock:
+            self.multi_agent_jobs[job_id] = job
+        thread = threading.Thread(target=self._run_multi_agent_job, args=(job_id, payload), daemon=True)
+        thread.start()
+        return {"ok": True, "job_id": job_id, "status": "queued", "progress": job["progress"]}
+
+    def _run_multi_agent_job(self, job_id: str, payload: dict) -> None:
+        self._update_multi_agent_job(job_id, status="running", event={"stage": "running", "message": "后台任务开始运行。"})
+
+        def progress(event: dict) -> None:
+            self._update_multi_agent_job(job_id, event=event)
+
+        try:
+            result = self._build_multi_agent_result(payload, progress_callback=progress)
+            self._update_multi_agent_job(job_id, status="succeeded", result=result, event={"stage": "succeeded", "message": "后台任务完成，结果已生成。"})
+        except Exception as exc:  # noqa: BLE001 - expose readable UI error
+            self._update_multi_agent_job(job_id, status="failed", error=str(exc), event={"stage": "failed", "message": str(exc)})
+
+    def _update_multi_agent_job(
+        self,
+        job_id: str,
+        status: str | None = None,
+        event: dict | None = None,
+        result: dict | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.multi_agent_jobs_lock:
+            job = self.multi_agent_jobs.get(job_id)
+            if not job:
+                return
+            job["updated_at"] = timestamp()
+            if status:
+                job["status"] = status
+            if result is not None:
+                job["result"] = result
+            if error is not None:
+                job["error"] = error
+            if event:
+                item = {"time": event.get("time") or timestamp(), "stage": event.get("stage") or "progress", "message": event.get("message") or "", "details": event.get("details") or {}}
+                job.setdefault("progress", []).append(item)
+
+    def _read_multi_agent_job(self, job_id: str) -> dict:
+        with self.multi_agent_jobs_lock:
+            job = self.multi_agent_jobs.get(job_id)
+            if not job:
+                raise FileNotFoundError(f"找不到多 Agent 后台任务：{job_id}")
+            return json.loads(json.dumps(job, ensure_ascii=False, default=str))
+
+    def _parse_history_scope_value(self, value) -> tuple[int | None, bool]:
+        if value in (None, "", "all", "full", "history"):
+            return None, True
+        return int(value), False
 
     def serve(self) -> None:
         app = self
@@ -47,6 +146,11 @@ class StockWebApp:
 
             def log_message(self, format: str, *args) -> None:
                 print(f"{self.address_string()} - {format % args}")
+
+            def end_headers(self) -> None:
+                if not self.path.startswith("/api/"):
+                    self.send_header("Cache-Control", "no-store, max-age=0")
+                super().end_headers()
 
             def do_GET(self) -> None:
                 parsed = urlparse(self.path)
@@ -88,6 +192,18 @@ class StockWebApp:
                 if parsed.path == "/api/analyze":
                     self._handle_analyze()
                     return
+                if parsed.path == "/api/multi-agent-analyze":
+                    self._handle_multi_agent_analyze()
+                    return
+                if parsed.path == "/api/multi-agent-job":
+                    self._handle_multi_agent_job()
+                    return
+                if parsed.path == "/api/agent-runs":
+                    self._handle_agent_runs()
+                    return
+                if parsed.path == "/api/read-agent-run":
+                    self._handle_read_agent_run()
+                    return
                 if parsed.path == "/api/read-analysis":
                     self._handle_read_analysis()
                     return
@@ -126,6 +242,42 @@ class StockWebApp:
                     )
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_multi_agent_analyze(self) -> None:
+                try:
+                    payload = self._read_json()
+                    if payload.get("async"):
+                        self._json(app._start_multi_agent_job(payload))
+                    else:
+                        self._json(app._build_multi_agent_result(payload))
+                except Exception as exc:  # noqa: BLE001 - return readable UI error
+                    self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_multi_agent_job(self) -> None:
+                try:
+                    payload = self._read_json()
+                    job_id = str(payload.get("job_id") or "")
+                    self._json(app._read_multi_agent_job(job_id))
+                except Exception as exc:  # noqa: BLE001 - return readable UI error
+                    self._json({"ok": False, "error": str(exc)}, status=404)
+
+            def _handle_agent_runs(self) -> None:
+                try:
+                    payload = self._read_json()
+                    ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
+                    analysis_type = str(payload.get("analysis_type") or "") or None
+                    self._json({"ok": True, "ts_code": ts_code, "items": list_agent_runs(ts_code, analysis_type)})
+                except Exception as exc:  # noqa: BLE001 - return readable UI error
+                    self._json({"ok": False, "error": str(exc)}, status=404)
+
+            def _handle_read_agent_run(self) -> None:
+                try:
+                    payload = self._read_json()
+                    ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
+                    run_id = str(payload.get("run_id") or "")
+                    self._json(read_agent_run(ts_code, run_id))
+                except Exception as exc:  # noqa: BLE001 - return readable UI error
+                    self._json({"ok": False, "error": str(exc)}, status=404)
 
             def _handle_logout(self) -> None:
                 token = self._session_token()
@@ -238,11 +390,7 @@ class StockWebApp:
                 return json.loads(self.rfile.read(length).decode("utf-8"))
 
             def _parse_history_scope(self, payload: dict) -> tuple[int | None, bool]:
-                value = payload.get("years")
-                if value in (None, "", "all", "full", "history"):
-                    return None, True
-                years = int(value)
-                return years, False
+                return app._parse_history_scope_value(payload.get("years"))
 
             def _require_auth(self, path: str) -> bool:
                 if self._is_authenticated():
