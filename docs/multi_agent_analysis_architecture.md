@@ -12,7 +12,8 @@
 2. 每个研究观点必须经过证据检索、反证检索和风险审计。
 3. 允许 agent 之间互相质询、推翻、修正观点。
 4. 最终报告给出结论，也展示“为什么不是另一个结论”的关键理由。
-5. 所有中间产物本地归档，支持历史读取、版本对比和后续继续开发。
+5. 分析过程中如果发现关键数据缺口，系统可以提出数据请求，自动尝试通过 Tushare 补抓数据、重建资料包，并继续分析。
+6. 所有中间产物本地归档，支持历史读取、版本对比和后续继续开发。
 
 ## 2. 核心思想：非线性反思回路
 
@@ -30,8 +31,13 @@ flowchart TD
   D --> E["Specialist Agents 专题研究"]
   E --> F["Evidence Miner 证据检索"]
   E --> G["Counterfactual Agent 反证检索"]
-  F --> H["Reflection Loop 反思修正"]
-  G --> H
+  F --> N{"发现关键数据缺口"}
+  G --> N
+  N -- "是" --> O["Data Request Broker 数据请求"]
+  O --> P["Tushare Fetcher 补抓数据"]
+  P --> Q["Dossier Rebuilder 重建资料包"]
+  Q --> C
+  N -- "否" --> H["Reflection Loop 反思修正"]
   H --> I{"置信度是否收敛"}
   I -- "否" --> E
   I -- "是" --> J["Debate Council 观点会议"]
@@ -150,22 +156,83 @@ flowchart TD
 职责：
 - 针对每个假设检索支持证据。
 - 必须给出数据路径，避免空泛判断。
+- 如果现有资料包不足以验证假设，必须输出结构化 `data_requests`，而不是直接猜测。
 
 输出：
 - `supporting_evidence`
 - `evidence_strength`
 - `missing_fields`
+- `data_requests`
 
 ### Counterfactual Agent
 
 职责：
 - 主动寻找能推翻假设的证据。
 - 用“如果我是反方，我会怎么质疑”来发现漏洞。
+- 如果反证依赖缺失数据，必须向 Data Request Broker 提交补数请求。
 
 输出：
 - `counter_evidence`
 - `logic_gaps`
 - `alternative_explanations`
+- `data_requests`
+
+### Data Request Broker Agent
+
+职责：
+- 接收各 agent 提出的数据请求。
+- 判断请求是否必要、是否重复、是否已在本地数据中存在。
+- 将自然语言需求映射到 Tushare 接口和字段。
+- 根据分析模式决定补抓优先级，例如超跌反弹优先补 `daily`、`daily_basic`、`moneyflow`，长线价值优先补财报和分红。
+
+输出：
+- `approved_requests`
+- `rejected_requests`
+- `request_deduplication`
+- `tushare_jobs`
+
+请求示例：
+
+```json
+{
+  "request_id": "req_001",
+  "requested_by": "moneyflow_agent",
+  "mode": "oversold_rebound",
+  "need": "验证近 5 日和近 20 日资金是否回流",
+  "dataset": "moneyflow",
+  "fields": ["trade_date", "net_mf_amount", "buy_lg_amount", "sell_lg_amount"],
+  "date_range": {"lookback_days": 60},
+  "priority": "high",
+  "blocking": true
+}
+```
+
+### Tushare Fetcher Agent
+
+职责：
+- 执行 Data Request Broker 批准的数据请求。
+- 调用 `TushareClient` 或 `StockDataCollector` 中的接口。
+- 处理接口权限不足、频率限制、空返回和字段缺失。
+- 将补抓结果写入本地 `raw` 或增量数据文件。
+
+输出：
+- `fetch_results`
+- `fetch_errors`
+- `rate_limit_notes`
+- `permission_gaps`
+
+### Dossier Rebuilder Agent
+
+职责：
+- 在补抓数据后重建 `full_data.json`、`dossier.json` 和模式资料包。
+- 标记哪些数据来自本轮动态补抓。
+- 触发相关 agent 重新执行，不要求所有 agent 从头重跑。
+
+输出：
+- `rebuilt_files`
+- `changed_datasets`
+- `affected_agents`
+- `resume_plan`
 
 ### Reflection Agent
 
@@ -407,7 +474,71 @@ Round 6: 最终收敛
 }
 ```
 
-## 8. 置信度与收敛规则
+## 8. 动态数据请求闭环
+
+动态补数据是多 agent 系统的重要能力：当 agent 发现现有资料包不足以验证关键假设时，它不能靠猜测补齐结论，而要提交结构化数据请求。
+
+### 8.1 执行流程
+
+```text
+Agent 发现缺口
+  -> 输出 data_requests
+  -> Data Request Broker 去重、审批、映射接口
+  -> Tushare Fetcher 补抓数据
+  -> Dossier Rebuilder 重建资料包
+  -> Orchestrator 只重跑受影响 agent
+  -> Reflection Agent 修正结论和置信度
+```
+
+### 8.2 需求到 Tushare 接口映射
+
+| 分析需求 | 优先接口 | 典型使用场景 |
+| --- | --- | --- |
+| 日线走势、涨跌幅、K 线 | `daily`、`weekly`、`monthly` | 超跌、趋势、技术修复 |
+| 成交量、换手率、量比、市值 | `daily_basic` | 短线情绪、流动性、估值 |
+| 资金流入流出 | `moneyflow` | 超跌反弹、价值投机资金确认 |
+| 融资融券变化 | `margin_detail` | 杠杆资金、风险偏好 |
+| 涨跌停价格 | `stk_limit` | 情绪、连板空间、短线风险 |
+| 财务质量 | `income`、`balancesheet`、`cashflow`、`fina_indicator` | 长线价值、基本面底线 |
+| 分红与股东回报 | `dividend`、`repurchase` | 低估红利、价值底线 |
+| 主营业务 | `fina_mainbz` | 质量成长、业务结构 |
+| 股东变化和质押 | `top10_holders`、`stk_holdernumber`、`pledge_stat` | 治理风险、筹码结构 |
+| 公告和事件 | `anns_d`、`forecast`、`express` | 催化、风险事件、业绩验证 |
+| 行业走势 | `index_member_all`、`sw_daily` | 行业 beta、行业共振 |
+
+### 8.3 不同模式的补数优先级
+
+超跌反弹：
+- 第一优先级：`daily`、`daily_basic`、`moneyflow`、`stk_limit`。
+- 第二优先级：`sw_daily`、`anns_d`、`margin_detail`。
+- 只有当基本面底线不清楚时，才补财报数据。
+
+价值投机：
+- 第一优先级：估值、资金、催化、技术。
+- 第二优先级：财报趋势和股东结构。
+- 如果价值底线缺失，应先补财报再讨论交易窗口。
+
+质量成长价值：
+- 第一优先级：财报、现金流、主营、行业。
+- 第二优先级：治理、审计、估值。
+- 技术和短线资金一般不触发阻塞式补数。
+
+低估红利价值：
+- 第一优先级：分红、现金流、负债、估值。
+- 第二优先级：审计、质押、回购、股东结构。
+- 如果分红记录或现金流缺失，必须阻塞最终积极结论。
+
+### 8.4 补数边界
+
+动态补数不能无限循环，需要有硬规则：
+
+- 单次 agent run 最多补数 2 轮。
+- 同一接口失败后本轮不重复请求。
+- Tushare 权限不足或频率限制时，记录 `permission_gaps`，并降低置信度。
+- 非关键数据缺口不阻塞报告，只进入“需要继续跟踪”。
+- 补抓到的数据必须写入本地并归档，不允许只存在内存中。
+
+## 9. 置信度与收敛规则
 
 系统不能只输出评分，还要输出置信度。置信度不是预测准确率，而是“当前数据支持该结论的充分程度”。
 
@@ -426,13 +557,15 @@ Round 6: 最终收敛
 如果不收敛：
 - 最终报告必须写成“分歧报告”，不能强行给单一确定判断。
 
-## 9. 产物目录
+## 10. 产物目录
 
 ```text
 local_data/{ts_code}/current/agent_runs/{run_id}/
   run_manifest.json
   data_profile.json
   mode_context.json
+  data_requests.json
+  tushare_fetch_results.json
   hypotheses.json
   rounds/
     01_initial/
@@ -452,7 +585,7 @@ local_data/{ts_code}/current/agent_runs/{run_id}/
   final_report.md
 ```
 
-## 10. 统一输出契约
+## 11. 统一输出契约
 
 每个 agent 必须输出结构化 JSON：
 
@@ -486,7 +619,7 @@ local_data/{ts_code}/current/agent_runs/{run_id}/
 }
 ```
 
-## 11. 开发阶段
+## 12. 开发阶段
 
 ### 第一阶段：模式路由 + 结构化产物
 
@@ -509,20 +642,27 @@ local_data/{ts_code}/current/agent_runs/{run_id}/
 - 实现 `CounterfactualAgent` 和 `ReflectionAgent`。
 - 每个模式至少保留两轮修正记录。
 
-### 第四阶段：观点会议和置信度收敛
+### 第四阶段：动态数据请求闭环
+
+目标：
+- 实现 `DataRequestBroker`、`TushareFetcher`、`DossierRebuilder`。
+- agent 可以在分析中提出补数请求。
+- 补数后只重跑受影响 agent，并保存补数记录。
+
+### 第五阶段：观点会议和置信度收敛
 
 目标：
 - 实现 `DebateCouncil`。
 - 保存 `confidence_trace.json`。
 - 最终报告展示共识、分歧和未解决问题。
 
-### 第五阶段：前端历史和对比
+### 第六阶段：前端历史和对比
 
 目标：
 - 前端可查看每次 agent run。
 - 可对比两次运行的结论变化、评分变化、风险变化。
 
-## 12. 与当前系统的关系
+## 13. 与当前系统的关系
 
 当前已经完成：
 - 单框架分析类型注册。

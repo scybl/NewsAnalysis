@@ -9,6 +9,9 @@ const loadDataBtn = document.querySelector("#loadDataBtn");
 const readAnalysisBtn = document.querySelector("#readAnalysisBtn");
 const analysisTypeSelect = document.querySelector("#analysisTypeSelect");
 const analysisHistorySelect = document.querySelector("#analysisHistorySelect");
+const multiAgentBtn = document.querySelector("#multiAgentBtn");
+const agentRunSelect = document.querySelector("#agentRunSelect");
+const readAgentRunBtn = document.querySelector("#readAgentRunBtn");
 const logoutBtn = document.querySelector("#logoutBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
 const output = document.querySelector("#analysisOutput");
@@ -77,6 +80,23 @@ let analysisFrameworks = defaultAnalysisFrameworks;
 
 loadAnalysisFrameworks();
 
+async function readApiPayload(response, fallbackMessage) {
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      if (!response.ok) throw new Error(text);
+      throw new Error(text || fallbackMessage);
+    }
+  }
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.error || payload.message || text || fallbackMessage);
+  }
+  return payload;
+}
+
 input.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => search(input.value), 180);
@@ -107,6 +127,7 @@ updateDataBtn.addEventListener("click", async () => {
 
 analysisTypeSelect.addEventListener("change", () => {
   refreshAnalysisResults();
+  refreshAgentRuns();
 });
 
 analyzeBtn.addEventListener("click", async () => {
@@ -166,6 +187,87 @@ readAnalysisBtn.addEventListener("click", async () => {
     output.textContent = `读取分析失败：${error.message}`;
   } finally {
     syncReadAnalysisButtonState();
+  }
+});
+
+multiAgentBtn.addEventListener("click", async () => {
+  if (!selected) return;
+  const token = ++syncToken;
+  const framework = selectedAnalysisFramework();
+  multiAgentBtn.disabled = true;
+  output.textContent = `正在创建 ${selected.name}（${selected.ts_code}）的${framework.label}多 Agent 后台任务...`;
+  try {
+    const response = await fetch("/api/multi-agent-analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code, analysis_type: framework.key, years: "all", allow_dynamic_fetch: true, async: true, max_parallel_agents: 8 }),
+    });
+    const job = await readApiPayload(response, "多 Agent 分析任务创建失败");
+    await pollMultiAgentJob(job.job_id, framework, token);
+  } catch (error) {
+    if (token === syncToken) output.textContent = error.message || String(error);
+  } finally {
+    if (token === syncToken) {
+      multiAgentBtn.disabled = false;
+      syncReadAgentRunButtonState();
+    }
+  }
+});
+
+async function pollMultiAgentJob(jobId, framework, token) {
+  let lastPayload = null;
+  while (token === syncToken) {
+    const response = await fetch("/api/multi-agent-job", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: jobId }),
+    });
+    const payload = await readApiPayload(response, "读取多 Agent 进度失败");
+    lastPayload = payload;
+    output.textContent = formatMultiAgentJobProgress(payload, framework);
+    if (payload.status === "succeeded") break;
+    if (payload.status === "failed") throw new Error(formatMultiAgentJobProgress(payload, framework));
+    await sleep(1000);
+  }
+  if (!lastPayload || token !== syncToken) return;
+  const payload = lastPayload.result;
+  if (!payload?.ok) throw new Error(lastPayload.error || payload?.error || "多 Agent 分析失败");
+  if (token !== syncToken) return;
+  const requests = payload.data_requests?.approved_requests || [];
+  const fetched = payload.fetch_result?.fetch_results || [];
+  const failed = payload.fetch_result?.fetch_errors || [];
+  renderMultiAgentResult(payload, [
+    ["运行ID", payload.run_id],
+    ["运行目录", payload.run_dir],
+    ["最终报告", payload.final_report_path],
+    ["动态数据请求", `${requests.length} 个`],
+    ["Agent补充请求", `${(payload.agent_data_requests || []).length} 个`],
+    ["补抓成功", `${fetched.length} 个`],
+    ["补抓失败/权限缺口", `${failed.length} 个`],
+  ]);
+  await refreshAgentRuns();
+}
+
+readAgentRunBtn.addEventListener("click", async () => {
+  if (!selected || !agentRunSelect.value) return;
+  readAgentRunBtn.disabled = true;
+  output.textContent = `正在读取多 Agent 运行记录 ${agentRunSelect.value}...`;
+  try {
+    const response = await fetch("/api/read-agent-run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code, run_id: agentRunSelect.value }),
+    });
+    const payload = await readApiPayload(response, "读取失败");
+    renderMultiAgentResult(payload, [
+      ["运行ID", payload.run_id],
+      ["报告文件", payload.final_report_path],
+      ["Agent补充请求", `${(payload.agent_data_requests || []).length} 个`],
+    ]);
+  } catch (error) {
+    output.textContent = error.message || String(error);
+  } finally {
+    syncReadAgentRunButtonState();
   }
 });
 
@@ -356,7 +458,8 @@ function selectStock(item) {
   selected = item;
   selectedTitle.textContent = `${item.name}（${item.ts_code}）`;
   selectedMeta.textContent = [item.industry, item.area, item.market, item.list_date && `上市日 ${item.list_date}`].filter(Boolean).join(" · ");
-  analyzeBtn.disabled = false;
+  analyzeBtn.disabled = true;
+  multiAgentBtn.disabled = false;
   updateDataBtn.disabled = false;
   loadDataBtn.disabled = false;
   analysisHistorySelect.disabled = false;
@@ -367,11 +470,13 @@ function selectStock(item) {
   resetTableFilters();
   output.textContent = "正在读取本地更新状态...";
   renderAnalysisHistoryOptions([]);
+  renderAgentRunOptions([]);
   for (const button of results.querySelectorAll(".result")) {
     button.classList.toggle("active", button.textContent.includes(item.ts_code));
   }
   checkSelectedStatus();
   refreshAnalysisResults();
+  refreshAgentRuns();
 }
 
 async function syncSelectedData() {
@@ -379,8 +484,9 @@ async function syncSelectedData() {
   const token = ++syncToken;
   updateDataBtn.disabled = true;
   loadDataBtn.disabled = true;
-  analyzeBtn.disabled = true;
+  multiAgentBtn.disabled = true;
   readAnalysisBtn.disabled = true;
+  readAgentRunBtn.disabled = true;
   output.textContent = `正在更新 ${selected.name}（${selected.ts_code}）的本地${historyScopeText()}数据，请稍等...`;
   try {
     const response = await fetch("/api/sync-stock-data", {
@@ -405,9 +511,10 @@ async function syncSelectedData() {
     if (token === syncToken) {
       updateDataBtn.disabled = false;
       loadDataBtn.disabled = false;
-      analyzeBtn.disabled = false;
+      multiAgentBtn.disabled = false;
       analysisHistorySelect.disabled = false;
       syncReadAnalysisButtonState();
+      syncReadAgentRunButtonState();
     }
   }
 }
@@ -459,6 +566,230 @@ function syncReadAnalysisButtonState() {
   readAnalysisBtn.disabled = !selected || !hasHistory;
 }
 
+async function refreshAgentRuns() {
+  if (!selected) {
+    renderAgentRunOptions([]);
+    return;
+  }
+  const framework = selectedAnalysisFramework();
+  agentRunSelect.disabled = true;
+  readAgentRunBtn.disabled = true;
+  try {
+    const response = await fetch("/api/agent-runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code, analysis_type: framework.key }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "读取多 Agent 历史失败");
+    renderAgentRunOptions(payload.items || []);
+  } catch {
+    renderAgentRunOptions([]);
+  } finally {
+    agentRunSelect.disabled = false;
+  }
+}
+
+function renderAgentRunOptions(items) {
+  if (!items.length) {
+    agentRunSelect.innerHTML = `<option value="">暂无多Agent历史</option>`;
+    readAgentRunBtn.disabled = true;
+    return;
+  }
+  agentRunSelect.innerHTML = items
+    .map((item) => `<option value="${escapeHtml(item.run_id)}">${escapeHtml(formatUpdateTime(item.created_at) || item.run_id)}</option>`)
+    .join("");
+  syncReadAgentRunButtonState();
+}
+
+function syncReadAgentRunButtonState() {
+  const hasHistory = agentRunSelect.options.length > 0 && agentRunSelect.options[0].textContent !== "暂无多Agent历史";
+  readAgentRunBtn.disabled = !selected || !hasHistory;
+}
+
+function formatMultiAgentJobProgress(job, framework) {
+  const statusText = {
+    queued: "排队中",
+    running: "运行中",
+    succeeded: "已完成",
+    failed: "失败",
+  }[job.status] || job.status || "未知";
+  const lines = [
+    `正在运行 ${selected?.name || ""}（${selected?.ts_code || ""}）的${framework.label}多 Agent 分析`,
+    `任务ID：${job.job_id}`,
+    `状态：${statusText}`,
+    "",
+    "## 执行日志",
+  ];
+  const progress = job.progress || [];
+  for (const item of progress.slice(-30)) {
+    const time = formatProgressTime(item.time);
+    const stage = item.stage ? ` / ${item.stage}` : "";
+    lines.push(`- ${time}${stage}：${item.message || ""}`);
+  }
+  if (job.error) {
+    lines.push("", "## 报错", job.error);
+  }
+  return lines.join("\n");
+}
+
+function formatAgentConversation(messages) {
+  if (!messages.length) return "## 多 Agent 对话摘要\n暂无对话摘要。";
+  const lines = ["## 多 Agent 对话摘要"];
+  for (const item of messages) {
+    const role = item.role ? ` / ${item.role}` : "";
+    lines.push(`[${item.speaker}${role}] ${item.message}`);
+  }
+  return lines.join("\n");
+}
+
+function renderMultiAgentResult(payload, metaItems = []) {
+  const conversation = payload.agent_conversation || [];
+  output.innerHTML = `
+    <article class="agent-report">
+      <header class="report-hero">
+        <div>
+          <div class="report-kicker">${escapeHtml(payload.analysis_label || "多 Agent 分析")}</div>
+          <h3>${escapeHtml(payload.ts_code || payload.manifest?.ts_code || "多 Agent 分析报告")}</h3>
+        </div>
+        <div class="report-rating ${ratingTone(payload.rating_hint || "")}">
+          <strong>${escapeHtml(payload.rating_hint || "-")}</strong>
+          <span>置信度 ${escapeHtml(payload.confidence ?? "-")}</span>
+        </div>
+      </header>
+      ${renderMetaGrid(metaItems)}
+      ${renderConversationTimeline(conversation)}
+      ${renderMarkdownReport(payload.answer || "")}
+    </article>
+  `;
+}
+
+function renderMetaGrid(items) {
+  const visible = items.filter(([, value]) => value !== undefined && value !== null && value !== "");
+  if (!visible.length) return "";
+  return `
+    <section class="report-meta-grid">
+      ${visible.map(([label, value]) => `
+        <div class="report-meta-item">
+          <span>${escapeHtml(label)}</span>
+          <strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong>
+        </div>
+      `).join("")}
+    </section>
+  `;
+}
+
+function renderConversationTimeline(messages) {
+  if (!messages.length) return "";
+  return `
+    <section class="report-section conversation-section">
+      <h4>多 Agent 对话摘要</h4>
+      <div class="agent-timeline">
+        ${messages.map((item) => `
+          <div class="timeline-item">
+            <div class="timeline-head">
+              <strong>${escapeHtml(item.speaker || "")}</strong>
+              <span>${escapeHtml(item.role || "")}</span>
+            </div>
+            <p>${escapeHtml(item.message || "")}</p>
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderMarkdownReport(markdown) {
+  if (!markdown) return "";
+  const lines = markdown.split("\n");
+  let html = "";
+  let listOpen = false;
+  let sectionOpen = false;
+  let agentOpen = false;
+
+  const closeList = () => {
+    if (listOpen) {
+      html += "</ul>";
+      listOpen = false;
+    }
+  };
+  const closeAgent = () => {
+    closeList();
+    if (agentOpen) {
+      html += "</div>";
+      agentOpen = false;
+    }
+  };
+  const closeSection = () => {
+    closeAgent();
+    if (sectionOpen) {
+      html += "</section>";
+      sectionOpen = false;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line === "---") {
+      closeList();
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      closeSection();
+      html += `<h3 class="report-title">${escapeHtml(line.slice(2))}</h3>`;
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      closeSection();
+      html += `<section class="report-section"><h4>${escapeHtml(line.slice(3))}</h4>`;
+      sectionOpen = true;
+      continue;
+    }
+    if (line.startsWith("### ")) {
+      closeAgent();
+      if (!sectionOpen) {
+        html += `<section class="report-section">`;
+        sectionOpen = true;
+      }
+      html += `<div class="agent-card"><h5>${escapeHtml(line.slice(4))}</h5>`;
+      agentOpen = true;
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      if (!listOpen) {
+        html += "<ul>";
+        listOpen = true;
+      }
+      html += `<li>${formatInlineReportText(line.slice(2))}</li>`;
+      continue;
+    }
+    closeList();
+    html += `<p>${formatInlineReportText(line)}</p>`;
+  }
+  closeSection();
+  return html;
+}
+
+function formatInlineReportText(text) {
+  const escaped = escapeHtml(text);
+  const index = escaped.indexOf("：");
+  if (index > 0 && index < 16) {
+    return `<span class="report-label">${escaped.slice(0, index)}</span>${escaped.slice(index)}`;
+  }
+  return escaped;
+}
+
+function ratingTone(rating) {
+  const text = String(rating || "");
+  if (/(回避|风险|谨慎|等待)/.test(text)) return "is-risk";
+  if (/(积极|可试|机会)/.test(text)) return "is-positive";
+  return "is-neutral";
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function checkSelectedStatus() {
   if (!selected) return;
   const token = ++syncToken;
@@ -489,6 +820,11 @@ function formatUpdateTime(value) {
   const match = String(value).match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
   if (!match) return value;
   return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]}`;
+}
+
+function formatProgressTime(value) {
+  const formatted = formatUpdateTime(value);
+  return formatted === "未知" ? "" : formatted;
 }
 
 function historyScopeText() {

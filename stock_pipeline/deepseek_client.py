@@ -17,8 +17,16 @@ class DeepSeekClient:
         self.model = model
         self.timeout = timeout
 
-    def chat(self, messages: list[dict[str, str]], stream: bool = False) -> str:
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        stream: bool = False,
+        response_format: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
         if stream:
+            if response_format:
+                raise DeepSeekError("DeepSeek 流式请求暂不支持 response_format。")
             chunks = []
             for chunk in self.chat_stream(messages):
                 print(chunk, end="", flush=True)
@@ -33,6 +41,10 @@ class DeepSeekClient:
             "reasoning_effort": "high",
             "thinking": {"type": "enabled"},
         }
+        if response_format:
+            payload["response_format"] = response_format
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
         parsed = self._post_json(payload)
         try:
             return parsed["choices"][0]["message"]["content"]
