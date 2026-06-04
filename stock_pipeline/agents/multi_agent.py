@@ -205,12 +205,14 @@ class MultiAgentRunner:
 
         self._progress("debate", "专题 agent 已完成，开始观点会议和置信度收敛。")
         debate = _debate(agent_results, analysis_dossier.get("decision_helper", {}))
-        confidence_trace = _confidence_trace(agent_results, debate)
+        agent_data_requests = _collect_agent_data_requests(agent_results)
+        confidence_trace = _confidence_trace(agent_results, debate, framework.key)
         conversation = _agent_conversation(framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, agent_results, debate, confidence_trace)
-        final_report = _final_report(code, framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, agent_results, debate, confidence_trace)
+        final_report = _final_report(code, framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, agent_results, debate, confidence_trace, agent_data_requests)
 
         write_json(run_dir / "debate_council.json", debate)
         write_json(run_dir / "confidence_trace.json", confidence_trace)
+        write_json(run_dir / "agent_data_requests.json", agent_data_requests)
         write_json(run_dir / "agent_conversation.json", conversation)
         (run_dir / "final_report.md").write_text(final_report, encoding="utf-8")
         (base_dir / f"multi_agent_{framework.key}.md").write_text(final_report, encoding="utf-8")
@@ -230,6 +232,7 @@ class MultiAgentRunner:
             "confidence": confidence_trace["final_confidence"],
             "agent_conversation": conversation,
             "data_requests": broker_result,
+            "agent_data_requests": agent_data_requests,
             "fetch_result": fetch_result,
             "agent_runs": list_agent_runs(code, framework.key),
         }
@@ -342,12 +345,26 @@ def read_agent_run(code: str, run_id: str) -> dict[str, Any]:
         raise FileNotFoundError(f"多 Agent 运行记录缺少最终报告：{run_id}")
     manifest = read_json(run_dir / "run_manifest.json") if (run_dir / "run_manifest.json").exists() else {}
     conversation_path = run_dir / "agent_conversation.json"
+    agent_requests_path = run_dir / "agent_data_requests.json"
+    confidence_path = run_dir / "confidence_trace.json"
+    confidence_trace = read_json(confidence_path) if confidence_path.exists() else {}
+    analysis_type = _text(manifest.get("analysis_type")) or next((key for key in MODE_CONFIG if run_id.endswith(f"_{key}")), "")
+    try:
+        analysis_label = get_analysis_framework(analysis_type).label
+    except Exception:
+        analysis_label = MODE_CONFIG.get(analysis_type, {}).get("label") or analysis_type or "多 Agent 分析"
     return {
         "ok": True,
+        "ts_code": _text(manifest.get("ts_code")) or code,
+        "analysis_type": analysis_type,
+        "analysis_label": analysis_label,
         "run_id": run_id,
         "run_dir": str(run_dir),
         "manifest": manifest,
         "agent_conversation": read_json(conversation_path) if conversation_path.exists() else [],
+        "agent_data_requests": read_json(agent_requests_path) if agent_requests_path.exists() else [],
+        "rating_hint": confidence_trace.get("final_rating"),
+        "confidence": confidence_trace.get("final_confidence"),
         "answer": report_path.read_text(encoding="utf-8"),
         "final_report_path": str(report_path),
     }
@@ -758,15 +775,45 @@ def _data_request_list(values: Any) -> list[dict[str, Any]]:
     return requests
 
 
+def _collect_agent_data_requests(agent_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for result in agent_results:
+        agent = _text(result.get("agent"))
+        for request in _data_request_list(result.get("data_requests", [])):
+            dataset = _text(request.get("dataset"))
+            need = _text(request.get("need") or dataset)
+            key = (dataset, need)
+            if not dataset or key in seen:
+                continue
+            seen.add(key)
+            requests.append(
+                {
+                    **request,
+                    "requested_by": agent or request.get("requested_by") or "agent",
+                    "status": "external_watch_item" if dataset.startswith("unknown_") else "pending_broker_review",
+                }
+            )
+    return requests
+
+
 def _quantitative_checks(dossier: dict[str, Any], analysis_dossier: dict[str, Any]) -> dict[str, Any]:
     market = dossier.get("market", {})
     valuation = market.get("valuation_snapshot", {})
     circ_mv = _num(valuation.get("circ_mv"))
     total_mv = _num(valuation.get("total_mv"))
-    capital = analysis_dossier.get("speculation_triggers", {}).get("capital_flow", {})
+    capital = _capital_flow_section(analysis_dossier)
     derived = capital.get("derived", {})
+    moneyflow = capital.get("moneyflow_recent") or market.get("moneyflow_recent", [])
     five_day = _num(derived.get("five_day_net_mf_amount"))
     twenty_day = _num(derived.get("twenty_day_net_mf_amount"))
+    if five_day is None or twenty_day is None:
+        net_values = [_money_net(row) for row in moneyflow[:20]]
+        net_values = [value for value in net_values if value is not None]
+        if five_day is None and net_values:
+            five_day = round(sum(net_values[:5]), 2)
+        if twenty_day is None and net_values:
+            twenty_day = round(sum(net_values[:20]), 2)
     return {
         "unit_basis": {
             "moneyflow_amount": "万元",
@@ -790,6 +837,15 @@ def _quantitative_checks(dossier: dict[str, Any], analysis_dossier: dict[str, An
             "twenty_day_strength": _flow_strength(_pct_of(twenty_day, circ_mv)),
         },
     }
+
+
+def _capital_flow_section(analysis_dossier: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(analysis_dossier.get("capital_flow"), dict):
+        return analysis_dossier["capital_flow"]
+    speculation = analysis_dossier.get("speculation_triggers", {})
+    if isinstance(speculation, dict) and isinstance(speculation.get("capital_flow"), dict):
+        return speculation["capital_flow"]
+    return {}
 
 
 def _apply_agent_guardrails(
@@ -826,12 +882,21 @@ def _apply_agent_guardrails(
                 "strength": "high",
             }
         )
-    if guarded.get("agent") in {"industry_cycle_agent", "catalyst_agent", "risk_auditor"} and _mentions_external_industry_assumption(guarded):
+    if _mentions_external_industry_assumption(guarded):
         guarded.setdefault("counter_evidence", []).append(
             {
                 "claim": "涉及猪价、能繁母猪、成本或行业供需等外部变量时，如资料包未包含对应数据，应视为外部假设而非已验证证据。",
                 "data_path": "guardrails.external_industry_assumption",
                 "strength": "medium",
+            }
+        )
+        guarded.setdefault("data_requests", []).append(
+            {
+                "dataset": "external_industry_data",
+                "need": "猪价、能繁母猪、养殖成本、生猪期货、收储或行业政策等外部周期变量",
+                "priority": "medium",
+                "blocking": False,
+                "reason": "agent 使用了资料包外行业周期变量，需要后续接入 Tushare 或外部数据源校验。",
             }
         )
     guarded["rating_direction"] = _rating_direction(_text(guarded.get("rating_hint")))
@@ -875,6 +940,15 @@ def _flow_strength(ratio_pct: float | None) -> str:
     if abs_ratio >= 0.5:
         return "medium"
     return "low"
+
+
+def _money_net(row: dict[str, Any]) -> float | None:
+    explicit = _num(row.get("net_mf_amount"))
+    if explicit is not None:
+        return explicit
+    buy = sum(_num(row.get(key)) or 0 for key in ("buy_sm_amount", "buy_md_amount", "buy_lg_amount", "buy_elg_amount"))
+    sell = sum(_num(row.get(key)) or 0 for key in ("sell_sm_amount", "sell_md_amount", "sell_lg_amount", "sell_elg_amount"))
+    return buy - sell
 
 
 def _agent_analysis_slice(analysis_dossier: dict[str, Any], keys: list[str]) -> dict[str, Any]:
@@ -960,11 +1034,13 @@ def _counter_for_agent(agent: str, missing_required: list[str], risk_flags: list
 
 def _rating_direction(rating_hint: str) -> dict[str, Any]:
     text = rating_hint.strip()
+    if any(token in text for token in ("高风险", "风险较高", "风险很高", "高危")):
+        return {"direction": "negative", "label": "回避", "score": -2}
     if any(token in text for token in ("强烈回避", "坚决回避", "卖出")):
         return {"direction": "negative", "label": "回避", "score": -2}
     if any(token in text for token in ("回避", "规避", "谨慎回避")):
         return {"direction": "negative", "label": "回避", "score": -2}
-    if any(token in text for token in ("偏谨慎", "谨慎", "等待", "弱价值底线", "价值底线弱", "证据不足")):
+    if any(token in text for token in ("偏谨慎", "谨慎", "等待", "弱价值底线", "价值底线弱", "证据不足", "无明确止跌", "未见止跌", "缺乏止跌", "反弹基础薄弱", "时机尚未成熟", "不支持超跌反弹")):
         return {"direction": "negative", "label": "谨慎观察", "score": -1}
     if any(token in text for token in ("强烈积极", "高确定", "强买入")):
         return {"direction": "positive", "label": "积极", "score": 2}
@@ -1063,10 +1139,10 @@ def _debate(agent_results: list[dict[str, Any]], decision_helper: dict[str, Any]
     }
 
 
-def _confidence_trace(agent_results: list[dict[str, Any]], debate: dict[str, Any]) -> dict[str, Any]:
+def _confidence_trace(agent_results: list[dict[str, Any]], debate: dict[str, Any], analysis_type: str) -> dict[str, Any]:
     avg = debate["average_confidence"]
     final_conf = debate.get("direction_confidence", avg)
-    rating = debate.get("final_direction", {}).get("label", "观察")
+    rating = _mode_final_rating_label(analysis_type, debate.get("final_direction", {}))
     return {
         "rounds": [
             {"round": "initial", "confidence": 0.5},
@@ -1078,6 +1154,20 @@ def _confidence_trace(agent_results: list[dict[str, Any]], debate: dict[str, Any
         "final_confidence": final_conf,
         "final_rating": rating,
     }
+
+
+def _mode_final_rating_label(analysis_type: str, final_direction: dict[str, Any]) -> str:
+    label = _text(final_direction.get("label") or "观察")
+    score = _num(final_direction.get("score")) or 0
+    if analysis_type == "oversold_rebound":
+        if score <= -1.2:
+            return "高风险回避"
+        if score < -0.35:
+            return "等待确认"
+        if score >= 0.35:
+            return "可试反弹"
+        return "观察反弹"
+    return label
 
 
 def _agent_conversation(
@@ -1181,6 +1271,7 @@ def _final_report(
     agent_results: list[dict[str, Any]],
     debate: dict[str, Any],
     confidence_trace: dict[str, Any],
+    agent_data_requests: list[dict[str, Any]] | None = None,
 ) -> str:
     lines = [
         f"# 多 Agent 分析报告：{code}",
@@ -1199,7 +1290,7 @@ def _final_report(
     lines.append(f"- 数据范围：{data_profile.get('date_range', {})}")
     lines.append(f"- 关键缺失：{_join_text(data_profile.get('missing_required', [])) or '无'}")
     lines.append(f"- 次要缺失：{_join_text(data_profile.get('missing_secondary', [])) or '无'}")
-    lines.append(f"- 动态补数：{'已执行' if fetch_result.get('enabled') else '未启用'}，重建资料包：{'是' if fetch_result.get('rebuilt') else '否'}")
+    lines.append(f"- 动态补数：{_fetch_status_text(broker_result, fetch_result)}，重建资料包：{'是' if fetch_result.get('rebuilt') else '否'}")
     if broker_result.get("approved_requests"):
         lines.extend(["", "## 数据请求"])
         lines.extend(
@@ -1212,6 +1303,12 @@ def _final_report(
     if fetch_result.get("fetch_errors"):
         lines.extend(["", "## 补抓失败/权限缺口"])
         lines.extend(f"- {item.get('dataset') or item.get('api_name')}：{item.get('error')}" for item in fetch_result["fetch_errors"])
+    if agent_data_requests:
+        lines.extend(["", "## Agent 补充数据请求"])
+        lines.extend(
+            f"- {_text(req.get('requested_by'))}：{_text(req.get('dataset'))} / {_text(req.get('need'))}（{_text(req.get('status'))}）"
+            for req in agent_data_requests
+        )
     lines.extend(["", "## Agent 观点"])
     for result in agent_results:
         source = "LLM 专家" if result.get("source") == "llm_agent" else "规则回退"
@@ -1238,6 +1335,19 @@ def _final_report(
         lines.append(f"- {item}")
     lines.extend(["", "免责声明：以上内容仅用于研究和情景推演，不构成投资建议。"])
     return "\n".join(lines)
+
+
+def _fetch_status_text(broker_result: dict[str, Any], fetch_result: dict[str, Any]) -> str:
+    if not fetch_result.get("enabled"):
+        return "未启用"
+    requests = broker_result.get("approved_requests", [])
+    fetched = fetch_result.get("fetch_results", [])
+    failed = fetch_result.get("fetch_errors", [])
+    if not requests:
+        return "已启用，无补数请求"
+    if fetched or failed:
+        return f"已执行，成功 {len(fetched)} 个，失败/权限缺口 {len(failed)} 个"
+    return "已启用，未执行补抓"
 
 
 def _watchlist(analysis_type: str) -> list[str]:
