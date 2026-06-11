@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录 - 价值投机分析</title>
+    <style>
+      :root {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #17202a;
+        background: #f6f7f9;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      main {
+        width: min(420px, 100%);
+        border: 1px solid #e4e7ec;
+        border-radius: 10px;
+        background: #fff;
+        padding: 28px;
+        box-shadow: 0 12px 30px rgba(23, 32, 42, 0.08);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 26px;
+      }
+
+      p {
+        margin: 8px 0 24px;
+        color: #667085;
+        font-size: 14px;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        margin-top: 14px;
+        color: #475467;
+        font-size: 14px;
+      }
+
+      input {
+        width: 100%;
+        height: 42px;
+        border: 1px solid #cfd6df;
+        border-radius: 8px;
+        padding: 0 12px;
+        font: inherit;
+        outline: none;
+      }
+
+      input:focus {
+        border-color: #2f80ed;
+        box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.12);
+      }
+
+      button {
+        width: 100%;
+        height: 42px;
+        margin-top: 20px;
+        border: 1px solid #17202a;
+        border-radius: 8px;
+        background: #17202a;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.65;
+      }
+
+      .error {
+        min-height: 20px;
+        margin-top: 12px;
+        color: #c0392b;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>登录</h1>
+      <p>进入价值投机分析系统</p>
+      <form id="loginForm">
+        <label>
+          <span>账号</span>
+          <input id="username" name="username" autocomplete="username" required />
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button id="loginBtn" type="submit">登录</button>
+        <div id="error" class="error"></div>
+      </form>
+    </main>
+    <script>
+      const form = document.querySelector("#loginForm");
+      const button = document.querySelector("#loginBtn");
+      const error = document.querySelector("#error");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        button.disabled = true;
+        error.textContent = "";
+        try {
+          const response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              username: form.username.value,
+              password: form.password.value,
+            }),
+          });
+          const payload = await response.json();
+          if (!payload.ok) throw new Error(payload.error || "登录失败");
+          window.location.href = "/";
+        } catch (err) {
+          error.textContent = err.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

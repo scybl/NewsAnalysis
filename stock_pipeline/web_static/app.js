@@ -1,0 +1,1613 @@
+const input = document.querySelector("#searchInput");
+const results = document.querySelector("#results");
+const statusEl = document.querySelector("#status");
+const selectedTitle = document.querySelector("#selectedTitle");
+const selectedMeta = document.querySelector("#selectedMeta");
+const analyzeBtn = document.querySelector("#analyzeBtn");
+const updateDataBtn = document.querySelector("#updateDataBtn");
+const loadDataBtn = document.querySelector("#loadDataBtn");
+const readAnalysisBtn = document.querySelector("#readAnalysisBtn");
+const analysisTypeSelect = document.querySelector("#analysisTypeSelect");
+const analysisHistorySelect = document.querySelector("#analysisHistorySelect");
+const logoutBtn = document.querySelector("#logoutBtn");
+const refreshBtn = document.querySelector("#refreshBtn");
+const output = document.querySelector("#analysisOutput");
+const scorePanel = document.querySelector("#scorePanel");
+const dataPanel = document.querySelector("#dataPanel");
+const dataMeta = document.querySelector("#dataMeta");
+const datasetSelect = document.querySelector("#datasetSelect");
+const datasetSummary = document.querySelector("#datasetSummary");
+const tableFilterBar = document.querySelector("#tableFilterBar");
+const tableSearchInput = document.querySelector("#tableSearchInput");
+const clearTableFilterBtn = document.querySelector("#clearTableFilterBtn");
+const tableFilterInfo = document.querySelector("#tableFilterInfo");
+const tableFilterToggleBtn = document.querySelector("#tableFilterToggleBtn");
+const columnFilterPopover = document.querySelector("#columnFilterPopover");
+const columnFilterTitle = document.querySelector("#columnFilterTitle");
+const columnFilterCloseBtn = document.querySelector("#columnFilterCloseBtn");
+const columnFilterOperator = document.querySelector("#columnFilterOperator");
+const columnFilterValue = document.querySelector("#columnFilterValue");
+const columnFilterQuickSearch = document.querySelector("#columnFilterQuickSearch");
+const columnFilterValues = document.querySelector("#columnFilterValues");
+const columnFilterClearBtn = document.querySelector("#columnFilterClearBtn");
+const columnFilterApplyBtn = document.querySelector("#columnFilterApplyBtn");
+const dataTable = document.querySelector("#dataTable");
+const tableViewBtn = document.querySelector("#tableViewBtn");
+const chartViewBtn = document.querySelector("#chartViewBtn");
+const chartMetricSelect = document.querySelector("#chartMetricSelect");
+const chartSecondaryMetricSelect = document.querySelector("#chartSecondaryMetricSelect");
+const chartPanel = document.querySelector("#chartPanel");
+const dataChart = document.querySelector("#dataChart");
+const chartNote = document.querySelector("#chartNote");
+const lineRangeControls = document.querySelector("#lineRangeControls");
+const lineWindowSlider = document.querySelector("#lineWindowSlider");
+const lineWindowSelection = document.querySelector("#lineWindowSelection");
+const lineWindowLeft = document.querySelector("#lineWindowLeft");
+const lineWindowRight = document.querySelector("#lineWindowRight");
+const lineRangeText = document.querySelector("#lineRangeText");
+const prevPageBtn = document.querySelector("#prevPageBtn");
+const nextPageBtn = document.querySelector("#nextPageBtn");
+const pageInfo = document.querySelector("#pageInfo");
+
+let selected = null;
+let searchTimer = null;
+let loadedDatasets = [];
+let activeDataset = null;
+let currentPage = 1;
+let syncToken = 0;
+let viewMode = "table";
+let lineWindow = { start: 0, end: 0, total: 0 };
+let lineDrag = null;
+let tableFilterEnabled = false;
+let tableFilters = { keyword: "", columns: {} };
+let openFilterColumn = null;
+let lineHoverIndex = -1;
+let lineHitPoints = [];
+let linePlotArea = null;
+let pieSlices = [];
+let hoveredPieIndex = -1;
+const pageSize = 50;
+const defaultAnalysisFrameworks = [
+  { key: "value_speculation", label: "价值投机" },
+  { key: "value_quality", label: "质量成长价值" },
+  { key: "value_dividend", label: "低估红利价值" },
+  { key: "oversold_rebound", label: "超跌反弹" },
+];
+let analysisFrameworks = defaultAnalysisFrameworks;
+
+loadAnalysisFrameworks();
+
+input.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => search(input.value), 180);
+});
+
+refreshBtn.addEventListener("click", async () => {
+  statusEl.textContent = "正在刷新股票列表...";
+  refreshBtn.disabled = true;
+  try {
+    await fetch("/api/refresh");
+    statusEl.textContent = "股票列表已刷新";
+    search(input.value);
+  } catch (error) {
+    statusEl.textContent = `刷新失败：${error.message}`;
+  } finally {
+    refreshBtn.disabled = false;
+  }
+});
+
+logoutBtn.addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST" });
+  window.location.href = "/login";
+});
+
+updateDataBtn.addEventListener("click", async () => {
+  await syncSelectedData(false);
+});
+
+analysisTypeSelect.addEventListener("change", () => {
+  refreshAnalysisResults();
+});
+
+analyzeBtn.addEventListener("click", async () => {
+  if (!selected) return;
+  const framework = selectedAnalysisFramework();
+  analyzeBtn.disabled = true;
+  readAnalysisBtn.disabled = true;
+  scorePanel.hidden = true;
+  scorePanel.innerHTML = "";
+  output.textContent = `正在准备 ${selected.name}（${selected.ts_code}）的${historyScopeText()}数据并生成${framework.label}分析，请稍等...`;
+  try {
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code, years: "all", analysis_type: framework.key }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "分析失败");
+    renderScores(payload.rating_hint, payload.scores || {}, payload.analysis_type);
+    const rows = Object.entries(payload.dataset_rows || {})
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}: ${value}`)
+      .join("\n");
+    const errors = payload.fetch_errors?.length ? `\n\n未成功接口：${payload.fetch_errors.length} 个` : "";
+    const risks = (payload.risk_flags || []).map((item) => `- [${item.level}] ${item.title}: ${item.message}`).join("\n");
+    output.textContent = `${payload.answer || "已完成数据采集，但未配置 DeepSeek Key，未生成文本分析。"}\n\n---\n分析类型：${payload.analysis_label || framework.label}\n输出目录：${payload.output_dir}\n分析资料包：${payload.analysis_dossier_path || payload.value_dossier_path}\n分析文件：${payload.analysis_path || "未生成"}\n\n规则风险提示：\n${risks || "暂无明显规则风险"}\n\n数据集行数：\n${rows}${errors}`;
+    await refreshAnalysisResults();
+  } catch (error) {
+    output.textContent = `出错了：${error.message}`;
+  } finally {
+    analyzeBtn.disabled = false;
+    syncReadAnalysisButtonState();
+  }
+});
+
+readAnalysisBtn.addEventListener("click", async () => {
+  if (!selected) return;
+  const framework = selectedAnalysisFramework();
+  readAnalysisBtn.disabled = true;
+  scorePanel.hidden = true;
+  scorePanel.innerHTML = "";
+  output.textContent = `正在读取 ${selected.name}（${selected.ts_code}）的${framework.label}历史分析...`;
+  try {
+    const response = await fetch("/api/read-analysis", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code, analysis_type: framework.key, snapshot_name: analysisHistorySelect.value }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "读取失败");
+    const history = (payload.items || [])
+      .map((item) => `- ${item.location === "current" ? "当前" : `快照 ${item.snapshot_name}`}：${item.analysis_path}`)
+      .join("\n");
+    output.textContent = `${payload.answer}\n\n---\n分析类型：${payload.analysis_label || framework.label}\n分析文件：${payload.analysis_path}\n\n可读取历史：\n${history || "暂无其他历史分析"}`;
+    renderAnalysisHistoryOptions(payload.items || []);
+  } catch (error) {
+    output.textContent = `读取分析失败：${error.message}`;
+  } finally {
+    syncReadAnalysisButtonState();
+  }
+});
+
+loadDataBtn.addEventListener("click", async () => {
+  if (!selected) return;
+  loadDataBtn.disabled = true;
+  dataPanel.hidden = false;
+  dataMeta.textContent = `正在读取 ${selected.name}（${selected.ts_code}）的本地数据...`;
+  datasetSummary.textContent = "";
+  dataTable.innerHTML = "";
+  try {
+    const response = await fetch("/api/local-stock-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "读取失败");
+    loadedDatasets = payload.datasets || [];
+    renderDatasetOptions();
+    dataMeta.textContent = `本地目录：${payload.local_dir}`;
+    if (loadedDatasets.length) {
+      activeDataset = loadedDatasets[0];
+      currentPage = 1;
+      datasetSelect.value = activeDataset.key;
+      viewMode = "table";
+      resetTableFilters();
+      prepareChartMetric();
+      renderActiveDataset();
+    }
+  } catch (error) {
+    dataMeta.textContent = `读取失败：${error.message}`;
+  } finally {
+    loadDataBtn.disabled = false;
+  }
+});
+
+datasetSelect.addEventListener("change", () => {
+  activeDataset = loadedDatasets.find((item) => item.key === datasetSelect.value) || null;
+  currentPage = 1;
+  resetTableFilters();
+  prepareChartMetric();
+  renderActiveDataset();
+});
+
+tableViewBtn.addEventListener("click", () => {
+  viewMode = "table";
+  renderActiveDataset();
+});
+
+chartViewBtn.addEventListener("click", () => {
+  viewMode = "chart";
+  prepareChartMetric();
+  renderActiveDataset();
+});
+
+chartMetricSelect.addEventListener("change", () => {
+  resetLineWindow();
+  if (viewMode === "chart") renderActiveDataset();
+});
+chartSecondaryMetricSelect.addEventListener("change", () => {
+  if (viewMode === "chart") renderActiveDataset();
+});
+
+tableFilterToggleBtn.addEventListener("click", toggleTableFilters);
+tableSearchInput.addEventListener("input", applyTableKeywordFilter);
+clearTableFilterBtn.addEventListener("click", () => {
+  resetTableFilters();
+  renderActiveDataset();
+});
+dataTable.addEventListener("click", (event) => {
+  const button = event.target.closest(".column-filter-btn");
+  if (!button) return;
+  event.stopPropagation();
+  openColumnFilterPopover(button.dataset.column, button);
+});
+columnFilterCloseBtn.addEventListener("click", closeColumnFilterPopover);
+columnFilterQuickSearch.addEventListener("input", renderColumnFilterValues);
+columnFilterOperator.addEventListener("change", () => {
+  columnFilterValue.disabled = ["empty", "not_empty"].includes(columnFilterOperator.value);
+});
+columnFilterClearBtn.addEventListener("click", clearOpenColumnFilter);
+columnFilterApplyBtn.addEventListener("click", applyOpenColumnFilter);
+document.addEventListener("click", (event) => {
+  if (columnFilterPopover.hidden) return;
+  if (columnFilterPopover.contains(event.target) || event.target.closest(".column-filter-btn")) return;
+  closeColumnFilterPopover();
+});
+
+lineWindowLeft.addEventListener("pointerdown", (event) => beginLineWindowDrag(event, "left"));
+lineWindowRight.addEventListener("pointerdown", (event) => beginLineWindowDrag(event, "right"));
+lineWindowSelection.addEventListener("pointerdown", (event) => beginLineWindowDrag(event, "move"));
+lineWindowSlider.addEventListener("pointerdown", (event) => {
+  if (event.target !== lineWindowSlider && !event.target.classList.contains("line-window-track")) return;
+  jumpLineWindowTo(event);
+});
+window.addEventListener("pointermove", moveLineWindowDrag);
+window.addEventListener("pointerup", endLineWindowDrag);
+window.addEventListener("pointercancel", endLineWindowDrag);
+
+dataChart.addEventListener("mousemove", (event) => {
+  if (viewMode !== "chart") return;
+  const kind = chartKind(activeDataset || {});
+  if (kind === "pie") {
+    const nextIndex = hitTestPie(event);
+    dataChart.style.cursor = nextIndex === -1 ? "default" : "pointer";
+    if (nextIndex !== hoveredPieIndex) {
+      hoveredPieIndex = nextIndex;
+      renderActiveDataset();
+    }
+    return;
+  }
+  if (kind === "line") {
+    const nextIndex = hitTestLine(event);
+    dataChart.style.cursor = nextIndex === -1 ? "default" : "crosshair";
+    if (nextIndex !== lineHoverIndex) {
+      lineHoverIndex = nextIndex;
+      renderActiveDataset();
+    }
+    return;
+  }
+  dataChart.style.cursor = "default";
+});
+
+dataChart.addEventListener("mouseleave", () => {
+  dataChart.style.cursor = "default";
+  if (hoveredPieIndex !== -1 || lineHoverIndex !== -1) {
+    hoveredPieIndex = -1;
+    lineHoverIndex = -1;
+    renderActiveDataset();
+  }
+});
+
+prevPageBtn.addEventListener("click", () => {
+  if (currentPage > 1) {
+    currentPage -= 1;
+    renderActiveDataset();
+  }
+});
+
+nextPageBtn.addEventListener("click", () => {
+  if (!activeDataset) return;
+  const totalPages = Math.max(1, Math.ceil(filteredTableRecords(activeDataset.records || [], activeDataset.columns || []).length / pageSize));
+  if (currentPage < totalPages) {
+    currentPage += 1;
+    renderActiveDataset();
+  }
+});
+
+async function search(query) {
+  const q = query.trim();
+  results.innerHTML = "";
+  if (!q) {
+    statusEl.textContent = "输入关键词开始检索";
+    return;
+  }
+  statusEl.textContent = "检索中...";
+  try {
+    const response = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const payload = await response.json();
+    renderResults(payload.items || []);
+  } catch (error) {
+    statusEl.textContent = `检索失败：${error.message}`;
+  }
+}
+
+function renderResults(items) {
+  statusEl.textContent = items.length ? `找到 ${items.length} 个结果` : "没有匹配结果";
+  results.innerHTML = "";
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.className = `result ${selected?.ts_code === item.ts_code ? "active" : ""}`;
+    button.type = "button";
+    button.innerHTML = `
+      <div>
+        <div class="name">${escapeHtml(item.name || "")}</div>
+        <div class="code">${escapeHtml(item.ts_code || "")}</div>
+        <div class="tags">${escapeHtml([item.industry, item.area, item.market].filter(Boolean).join(" · "))}</div>
+      </div>
+      <span class="status-pill">${item.list_status === "L" ? "上市" : item.list_status || "-"}</span>
+    `;
+    button.addEventListener("click", () => selectStock(item));
+    results.appendChild(button);
+  }
+}
+
+function selectStock(item) {
+  selected = item;
+  selectedTitle.textContent = `${item.name}（${item.ts_code}）`;
+  selectedMeta.textContent = [item.industry, item.area, item.market, item.list_date && `上市日 ${item.list_date}`].filter(Boolean).join(" · ");
+  analyzeBtn.disabled = false;
+  updateDataBtn.disabled = false;
+  loadDataBtn.disabled = false;
+  analysisHistorySelect.disabled = false;
+  scorePanel.hidden = true;
+  dataPanel.hidden = true;
+  loadedDatasets = [];
+  activeDataset = null;
+  resetTableFilters();
+  output.textContent = "正在读取本地更新状态...";
+  renderAnalysisHistoryOptions([]);
+  for (const button of results.querySelectorAll(".result")) {
+    button.classList.toggle("active", button.textContent.includes(item.ts_code));
+  }
+  checkSelectedStatus();
+  refreshAnalysisResults();
+}
+
+async function syncSelectedData() {
+  if (!selected) return;
+  const token = ++syncToken;
+  updateDataBtn.disabled = true;
+  loadDataBtn.disabled = true;
+  analyzeBtn.disabled = true;
+  readAnalysisBtn.disabled = true;
+  output.textContent = `正在更新 ${selected.name}（${selected.ts_code}）的本地${historyScopeText()}数据，请稍等...`;
+  try {
+    const response = await fetch("/api/sync-stock-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code, years: "all" }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "更新失败");
+    if (token !== syncToken) return;
+    loadedDatasets = payload.datasets || [];
+    const meta = payload.metadata || {};
+    const snapshotCount = meta.snapshots?.length || 0;
+    const range = meta.date_range ? `${formatDateLabel(meta.date_range.start_date)} 至 ${formatDateLabel(meta.date_range.end_date)}` : "未知";
+    output.textContent = `本地数据已更新。\n采集范围：${range}\n当前数据目录：${payload.local_dir}\n股票存储目录：${payload.stock_dir}\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或选择分析类型后点击“生成分析”。`;
+    await refreshAnalysisResults();
+  } catch (error) {
+    if (token === syncToken) {
+      output.textContent = `更新本地数据失败：${error.message}\n\n如果本地之前已有数据，可以直接点击“读取数据”查看。`;
+    }
+  } finally {
+    if (token === syncToken) {
+      updateDataBtn.disabled = false;
+      loadDataBtn.disabled = false;
+      analyzeBtn.disabled = false;
+      analysisHistorySelect.disabled = false;
+      syncReadAnalysisButtonState();
+    }
+  }
+}
+
+async function refreshAnalysisResults() {
+  if (!selected) {
+    renderAnalysisHistoryOptions([]);
+    return;
+  }
+  const framework = selectedAnalysisFramework();
+  analysisHistorySelect.disabled = true;
+  readAnalysisBtn.disabled = true;
+  try {
+    const response = await fetch("/api/analysis-results", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code, analysis_type: framework.key }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "读取历史分析失败");
+    renderAnalysisHistoryOptions(payload.items || []);
+  } catch {
+    renderAnalysisHistoryOptions([]);
+  } finally {
+    analysisHistorySelect.disabled = false;
+  }
+}
+
+function renderAnalysisHistoryOptions(items) {
+  if (!items.length) {
+    analysisHistorySelect.innerHTML = `<option value="">暂无历史分析</option>`;
+    readAnalysisBtn.disabled = true;
+    return;
+  }
+  analysisHistorySelect.innerHTML = items
+    .map((item) => {
+      const value = item.location === "current" ? "" : item.snapshot_name;
+      const label = item.location === "current"
+        ? `当前：${formatUpdateTime(item.updated_at)}`
+        : `快照：${formatUpdateTime(item.updated_at)}`;
+      return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  syncReadAnalysisButtonState();
+}
+
+function syncReadAnalysisButtonState() {
+  const hasHistory = analysisHistorySelect.options.length > 0 && analysisHistorySelect.options[0].textContent !== "暂无历史分析";
+  readAnalysisBtn.disabled = !selected || !hasHistory;
+}
+
+async function checkSelectedStatus() {
+  if (!selected) return;
+  const token = ++syncToken;
+  try {
+    const response = await fetch("/api/stock-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "状态读取失败");
+    if (token !== syncToken) return;
+    if (payload.exists) {
+      const snapshotCount = payload.metadata?.snapshots?.length || 0;
+      output.textContent = `本地已有 ${selected.name}（${selected.ts_code}）的数据。\n上次更新时间：${formatUpdateTime(payload.updated_at)}\n距离现在：${payload.age_text}\n当前数据目录：${payload.local_dir}\n历史快照：${snapshotCount} 个\n\n你可以直接点击“读取数据”查看表格，点击“读取分析”加载已生成报告，也可以点击“更新数据”保存新版本并归档旧版本。`;
+    } else {
+      output.textContent = `${selected.name}（${selected.ts_code}）本地还没有更新过。\n\n请点击“更新数据”抓取并保存本地数据；更新后再点击“读取数据”查看中文表格。`;
+    }
+  } catch (error) {
+    if (token === syncToken) {
+      output.textContent = `读取本地状态失败：${error.message}`;
+    }
+  }
+}
+
+function formatUpdateTime(value) {
+  if (!value) return "未知";
+  const match = String(value).match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
+  if (!match) return value;
+  return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]}`;
+}
+
+function historyScopeText() {
+  return "全部历史";
+}
+
+async function loadAnalysisFrameworks() {
+  try {
+    const response = await fetch("/api/analysis-frameworks");
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "读取分析类型失败");
+    analysisFrameworks = payload.items?.length ? payload.items : defaultAnalysisFrameworks;
+  } catch {
+    analysisFrameworks = defaultAnalysisFrameworks;
+  }
+  analysisTypeSelect.innerHTML = analysisFrameworks
+    .map((item) => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)}</option>`)
+    .join("");
+}
+
+function selectedAnalysisFramework() {
+  const key = analysisTypeSelect.value || "value_speculation";
+  return analysisFrameworks.find((item) => item.key === key) || defaultAnalysisFrameworks[0];
+}
+
+function renderDatasetOptions() {
+  datasetSelect.innerHTML = loadedDatasets
+    .map((item) => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)}（${item.row_count}）</option>`)
+    .join("");
+}
+
+function renderActiveDataset() {
+  updateViewModeControls();
+  if (!activeDataset) {
+    datasetSummary.textContent = "暂无数据";
+    tableFilterBar.hidden = true;
+    tableFilterToggleBtn.hidden = true;
+    closeColumnFilterPopover();
+    dataTable.innerHTML = "";
+    pageInfo.textContent = "第 0 页";
+    prevPageBtn.disabled = true;
+    nextPageBtn.disabled = true;
+    return;
+  }
+
+  const records = activeDataset.records || [];
+  const columns = activeDataset.columns || [];
+  const visibleRecords = viewMode === "table" ? filteredTableRecords(records, columns) : records;
+  const totalPages = Math.max(1, Math.ceil(visibleRecords.length / pageSize));
+  currentPage = Math.min(currentPage, totalPages);
+  const start = (currentPage - 1) * pageSize;
+  const pageRecords = visibleRecords.slice(start, start + pageSize);
+
+  const shownStart = visibleRecords.length ? start + 1 : 0;
+  const shownEnd = Math.min(start + pageSize, visibleRecords.length);
+  const filteredText = visibleRecords.length === records.length ? "" : `，筛选后 ${visibleRecords.length} 行`;
+  datasetSummary.textContent = `${activeDataset.label}：共 ${records.length} 行${filteredText}，当前显示 ${shownStart}-${shownEnd} 行`;
+  updateTableFilterInfo(records.length, visibleRecords.length);
+  pageInfo.textContent = `第 ${currentPage} / ${totalPages} 页`;
+  prevPageBtn.disabled = currentPage <= 1;
+  nextPageBtn.disabled = currentPage >= totalPages;
+
+  if (viewMode === "chart") {
+    tableFilterBar.hidden = true;
+    tableFilterToggleBtn.hidden = true;
+    closeColumnFilterPopover();
+    document.querySelector(".table-wrap").hidden = true;
+    document.querySelector(".pager").hidden = true;
+    chartPanel.hidden = false;
+    renderChart();
+    return;
+  }
+
+  tableFilterToggleBtn.hidden = false;
+  tableFilterBar.hidden = !tableFilterEnabled;
+  document.querySelector(".table-wrap").hidden = false;
+  document.querySelector(".pager").hidden = false;
+  chartPanel.hidden = true;
+
+  if (!records.length || !columns.length) {
+    dataTable.innerHTML = `<tbody><tr><td class="empty-cell">这个数据集暂无记录</td></tr></tbody>`;
+    return;
+  }
+
+  if (!visibleRecords.length) {
+    dataTable.innerHTML = `<tbody><tr><td class="empty-cell">没有符合筛选条件的记录</td></tr></tbody>`;
+    return;
+  }
+
+  const head = `<thead><tr>${columns.map((col) => renderTableHeaderCell(col)).join("")}</tr></thead>`;
+  const bodyRows = pageRecords
+    .map((row) => {
+      const cells = columns
+        .map((col) => {
+          const value = row[col.key];
+          const text = value === null || value === undefined || value === "" ? "-" : String(value);
+          const cls = text === "-" ? " class=\"empty-cell\"" : "";
+          return `<td${cls} title="${escapeHtml(text)}">${escapeHtml(text)}</td>`;
+        })
+        .join("");
+      return `<tr>${cells}</tr>`;
+    })
+    .join("");
+  dataTable.innerHTML = `${head}<tbody>${bodyRows}</tbody>`;
+}
+
+function updateViewModeControls() {
+  tableViewBtn.classList.toggle("active", viewMode === "table");
+  chartViewBtn.classList.toggle("active", viewMode === "chart");
+  chartMetricSelect.hidden = viewMode !== "chart";
+  chartSecondaryMetricSelect.hidden = viewMode !== "chart" || chartKind(activeDataset || {}) !== "line";
+  tableFilterToggleBtn.hidden = viewMode !== "table";
+  tableFilterBar.hidden = viewMode !== "table" || !tableFilterEnabled;
+  tableFilterToggleBtn.textContent = tableFilterEnabled ? "关闭筛选" : "开启筛选";
+  if (viewMode !== "table") closeColumnFilterPopover();
+}
+
+function prepareChartMetric() {
+  if (!activeDataset) return;
+  hoveredPieIndex = -1;
+  lineHoverIndex = -1;
+  lineHitPoints = [];
+  linePlotArea = null;
+  pieSlices = [];
+  const metrics = numericColumns(activeDataset);
+  chartMetricSelect.innerHTML = metrics
+    .map((col) => `<option value="${escapeHtml(col.key)}">${escapeHtml(col.label)}</option>`)
+    .join("");
+  chartSecondaryMetricSelect.innerHTML = [
+    `<option value="">无副图</option>`,
+    ...metrics.map((col) => `<option value="${escapeHtml(col.key)}">${escapeHtml(col.label)}</option>`),
+  ].join("");
+  const preferred = preferredMetric(activeDataset.key, metrics);
+  if (preferred) chartMetricSelect.value = preferred;
+  const secondary = preferredSecondaryMetric(activeDataset.key, metrics, preferred);
+  chartSecondaryMetricSelect.value = secondary;
+  resetLineWindow();
+}
+
+function resetTableFilters() {
+  tableFilters = { keyword: "", columns: {} };
+  openFilterColumn = null;
+  tableSearchInput.value = "";
+  tableFilterInfo.textContent = "未筛选";
+  closeColumnFilterPopover();
+}
+
+function toggleTableFilters() {
+  tableFilterEnabled = !tableFilterEnabled;
+  if (!tableFilterEnabled) resetTableFilters();
+  currentPage = 1;
+  renderActiveDataset();
+}
+
+function applyTableKeywordFilter() {
+  tableFilters.keyword = tableSearchInput.value.trim();
+  currentPage = 1;
+  renderActiveDataset();
+}
+
+function renderTableHeaderCell(col) {
+  const active = tableFilterEnabled && Boolean(tableFilters.columns[col.key]);
+  const button = tableFilterEnabled
+    ? `<button class="column-filter-btn ${active ? "active" : ""}" type="button" data-column="${escapeHtml(col.key)}" title="筛选 ${escapeHtml(col.label)}">⌄</button>`
+    : "";
+  return `<th title="${escapeHtml(col.key)}"><div class="table-th-inner"><span class="table-th-label">${escapeHtml(col.label)}</span>${button}</div></th>`;
+}
+
+function openColumnFilterPopover(columnKey, anchor) {
+  if (!activeDataset || !columnKey) return;
+  openFilterColumn = columnKey;
+  const existing = tableFilters.columns[columnKey] || { operator: "contains", value: "" };
+  const label = labelForKey(activeDataset.columns || [], columnKey);
+  columnFilterTitle.textContent = label;
+  columnFilterOperator.value = existing.operator;
+  columnFilterValue.value = existing.value || "";
+  columnFilterValue.disabled = ["empty", "not_empty"].includes(columnFilterOperator.value);
+  columnFilterQuickSearch.value = "";
+  renderColumnFilterValues();
+
+  const rect = anchor.getBoundingClientRect();
+  columnFilterPopover.hidden = false;
+  const popoverWidth = columnFilterPopover.offsetWidth || 280;
+  const left = clampNumber(rect.left, 8, window.innerWidth - popoverWidth - 8);
+  columnFilterPopover.style.left = `${left}px`;
+  columnFilterPopover.style.top = `${rect.bottom + 6}px`;
+}
+
+function closeColumnFilterPopover() {
+  openFilterColumn = null;
+  columnFilterPopover.hidden = true;
+}
+
+function renderColumnFilterValues() {
+  if (!activeDataset || !openFilterColumn) {
+    columnFilterValues.innerHTML = "";
+    return;
+  }
+  const query = columnFilterQuickSearch.value.trim().toLowerCase();
+  const counts = new Map();
+  for (const row of activeDataset.records || []) {
+    const text = cellText(row[openFilterColumn]) || "(空)";
+    if (query && !text.toLowerCase().includes(query)) continue;
+    counts.set(text, (counts.get(text) || 0) + 1);
+  }
+  const values = Array.from(counts, ([text, count]) => ({ text, count }))
+    .sort((a, b) => b.count - a.count || a.text.localeCompare(b.text))
+    .slice(0, 80);
+  if (!values.length) {
+    columnFilterValues.innerHTML = `<div class="empty-cell">没有匹配值</div>`;
+    return;
+  }
+  columnFilterValues.innerHTML = values
+    .map((item) => `<button class="column-filter-value" type="button" data-value="${escapeHtml(item.text === "(空)" ? "" : item.text)}" title="${escapeHtml(item.text)}">${escapeHtml(item.text)} <span>${item.count}</span></button>`)
+    .join("");
+  for (const button of columnFilterValues.querySelectorAll(".column-filter-value")) {
+    button.addEventListener("click", () => {
+      columnFilterOperator.value = button.dataset.value ? "equals" : "empty";
+      columnFilterValue.value = button.dataset.value || "";
+      applyOpenColumnFilter();
+    });
+  }
+}
+
+function applyOpenColumnFilter() {
+  if (!openFilterColumn) return;
+  const operator = columnFilterOperator.value;
+  const value = columnFilterValue.value.trim();
+  if (!value && !["empty", "not_empty"].includes(operator)) {
+    delete tableFilters.columns[openFilterColumn];
+  } else {
+    tableFilters.columns[openFilterColumn] = { operator, value };
+  }
+  currentPage = 1;
+  closeColumnFilterPopover();
+  renderActiveDataset();
+}
+
+function clearOpenColumnFilter() {
+  if (!openFilterColumn) return;
+  delete tableFilters.columns[openFilterColumn];
+  currentPage = 1;
+  closeColumnFilterPopover();
+  renderActiveDataset();
+}
+
+function filteredTableRecords(records, columns) {
+  if (!tableFilterEnabled) return records;
+  const keyword = tableFilters.keyword.toLowerCase();
+  const columnFilters = Object.entries(tableFilters.columns);
+
+  return records.filter((row) => {
+    if (keyword) {
+      const matchesKeyword = columns.some((col) => cellText(row[col.key]).toLowerCase().includes(keyword));
+      if (!matchesKeyword) return false;
+    }
+    return columnFilters.every(([key, filter]) => matchFilterValue(row[key], filter.operator, filter.value));
+  });
+}
+
+function matchFilterValue(value, operator, expected) {
+  const text = cellText(value);
+  const normalized = text.toLowerCase();
+  if (operator === "empty") return text === "";
+  if (operator === "not_empty") return text !== "";
+  if (!expected) return true;
+  if (operator === "contains") return normalized.includes(expected);
+  if (operator === "equals") return normalized === expected;
+  if (operator === "not_equals") return normalized !== expected;
+
+  const left = Number(text);
+  const right = Number(expected);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  if (operator === "gt") return left > right;
+  if (operator === "gte") return left >= right;
+  if (operator === "lt") return left < right;
+  if (operator === "lte") return left <= right;
+  return true;
+}
+
+function updateTableFilterInfo(total, visible) {
+  const columnCount = Object.keys(tableFilters.columns).length;
+  const active = tableFilterEnabled && (tableFilters.keyword || columnCount);
+  if (!active) {
+    tableFilterInfo.textContent = "未筛选";
+    return;
+  }
+  const keywordText = tableFilters.keyword ? "全文搜索" : "";
+  const columnText = columnCount ? `${columnCount} 列筛选` : "";
+  tableFilterInfo.textContent = `筛选中：${[keywordText, columnText].filter(Boolean).join("，")}，匹配 ${visible}/${total} 行`;
+}
+
+function renderChart() {
+  const records = activeDataset.records || [];
+  const columns = activeDataset.columns || [];
+  const metric = chartMetricSelect.value || numericColumns(activeDataset)[0]?.key;
+  const secondaryMetric = chartSecondaryMetricSelect.value || "";
+  const metricLabel = labelForKey(columns, metric);
+  const secondaryLabel = secondaryMetric ? labelForKey(columns, secondaryMetric) : "";
+  if (!records.length || !metric) {
+    drawEmptyChart("这个数据集暂无可视化数据");
+    chartNote.textContent = "可以切回表格查看原始记录。";
+    return;
+  }
+
+  const kind = chartKind(activeDataset);
+  if (kind === "pie") {
+    lineHoverIndex = -1;
+    lineHitPoints = [];
+    linePlotArea = null;
+    lineRangeControls.hidden = true;
+    const labelKey = categoricalKey(activeDataset) || "name";
+    const data = aggregateByCategory(records, labelKey, metric).slice(0, 10);
+    drawPieChart(data, metricLabel);
+    const selectedSlice = data[hoveredPieIndex];
+    chartNote.textContent = selectedSlice
+      ? `已选中：${selectedSlice.label}，占比 ${selectedSlice.percentText}。`
+      : `饼图：按“${labelForKey(columns, labelKey)}”汇总“${metricLabel}”，显示前 10 项。`;
+    return;
+  }
+
+  if (kind === "bar") {
+    hoveredPieIndex = -1;
+    lineHoverIndex = -1;
+    lineHitPoints = [];
+    linePlotArea = null;
+    pieSlices = [];
+    lineRangeControls.hidden = true;
+    const labelKey = categoricalKey(activeDataset);
+    const data = aggregateByCategory(records, labelKey, metric).slice(0, 20);
+    drawBarChart(data, metricLabel);
+    chartNote.textContent = `柱状图：按“${labelForKey(columns, labelKey)}”汇总“${metricLabel}”，显示前 20 项。`;
+    return;
+  }
+
+  const dateKey = dateColumnKey(activeDataset);
+  hoveredPieIndex = -1;
+  pieSlices = [];
+  if (!dateKey) {
+    lineHoverIndex = -1;
+    lineHitPoints = [];
+    linePlotArea = null;
+    drawEmptyChart("这个数据集更适合表格查看");
+    chartNote.textContent = "当前数据缺少日期或分类字段。";
+    return;
+  }
+  const data = records
+    .map((row) => ({
+      label: formatDateLabel(row[dateKey]),
+      value: toNumber(row[metric]),
+      rawDate: String(row[dateKey] || ""),
+      open: toNumber(row.open),
+      high: toNumber(row.high),
+      low: toNumber(row.low),
+      close: toNumber(row.close),
+      secondary: secondaryMetric ? toNumber(row[secondaryMetric]) : NaN,
+    }))
+    .filter((item) => item.rawDate && Number.isFinite(item.value))
+    .sort((a, b) => a.rawDate.localeCompare(b.rawDate));
+  const windowed = lineWindowData(data);
+  const useCandlestick = shouldDrawCandlestick(windowed, metric);
+  const secondary = secondaryMetric ? { key: secondaryMetric, label: secondaryLabel } : null;
+  if (useCandlestick) {
+    drawCandlestickChart(windowed, secondary);
+  } else {
+    drawLineChart(windowed, metricLabel, secondary);
+  }
+  lineRangeControls.hidden = data.length < 3;
+  const secondaryText = secondary && hasSecondaryData(windowed) ? `，下方副图为“${secondary.label}”` : "";
+  chartNote.textContent = useCandlestick
+    ? `K线图：窗口密度较低，按开盘价、最高价、最低价、收盘价展示${secondaryText}。当前显示 ${windowed.length}/${data.length} 根。`
+    : `线图：横轴为“${labelForKey(columns, dateKey)}”，纵轴为“${metricLabel}”${secondaryText}。当前显示 ${windowed.length}/${data.length} 个点。`;
+}
+
+function resetLineWindow() {
+  lineWindow = { start: 0, end: 0, total: 0 };
+  lineHoverIndex = -1;
+  renderLineWindowControl([]);
+}
+
+function lineWindowData(data) {
+  lineWindow.total = data.length;
+  clampLineWindow();
+  renderLineWindowControl(data);
+  return data.slice(lineWindow.start, lineWindow.end);
+}
+
+function clampLineWindow() {
+  const total = Math.max(0, Number(lineWindow.total) || 0);
+  if (!total) {
+    lineWindow.start = 0;
+    lineWindow.end = 0;
+    return;
+  }
+  const minSpan = Math.min(total, 2);
+  let start = Math.round(Number(lineWindow.start) || 0);
+  let end = Math.round(Number(lineWindow.end) || total);
+  if (end <= 0 || end > total) end = total;
+  start = clampNumber(start, 0, Math.max(0, total - minSpan));
+  end = clampNumber(end, start + minSpan, total);
+  if (end - start < minSpan) {
+    start = clampNumber(end - minSpan, 0, Math.max(0, total - minSpan));
+    end = start + minSpan;
+  }
+  lineWindow.start = start;
+  lineWindow.end = end;
+}
+
+function renderLineWindowControl(data) {
+  const total = data.length || lineWindow.total || 0;
+  if (!total) {
+    lineWindowSelection.style.left = "0%";
+    lineWindowSelection.style.width = "100%";
+    lineRangeText.textContent = "暂无范围";
+    return;
+  }
+  const left = (lineWindow.start / total) * 100;
+  const width = ((lineWindow.end - lineWindow.start) / total) * 100;
+  lineWindowSelection.style.left = `${left}%`;
+  lineWindowSelection.style.width = `${Math.max(width, 1)}%`;
+  const startLabel = data[lineWindow.start]?.label || `第 ${lineWindow.start + 1} 个点`;
+  const endLabel = data[Math.max(lineWindow.start, lineWindow.end - 1)]?.label || `第 ${lineWindow.end} 个点`;
+  lineRangeText.textContent = `${startLabel} 至 ${endLabel}，${lineWindow.end - lineWindow.start}/${total} 个点`;
+}
+
+function beginLineWindowDrag(event, mode) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (lineWindow.total < 3) return;
+  lineDrag = {
+    mode,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    initialStart: lineWindow.start,
+    initialEnd: lineWindow.end,
+  };
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+}
+
+function moveLineWindowDrag(event) {
+  if (!lineDrag || event.pointerId !== lineDrag.pointerId) return;
+  const total = Math.max(0, lineWindow.total || 0);
+  const minSpan = Math.min(total, 2);
+  if (!total) return;
+  const rect = lineWindowSlider.getBoundingClientRect();
+  const delta = Math.round(((event.clientX - lineDrag.startX) / Math.max(1, rect.width)) * total);
+  if (lineDrag.mode === "move") {
+    const span = lineDrag.initialEnd - lineDrag.initialStart;
+    const start = clampNumber(lineDrag.initialStart + delta, 0, Math.max(0, total - span));
+    lineWindow.start = start;
+    lineWindow.end = start + span;
+  } else if (lineDrag.mode === "left") {
+    lineWindow.start = clampNumber(lineDrag.initialStart + delta, 0, lineDrag.initialEnd - minSpan);
+    lineWindow.end = lineDrag.initialEnd;
+  } else {
+    lineWindow.start = lineDrag.initialStart;
+    lineWindow.end = clampNumber(lineDrag.initialEnd + delta, lineDrag.initialStart + minSpan, total);
+  }
+  clampLineWindow();
+  renderActiveDataset();
+}
+
+function endLineWindowDrag(event) {
+  if (!lineDrag || event.pointerId !== lineDrag.pointerId) return;
+  lineDrag = null;
+}
+
+function jumpLineWindowTo(event) {
+  if (lineWindow.total < 3) return;
+  const total = lineWindow.total;
+  const span = Math.max(2, lineWindow.end - lineWindow.start);
+  const rect = lineWindowSlider.getBoundingClientRect();
+  const fraction = clampNumber((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+  const center = Math.round(fraction * total);
+  const start = clampNumber(center - Math.floor(span / 2), 0, Math.max(0, total - span));
+  lineWindow.start = start;
+  lineWindow.end = start + span;
+  clampLineWindow();
+  renderActiveDataset();
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function renderScores(rating, scores, analysisType = "value_speculation") {
+  const labelSets = {
+    value_speculation: {
+      value_basis: "价值基础",
+      valuation_attractiveness: "估值吸引力",
+      earnings_trend: "业绩趋势",
+      industry_cycle: "行业周期",
+      catalyst_strength: "催化强度",
+      capital_confirmation: "资金确认",
+      technical_timing: "技术时机",
+      risk_pressure: "风险压力",
+    },
+    value_quality: {
+      business_quality: "商业质量",
+      earnings_resilience: "盈利韧性",
+      growth_sustainability: "成长持续性",
+      cashflow_quality: "现金流质量",
+      balance_sheet_safety: "负债安全",
+      governance_return: "治理回报",
+      valuation_margin: "估值边际",
+      risk_pressure: "风险压力",
+    },
+    value_dividend: {
+      valuation_cheapness: "估值便宜度",
+      dividend_attractiveness: "分红吸引力",
+      earnings_stability: "盈利稳定性",
+      cashflow_coverage: "现金流覆盖",
+      balance_sheet_safety: "负债安全",
+      industry_defensiveness: "行业防御性",
+      governance_return: "治理回报",
+      risk_pressure: "风险压力",
+    },
+    oversold_rebound: {
+      oversold_degree: "超跌幅度",
+      technical_repair: "技术修复",
+      volume_confirmation: "成交配合",
+      capital_return: "资金回流",
+      industry_resonance: "行业共振",
+      catalyst_support: "催化支撑",
+      fundamental_floor: "基本面底线",
+      risk_pressure: "风险压力",
+    },
+  };
+  const labels = labelSets[analysisType] || Object.fromEntries(Object.keys(scores || {}).map((key) => [key, key]));
+  const cards = [
+    `<div class="score-card rating-card"><strong>${escapeHtml(rating || "-")}</strong><span>评级提示</span></div>`,
+    ...Object.entries(labels).map(([key, label]) => {
+      const value = scores[key] ?? "-";
+      return `<div class="score-card"><strong>${escapeHtml(value)}/5</strong><span>${label}</span></div>`;
+    }),
+  ];
+  scorePanel.innerHTML = cards.join("");
+  scorePanel.hidden = false;
+}
+
+function numericColumns(dataset) {
+  const records = dataset.records || [];
+  return (dataset.columns || []).filter((col) => {
+    let count = 0;
+    for (const row of records.slice(0, 80)) {
+      if (Number.isFinite(toNumber(row[col.key]))) count += 1;
+    }
+    return count >= Math.min(3, records.length || 3);
+  });
+}
+
+function preferredMetric(datasetKey, metrics) {
+  const preference = {
+    daily: ["close", "pct_chg", "amount", "vol"],
+    weekly: ["close", "pct_chg", "amount"],
+    monthly: ["close", "pct_chg", "amount"],
+    sw_daily: ["close", "pct_change", "amount"],
+    daily_basic: ["pe_ttm", "pb", "total_mv", "turnover_rate"],
+    moneyflow: ["net_mf_amount", "buy_lg_amount", "sell_lg_amount"],
+    margin_detail: ["rzrqye", "rzye", "rqye"],
+    income: ["revenue", "total_revenue", "n_income_attr_p", "n_income"],
+    balancesheet: ["total_assets", "total_liab", "money_cap"],
+    cashflow: ["n_cashflow_act", "free_cashflow", "net_profit"],
+    fina_indicator: ["roe", "netprofit_yoy", "grossprofit_margin"],
+    fina_mainbz: ["bz_sales", "bz_profit", "bz_cost"],
+    dividend: ["cash_div", "stk_div"],
+    top10_holders: ["hold_ratio", "hold_amount"],
+    top10_floatholders: ["hold_ratio", "hold_amount"],
+    stk_holdernumber: ["holder_num"],
+    pledge_stat: ["pledge_ratio", "pledge_count"],
+    block_trade: ["amount", "price", "vol"],
+  };
+  const keys = metrics.map((item) => item.key);
+  return (preference[datasetKey] || []).find((key) => keys.includes(key)) || keys[0] || "";
+}
+
+function preferredSecondaryMetric(datasetKey, metrics, primaryKey) {
+  const keys = metrics.map((item) => item.key);
+  const preference = {
+    daily: ["vol", "amount", "turnover_rate", "pct_chg"],
+    weekly: ["vol", "amount", "pct_chg"],
+    monthly: ["vol", "amount", "pct_chg"],
+    sw_daily: ["vol", "amount", "pct_change"],
+    daily_basic: ["turnover_rate", "volume_ratio", "total_mv", "circ_mv"],
+    moneyflow: ["net_mf_amount", "buy_lg_amount", "sell_lg_amount"],
+  };
+  return (preference[datasetKey] || ["vol", "amount"])
+    .find((key) => key !== primaryKey && keys.includes(key)) || "";
+}
+
+function chartKind(dataset) {
+  if (["fina_mainbz", "top10_holders", "top10_floatholders", "pledge_stat"].includes(dataset.key)) {
+    return "pie";
+  }
+  if (dateColumnKey(dataset)) return "line";
+  if (categoricalKey(dataset)) return "bar";
+  return "none";
+}
+
+function dateColumnKey(dataset) {
+  const keys = (dataset.columns || []).map((col) => col.key);
+  return ["trade_date", "ann_date", "end_date", "f_ann_date", "start_date", "float_date"].find((key) => keys.includes(key));
+}
+
+function categoricalKey(dataset) {
+  const keys = (dataset.columns || []).map((col) => col.key);
+  return ["bz_item", "holder_name", "name", "title", "buyer", "seller", "l3_name", "l2_name", "l1_name", "audit_result", "div_proc"].find((key) => keys.includes(key));
+}
+
+function aggregateByCategory(records, labelKey, valueKey) {
+  const totals = new Map();
+  for (const row of records) {
+    const label = String(row[labelKey] || "未分类").slice(0, 40);
+    const value = toNumber(row[valueKey]);
+    if (!Number.isFinite(value)) continue;
+    totals.set(label, (totals.get(label) || 0) + Math.abs(value));
+  }
+  return Array.from(totals, ([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
+}
+
+function shouldDrawCandlestick(data, metric) {
+  if (!["open", "high", "low", "close"].includes(metric)) return false;
+  if (data.length < 2) return false;
+  if (!data.every((item) => ["open", "high", "low", "close"].every((key) => Number.isFinite(item[key])))) return false;
+  const rect = dataChart.getBoundingClientRect();
+  const plotWidth = Math.max(0, (rect.width || dataChart.clientWidth || 960) - 160);
+  return plotWidth / data.length >= 7;
+}
+
+function hasSecondaryData(data) {
+  return data.some((item) => Number.isFinite(item.secondary));
+}
+
+function canvasContext() {
+  const rect = dataChart.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.max(360, Math.floor(rect.width || dataChart.clientWidth || 960));
+  const height = 420;
+  dataChart.width = width * ratio;
+  dataChart.height = height * ratio;
+  const ctx = dataChart.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.font = "13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+  return { ctx, width, height };
+}
+
+function drawEmptyChart(message) {
+  const { ctx, width, height } = canvasContext();
+  ctx.fillStyle = "#667085";
+  ctx.textAlign = "center";
+  ctx.fillText(message, width / 2, height / 2);
+}
+
+function drawLineChart(data, metricLabel, secondary = null) {
+  const { ctx, width, height } = canvasContext();
+  if (data.length < 2) {
+    lineHitPoints = [];
+    linePlotArea = null;
+    drawEmptyChart("数据点太少，无法绘制线图");
+    return;
+  }
+  const margin = { top: 34, right: 72, bottom: 66, left: 88 };
+  const plotW = width - margin.left - margin.right;
+  const showSecondary = secondary && hasSecondaryData(data);
+  const secondaryH = showSecondary ? 68 : 0;
+  const secondaryGap = showSecondary ? 34 : 0;
+  const plotH = height - margin.top - margin.bottom - secondaryH - secondaryGap;
+  const secondaryArea = showSecondary
+    ? { top: margin.top + plotH + secondaryGap, bottom: margin.top + plotH + secondaryGap + secondaryH, height: secondaryH }
+    : null;
+  const values = data.map((item) => item.value);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const rawSpan = rawMax - rawMin || Math.max(Math.abs(rawMax), 1);
+  const min = rawMin - rawSpan * 0.08;
+  const max = rawMax + rawSpan * 0.08;
+  const span = max - min || 1;
+
+  drawAxes(ctx, margin, plotW, plotH, min, max);
+  ctx.strokeStyle = "#2f80ed";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  linePlotArea = { left: margin.left, right: margin.left + plotW, top: margin.top, bottom: secondaryArea?.bottom || margin.top + plotH };
+  lineHitPoints = data.map((item, index) => {
+    const x = margin.left + (plotW * index) / (data.length - 1);
+    const y = margin.top + plotH - ((item.value - min) / span) * plotH;
+    return { ...item, x, y, index };
+  });
+  if (lineHoverIndex >= lineHitPoints.length) lineHoverIndex = lineHitPoints.length - 1;
+  data.forEach((item, index) => {
+    const { x, y } = lineHitPoints[index];
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  if (secondaryArea) drawSecondaryBars(ctx, data, margin, plotW, secondaryArea, secondary.label);
+  drawLineCrosshair(ctx, margin, plotW, plotH, metricLabel, secondaryArea);
+  ctx.fillStyle = "#17202a";
+  ctx.textAlign = "left";
+  ctx.fillText(fitText(ctx, metricLabel, width - margin.left - margin.right), margin.left, 22);
+  drawXAxisLabels(ctx, data, margin, plotW, plotH);
+}
+
+function drawCandlestickChart(data, secondary = null) {
+  const { ctx, width, height } = canvasContext();
+  if (data.length < 2) {
+    lineHitPoints = [];
+    linePlotArea = null;
+    drawEmptyChart("数据点太少，无法绘制K线图");
+    return;
+  }
+  const margin = { top: 34, right: 72, bottom: 66, left: 88 };
+  const plotW = width - margin.left - margin.right;
+  const showSecondary = secondary && hasSecondaryData(data);
+  const secondaryH = showSecondary ? 68 : 0;
+  const secondaryGap = showSecondary ? 34 : 0;
+  const plotH = height - margin.top - margin.bottom - secondaryH - secondaryGap;
+  const secondaryArea = showSecondary
+    ? { top: margin.top + plotH + secondaryGap, bottom: margin.top + plotH + secondaryGap + secondaryH, height: secondaryH }
+    : null;
+  const lows = data.map((item) => item.low);
+  const highs = data.map((item) => item.high);
+  const rawMin = Math.min(...lows);
+  const rawMax = Math.max(...highs);
+  const rawSpan = rawMax - rawMin || Math.max(Math.abs(rawMax), 1);
+  const min = rawMin - rawSpan * 0.08;
+  const max = rawMax + rawSpan * 0.08;
+  const span = max - min || 1;
+  const valueToY = (value) => margin.top + plotH - ((value - min) / span) * plotH;
+  const candleGap = data.length > 1 ? plotW / (data.length - 1) : plotW;
+  const bodyWidth = Math.max(3, Math.min(14, candleGap * 0.56));
+
+  drawAxes(ctx, margin, plotW, plotH, min, max);
+  linePlotArea = { left: margin.left, right: margin.left + plotW, top: margin.top, bottom: secondaryArea?.bottom || margin.top + plotH };
+  lineHitPoints = data.map((item, index) => {
+    const x = margin.left + (plotW * index) / (data.length - 1);
+    const y = valueToY(item.close);
+    return {
+      ...item,
+      x,
+      y,
+      index,
+      value: item.close,
+      tooltipLines: [
+        `收 ${formatNumber(item.close)}  开 ${formatNumber(item.open)}`,
+        `高 ${formatNumber(item.high)}  低 ${formatNumber(item.low)}`,
+        item.label,
+      ],
+    };
+  });
+  if (lineHoverIndex >= lineHitPoints.length) lineHoverIndex = lineHitPoints.length - 1;
+
+  for (const point of lineHitPoints) {
+    const rising = point.close >= point.open;
+    const color = rising ? "#eb5757" : "#27ae60";
+    const highY = valueToY(point.high);
+    const lowY = valueToY(point.low);
+    const openY = valueToY(point.open);
+    const closeY = valueToY(point.close);
+    const bodyTop = Math.min(openY, closeY);
+    const bodyH = Math.max(2, Math.abs(closeY - openY));
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(point.x, highY);
+    ctx.lineTo(point.x, lowY);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    if (rising) {
+      ctx.strokeRect(point.x - bodyWidth / 2, bodyTop, bodyWidth, bodyH);
+    } else {
+      ctx.fillRect(point.x - bodyWidth / 2, bodyTop, bodyWidth, bodyH);
+    }
+  }
+
+  if (secondaryArea) drawSecondaryBars(ctx, data, margin, plotW, secondaryArea, secondary.label);
+  drawLineCrosshair(ctx, margin, plotW, plotH, "收盘价", secondaryArea);
+  ctx.fillStyle = "#17202a";
+  ctx.textAlign = "left";
+  ctx.fillText("K线图", margin.left, 22);
+  drawXAxisLabels(ctx, data, margin, plotW, plotH);
+}
+
+function drawSecondaryBars(ctx, data, margin, plotW, area, label) {
+  const values = data.map((item) => item.secondary).filter(Number.isFinite);
+  if (!values.length) return;
+  const max = Math.max(...values.map(Math.abs)) || 1;
+  const gap = data.length > 1 ? plotW / (data.length - 1) : plotW;
+  const barW = Math.max(2, Math.min(12, gap * 0.58));
+
+  ctx.save();
+  ctx.strokeStyle = "#eef1f5";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, area.top);
+  ctx.lineTo(margin.left + plotW, area.top);
+  ctx.moveTo(margin.left, area.bottom);
+  ctx.lineTo(margin.left + plotW, area.bottom);
+  ctx.stroke();
+
+  data.forEach((item, index) => {
+    if (!Number.isFinite(item.secondary)) return;
+    const x = margin.left + (plotW * index) / Math.max(1, data.length - 1);
+    const h = Math.max(1, (Math.abs(item.secondary) / max) * area.height);
+    const rising = Number.isFinite(item.close) && Number.isFinite(item.open) ? item.close >= item.open : item.secondary >= 0;
+    ctx.fillStyle = rising ? "rgba(235, 87, 87, 0.72)" : "rgba(39, 174, 96, 0.72)";
+    ctx.fillRect(x - barW / 2, area.bottom - h, barW, h);
+  });
+
+  ctx.fillStyle = "#667085";
+  ctx.textAlign = "left";
+  ctx.font = "12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+  ctx.fillText(fitText(ctx, label, plotW * 0.45), margin.left, area.top - 10);
+  ctx.textAlign = "right";
+  ctx.fillText(formatNumber(max), margin.left - 10, area.top + 4);
+  ctx.restore();
+}
+
+function drawLineCrosshair(ctx, margin, plotW, plotH, metricLabel, secondaryArea = null) {
+  const point = lineHitPoints[lineHoverIndex];
+  if (!point) return;
+  const plotLeft = margin.left;
+  const plotRight = margin.left + plotW;
+  const plotTop = margin.top;
+  const plotBottom = margin.top + plotH;
+  const verticalBottom = secondaryArea?.bottom || plotBottom;
+
+  ctx.save();
+  ctx.strokeStyle = "#98a2b3";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(point.x, plotTop);
+  ctx.lineTo(point.x, verticalBottom);
+  ctx.moveTo(plotLeft, point.y);
+  ctx.lineTo(plotRight, point.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = "#2f80ed";
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  const valueLabel = formatNumber(point.value);
+  ctx.font = "12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+  const valueW = Math.min(76, Math.max(42, ctx.measureText(valueLabel).width + 16));
+  const valueX = Math.max(4, plotLeft - valueW - 8);
+  const valueY = clampNumber(point.y - 13, plotTop, plotBottom - 26);
+  roundedRect(ctx, valueX, valueY, valueW, 26, 4);
+  ctx.fillStyle = "#2f80ed";
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.fillText(fitText(ctx, valueLabel, valueW - 10), valueX + valueW / 2, valueY + 17);
+
+  const dateW = Math.max(88, ctx.measureText(point.label).width + 18);
+  const dateX = clampNumber(point.x - dateW / 2, plotLeft, plotRight - dateW);
+  const dateY = verticalBottom + 34;
+  roundedRect(ctx, dateX, dateY, dateW, 26, 4);
+  ctx.fillStyle = "#2f80ed";
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.fillText(point.label, dateX + dateW / 2, dateY + 17);
+
+  const secondaryLine = secondaryArea && Number.isFinite(point.secondary) ? `副图 ${formatNumber(point.secondary)}` : "";
+  const tooltipLines = (point.tooltipLines || [`${metricLabel} ${valueLabel}`, point.label])
+    .concat(secondaryLine ? [secondaryLine] : []);
+  const tooltipW = Math.min(240, Math.max(...tooltipLines.map((line) => ctx.measureText(line).width)) + 22);
+  const tooltipH = tooltipLines.length * 18 + 12;
+  const tooltipX = point.x + tooltipW + 14 > plotRight ? point.x - tooltipW - 14 : point.x + 14;
+  const tooltipY = clampNumber(point.y - tooltipH - 12, plotTop + 4, plotBottom - tooltipH - 4);
+  roundedRect(ctx, tooltipX, tooltipY, tooltipW, tooltipH, 6);
+  ctx.fillStyle = "rgba(23, 32, 42, 0.9)";
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "left";
+  ctx.font = "700 12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+  tooltipLines.forEach((line, index) => {
+    ctx.font = index === 0 ? "700 12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" : "12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+    ctx.fillText(fitText(ctx, line, tooltipW - 18), tooltipX + 10, tooltipY + 18 + index * 18);
+  });
+  ctx.restore();
+}
+
+function drawBarChart(data, metricLabel) {
+  const { ctx, width, height } = canvasContext();
+  if (!data.length) {
+    drawEmptyChart("没有可绘制的分类数据");
+    return;
+  }
+  const margin = { top: 28, right: 24, bottom: 100, left: 72 };
+  const plotW = width - margin.left - margin.right;
+  const plotH = height - margin.top - margin.bottom;
+  const max = Math.max(...data.map((item) => item.value)) || 1;
+  drawAxes(ctx, margin, plotW, plotH, 0, max);
+  const gap = 6;
+  const barW = Math.max(8, (plotW - gap * (data.length - 1)) / data.length);
+  data.forEach((item, index) => {
+    const x = margin.left + index * (barW + gap);
+    const h = (item.value / max) * plotH;
+    const y = margin.top + plotH - h;
+    ctx.fillStyle = "#2f80ed";
+    ctx.fillRect(x, y, barW, h);
+    ctx.save();
+    ctx.translate(x + barW / 2, margin.top + plotH + 12);
+    ctx.rotate(-Math.PI / 4);
+    ctx.fillStyle = "#667085";
+    ctx.textAlign = "right";
+    ctx.fillText(item.label.slice(0, 12), 0, 0);
+    ctx.restore();
+  });
+  ctx.fillStyle = "#17202a";
+  ctx.textAlign = "left";
+  ctx.fillText(metricLabel, margin.left, 18);
+}
+
+function drawPieChart(data, metricLabel) {
+  const { ctx, width, height } = canvasContext();
+  if (!data.length) {
+    drawEmptyChart("没有可绘制的占比数据");
+    return;
+  }
+  const total = data.reduce((sum, item) => sum + item.value, 0) || 1;
+  const colors = ["#2f80ed", "#27ae60", "#f2994a", "#eb5757", "#9b51e0", "#00a3a3", "#344054", "#56ccf2", "#f2c94c", "#6fcf97"];
+  const legendX = Math.max(width * 0.56, 430);
+  const legendWidth = Math.max(160, width - legendX - 24);
+  const radius = Math.min(height * 0.32, Math.max(110, (legendX - 96) * 0.42));
+  const cx = Math.max(150, Math.min(legendX * 0.42, legendX - radius - 42));
+  const cy = height * 0.52;
+  let start = -Math.PI / 2;
+  pieSlices = [];
+  data.forEach((item, index) => {
+    const angle = (item.value / total) * Math.PI * 2;
+    const end = start + angle;
+    const mid = start + angle / 2;
+    const isHovered = index === hoveredPieIndex;
+    const offset = isHovered ? 10 : 0;
+    const sliceCx = cx + Math.cos(mid) * offset;
+    const sliceCy = cy + Math.sin(mid) * offset;
+    ctx.beginPath();
+    ctx.moveTo(sliceCx, sliceCy);
+    ctx.arc(sliceCx, sliceCy, radius, start, end);
+    ctx.closePath();
+    ctx.fillStyle = colors[index % colors.length];
+    ctx.fill();
+    if (isHovered) {
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 4;
+      ctx.stroke();
+      ctx.strokeStyle = "#17202a";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    item.percentText = `${((item.value / total) * 100).toFixed(1)}%`;
+    pieSlices.push({ start, end, cx, cy, radius, item });
+    start = end;
+  });
+  ctx.fillStyle = "#17202a";
+  ctx.textAlign = "left";
+  ctx.fillText(metricLabel, 20, 22);
+  data.forEach((item, index) => {
+    const x = legendX;
+    const y = 62 + index * 30;
+    const isHovered = index === hoveredPieIndex;
+    ctx.fillStyle = colors[index % colors.length];
+    ctx.fillRect(x, y - 10, 14, 14);
+    ctx.fillStyle = "#17202a";
+    ctx.font = `${isHovered ? "700 " : ""}13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif`;
+    ctx.fillText(fitText(ctx, `${item.label} ${item.percentText}`, legendWidth - 22), x + 22, y);
+    ctx.font = "13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
+  });
+}
+
+function hitTestPie(event) {
+  const rect = dataChart.getBoundingClientRect();
+  const scaleX = dataChart.width / (window.devicePixelRatio || 1) / rect.width;
+  const scaleY = dataChart.height / (window.devicePixelRatio || 1) / rect.height;
+  const x = (event.clientX - rect.left) * scaleX;
+  const y = (event.clientY - rect.top) * scaleY;
+  for (let index = 0; index < pieSlices.length; index += 1) {
+    const slice = pieSlices[index];
+    const dx = x - slice.cx;
+    const dy = y - slice.cy;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance > slice.radius) continue;
+    let angle = Math.atan2(dy, dx);
+    if (angle < -Math.PI / 2) angle += Math.PI * 2;
+    if (angle >= slice.start && angle <= slice.end) return index;
+  }
+  return -1;
+}
+
+function hitTestLine(event) {
+  if (!lineHitPoints.length || !linePlotArea) return -1;
+  const rect = dataChart.getBoundingClientRect();
+  const scaleX = dataChart.width / (window.devicePixelRatio || 1) / rect.width;
+  const scaleY = dataChart.height / (window.devicePixelRatio || 1) / rect.height;
+  const x = (event.clientX - rect.left) * scaleX;
+  const y = (event.clientY - rect.top) * scaleY;
+  if (x < linePlotArea.left || x > linePlotArea.right || y < linePlotArea.top || y > linePlotArea.bottom) return -1;
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const point of lineHitPoints) {
+    const distance = Math.abs(point.x - x);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = point.index;
+    }
+  }
+  return nearestIndex;
+}
+
+function fitText(ctx, text, maxWidth) {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let result = text;
+  while (result.length > 2 && ctx.measureText(`${result}...`).width > maxWidth) {
+    result = result.slice(0, -1);
+  }
+  return `${result}...`;
+}
+
+function roundedRect(ctx, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawAxes(ctx, margin, plotW, plotH, min, max) {
+  ctx.strokeStyle = "#d0d5dd";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top);
+  ctx.lineTo(margin.left, margin.top + plotH);
+  ctx.lineTo(margin.left + plotW, margin.top + plotH);
+  ctx.stroke();
+  ctx.fillStyle = "#667085";
+  ctx.textAlign = "right";
+  const labelWidth = Math.max(36, margin.left - 16);
+  for (let i = 0; i <= 4; i += 1) {
+    const value = min + ((max - min) * i) / 4;
+    const y = margin.top + plotH - (plotH * i) / 4;
+    ctx.fillText(fitText(ctx, formatNumber(value), labelWidth), margin.left - 10, y + 4);
+    ctx.strokeStyle = "#eef1f5";
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(margin.left + plotW, y);
+    ctx.stroke();
+  }
+}
+
+function drawXAxisLabels(ctx, data, margin, plotW, plotH) {
+  ctx.fillStyle = "#667085";
+  const positions = [
+    { index: 0, align: "left", maxWidth: Math.max(70, plotW * 0.28) },
+    { index: Math.floor(data.length / 2), align: "center", maxWidth: Math.max(70, plotW * 0.26) },
+    { index: data.length - 1, align: "right", maxWidth: Math.max(70, plotW * 0.28) },
+  ];
+  const seen = new Set();
+  for (const item of positions) {
+    const index = Math.max(0, Math.min(data.length - 1, item.index));
+    if (seen.has(index)) continue;
+    seen.add(index);
+    const x = margin.left + (plotW * index) / Math.max(1, data.length - 1);
+    ctx.textAlign = item.align;
+    ctx.fillText(fitText(ctx, data[index].label, item.maxWidth), x, margin.top + plotH + 32);
+  }
+}
+
+function labelForKey(columns, key) {
+  return columns.find((col) => col.key === key)?.label || key || "";
+}
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === "") return NaN;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function cellText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function formatDateLabel(value) {
+  const text = String(value || "");
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  return text;
+}
+
+function formatNumber(value) {
+  const abs = Math.abs(value);
+  if (abs >= 100000000) return `${(value / 100000000).toFixed(1)}亿`;
+  if (abs >= 10000) return `${(value / 10000).toFixed(1)}万`;
+  if (abs >= 100) return value.toFixed(0);
+  if (abs >= 1) return value.toFixed(2);
+  return value.toFixed(4);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}

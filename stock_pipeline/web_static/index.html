@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>价值投机分析</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="search-panel">
+        <div class="title-row">
+          <div>
+            <h1>价值投机</h1>
+            <p>输入代码、名称、首字母或拼音</p>
+          </div>
+          <button id="refreshBtn" type="button" title="刷新股票列表">刷新</button>
+        </div>
+
+        <label class="search-box">
+          <span>搜索</span>
+          <input id="searchInput" autocomplete="off" placeholder="例如 000001、平安银行、mygf、muyuangufen" />
+        </label>
+
+        <div id="status" class="status">输入关键词开始检索</div>
+        <div id="results" class="results"></div>
+      </section>
+
+      <section class="analysis-panel">
+        <div class="analysis-head">
+          <div>
+            <h2 id="selectedTitle">未选择股票</h2>
+            <p id="selectedMeta">从左侧搜索结果中选择一只股票</p>
+          </div>
+          <div class="actions">
+            <span class="scope-pill" title="抓取范围">全部历史</span>
+            <select id="analysisTypeSelect" title="分析类型">
+              <option value="value_speculation">价值投机</option>
+              <option value="value_quality">质量成长价值</option>
+              <option value="value_dividend">低估红利价值</option>
+              <option value="oversold_rebound">超跌反弹</option>
+            </select>
+            <select id="analysisHistorySelect" title="历史分析">
+              <option value="">暂无历史分析</option>
+            </select>
+            <button id="updateDataBtn" type="button" disabled>更新数据</button>
+            <button id="loadDataBtn" type="button" disabled>读取数据</button>
+            <button id="readAnalysisBtn" type="button" disabled>读取分析</button>
+            <button id="analyzeBtn" type="button" disabled>生成分析</button>
+            <button id="logoutBtn" type="button">退出</button>
+          </div>
+        </div>
+
+        <div id="scorePanel" class="score-panel" hidden></div>
+        <pre id="analysisOutput" class="analysis-output">选择一只股票后生成价值投机分析。</pre>
+
+        <section id="dataPanel" class="data-panel" hidden>
+          <div class="data-head">
+            <div>
+              <h3>股票全部数据</h3>
+              <p id="dataMeta">选择数据集查看明细</p>
+            </div>
+            <div class="data-controls">
+              <select id="datasetSelect" title="数据集"></select>
+              <div class="view-toggle" aria-label="展示形态">
+                <button id="tableViewBtn" type="button" class="active">表格</button>
+                <button id="chartViewBtn" type="button">图表</button>
+              </div>
+              <button id="tableFilterToggleBtn" type="button">开启筛选</button>
+              <select id="chartMetricSelect" title="图表指标" hidden></select>
+              <select id="chartSecondaryMetricSelect" title="副图指标" hidden></select>
+            </div>
+          </div>
+          <div id="datasetSummary" class="dataset-summary"></div>
+          <div id="tableFilterBar" class="table-filter-bar" hidden>
+            <label class="table-filter-search">
+              <span>表格搜索</span>
+              <input id="tableSearchInput" type="search" placeholder="搜索当前数据集的任意字段" />
+            </label>
+            <button id="clearTableFilterBtn" type="button">清除筛选</button>
+            <div id="tableFilterInfo" class="table-filter-info">未筛选</div>
+          </div>
+          <div id="chartPanel" class="chart-panel" hidden>
+            <canvas id="dataChart" width="960" height="420"></canvas>
+            <div id="lineRangeControls" class="line-range-controls" hidden>
+              <div class="line-window-head">
+                <span>显示范围</span>
+                <strong id="lineRangeText">全部数据</strong>
+              </div>
+              <div id="lineWindowSlider" class="line-window-slider" role="group" aria-label="线图显示范围">
+                <div class="line-window-track">
+                  <div id="lineWindowSelection" class="line-window-selection">
+                    <button id="lineWindowLeft" class="line-window-handle left" type="button" aria-label="调整左端位置"></button>
+                    <button id="lineWindowRight" class="line-window-handle right" type="button" aria-label="调整右端位置"></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="chartNote" class="chart-note"></div>
+          </div>
+          <div class="table-wrap">
+            <table id="dataTable"></table>
+          </div>
+          <div id="columnFilterPopover" class="column-filter-popover" hidden>
+            <div class="column-filter-title">
+              <strong id="columnFilterTitle">筛选字段</strong>
+              <button id="columnFilterCloseBtn" type="button" title="关闭筛选面板">×</button>
+            </div>
+            <label>
+              <span>条件</span>
+              <select id="columnFilterOperator">
+                <option value="contains">包含</option>
+                <option value="equals">等于</option>
+                <option value="not_equals">不等于</option>
+                <option value="gt">大于</option>
+                <option value="gte">大于等于</option>
+                <option value="lt">小于</option>
+                <option value="lte">小于等于</option>
+                <option value="empty">为空</option>
+                <option value="not_empty">非空</option>
+              </select>
+            </label>
+            <label>
+              <span>筛选值</span>
+              <input id="columnFilterValue" type="text" placeholder="输入筛选值" />
+            </label>
+            <label>
+              <span>快速选择</span>
+              <input id="columnFilterQuickSearch" type="search" placeholder="搜索本列值" />
+            </label>
+            <div id="columnFilterValues" class="column-filter-values"></div>
+            <div class="column-filter-actions">
+              <button id="columnFilterClearBtn" type="button">清除本列</button>
+              <button id="columnFilterApplyBtn" type="button">应用</button>
+            </div>
+          </div>
+          <div class="pager">
+            <button id="prevPageBtn" type="button">上一页</button>
+            <span id="pageInfo">第 1 页</span>
+            <button id="nextPageBtn" type="button">下一页</button>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
