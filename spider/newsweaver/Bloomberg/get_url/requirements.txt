@@ -1,0 +1,14 @@
+# Bloomberg URL获取器依赖
+
+# HTTP请求库
+requests>=2.32.0
+curl-cffi>=0.6.0  # 推荐，模拟真实Chrome浏览器
+
+# Chrome调试协议
+pychrome>=0.2.3
+
+# 数据库
+pymongo>=4.0.0
+
+# 环境变量
+python-dotenv>=1.0.0

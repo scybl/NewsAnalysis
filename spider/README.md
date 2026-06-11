@@ -1,6 +1,9 @@
-# TongHuaShun-Spider
+# News Spider
 
-一个同花顺财经新闻爬虫。
+一个新闻爬虫集合。当前包含：
+
+- 同花顺财经新闻爬虫，默认写入 MongoDB。
+- `newsweaver/` 下的 Bloomberg 和 Guardian 爬虫，来自 NewsWeaver 仓库，已移入本目录并去掉本地 `.env` 配置文件。
 
 ## Dependency
 
@@ -16,28 +19,31 @@ pip install -r requirments.txt
 
 ## Database
 
-默认读取 `localhost:3306 / root / root / news`，可以通过环境变量覆盖：
+默认写入 MongoDB 的 `news.articles`，可以通过环境变量覆盖：
 
 ```bash
-export MYSQL_HOST=localhost
-export MYSQL_PORT=3306
-export MYSQL_USER=root
-export MYSQL_PASSWORD=root
-export MYSQL_DATABASE=news
+export MONGODB_URI=
+export MONGO_HOST=localhost
+export MONGO_PORT=27017
+export MONGO_USER=
+export MONGO_PASSWORD=
+export MONGO_AUTHSOURCE=admin
+export MONGODB_DATABASE=news
+export MONGODB_COLLECTION=articles
 ```
 
-初始化数据库：
+如果使用完整连接串，设置 `MONGODB_URI` 即可：
 
 ```bash
-mysql -u root -p < news.sql
+export MONGODB_URI="mongodb://localhost:27017/"
 ```
 
-如果使用本次创建的临时 MySQL：
+首次运行会自动创建索引：
 
-```bash
-export MYSQL_PORT=3307
-export MYSQL_PASSWORD=
-```
+- `seq` 唯一稀疏索引
+- `url` 唯一稀疏索引
+- `title` 普通稀疏索引
+- `time`、`type + time`、`publisher + time` 查询索引
 
 ## Usage
 
@@ -87,6 +93,18 @@ python main.py --threads 1 --article-sleep 3,8 --page-sleep 10,30
 
 - 数据按 `seq` 优先去重，缺少 `seq` 时回退到 `url` 和 `title`。
 - `--new-only` 适合日常定时运行，能在连续遇到旧文章后尽早停止，减少请求量。
-- 首次运行会自动补齐旧数据库缺少的字段和索引；如需关闭，使用 `--no-migrate`。
+- 首次运行会自动创建 MongoDB 索引；如需关闭，使用 `--no-migrate`。
 - 日志默认写入 `logs/spider.log`。
 - 建议低频、少页数运行，仅用于学习和个人研究。
+
+## NewsWeaver
+
+NewsWeaver 已放到 `newsweaver/`：
+
+- `newsweaver/Bloomberg/get_url/`：获取 Bloomberg 最新文章 URL，写入 MongoDB URL 队列。
+- `newsweaver/Bloomberg/final_article/`：读取 URL 队列并抓取 Bloomberg 正文。
+- `newsweaver/Guardian/`：通过 Guardian Content API 抓取 Guardian 文章。
+- `newsweaver/schedule.txt`：原 Windows 定时任务安排。
+- `newsweaver/demo/`：文章数量统计静态 dashboard。
+
+这些脚本继续使用 MongoDB，本地 `.env` 没有合入。运行前请按各子目录 README 配置环境变量，例如 `MONGODB_DATABASE`、`MONGODB_COLLECTION`、`MONGO_*`、`SSH_*`、`GUARDIAN_API_KEY` 等。

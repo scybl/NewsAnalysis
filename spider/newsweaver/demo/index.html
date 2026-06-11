@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Publisher 文章数量统计 Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f7f8fa;
+            color: #202226;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .dashboard-container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .dashboard-header {
+            background: #ffffff;
+            border: 1px solid #e8e9eb;
+            border-radius: 4px;
+            padding: 20px 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+
+        .dashboard-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #202226;
+            margin-bottom: 16px;
+        }
+
+        .header-info {
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            font-size: 14px;
+            color: #73777f;
+        }
+
+        .header-info span {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .controls-panel {
+            background: #ffffff;
+            border: 1px solid #e8e9eb;
+            border-radius: 4px;
+            padding: 20px 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+
+        .controls-row {
+            display: flex;
+            gap: 16px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        .controls-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .control-group label {
+            font-size: 13px;
+            font-weight: 500;
+            color: #525860;
+        }
+
+        .control-group input,
+        .control-group select {
+            padding: 8px 12px;
+            border: 1px solid #c7cdd7;
+            border-radius: 4px;
+            font-size: 14px;
+            background: #ffffff;
+            color: #202226;
+            transition: border-color 0.2s;
+        }
+
+        .control-group input:focus,
+        .control-group select:focus {
+            outline: none;
+            border-color: #3274d9;
+            box-shadow: 0 0 0 3px rgba(50, 116, 217, 0.1);
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: 1px solid #c7cdd7;
+            border-radius: 4px;
+            background: #ffffff;
+            color: #202226;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            background: #f7f8fa;
+            border-color: #a4a9b3;
+        }
+
+        .btn.active {
+            background: #3274d9;
+            border-color: #3274d9;
+            color: #ffffff;
+        }
+
+        .btn-primary {
+            background: #3274d9;
+            border-color: #3274d9;
+            color: #ffffff;
+        }
+
+        .btn-primary:hover {
+            background: #1f60c4;
+            border-color: #1f60c4;
+        }
+
+        .stats-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: #ffffff;
+            border: 1px solid #e8e9eb;
+            border-radius: 4px;
+            padding: 20px 24px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+
+        .stat-card-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: #73777f;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-card-value {
+            font-size: 28px;
+            font-weight: 600;
+            color: #202226;
+        }
+
+        .stat-card-detail {
+            font-size: 12px;
+            color: #73777f;
+            margin-top: 4px;
+        }
+
+        .chart-panel {
+            background: #ffffff;
+            border: 1px solid #e8e9eb;
+            border-radius: 4px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+
+        #chart {
+            width: 100%;
+            height: 500px;
+            min-height: 400px;
+        }
+
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255, 255, 255, 0.9);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #e8e9eb;
+            border-top-color: #3274d9;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            margin-top: 16px;
+            color: #525860;
+            font-size: 14px;
+        }
+
+        .divider {
+            height: 1px;
+            background: #e8e9eb;
+            margin: 16px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- 头部信息 -->
+        <div class="dashboard-header">
+            <h1>Publisher 文章数量统计</h1>
+            <div class="header-info">
+                <span>
+                    <strong>当前日期:</strong>
+                    <span id="currentDate">-</span>
+                </span>
+                <span>
+                    <strong>更新时间:</strong>
+                    <span id="updateTime">-</span>
+                </span>
+            </div>
+        </div>
+
+        <!-- 控制面板 -->
+        <div class="controls-panel">
+            <div class="controls-row">
+                <div class="control-group">
+                    <label>快捷选择</label>
+                    <div class="btn-group">
+                        <button class="btn active" onclick="loadChartData('week')">最近7天</button>
+                        <button class="btn" onclick="loadChartData('month')">最近30天</button>
+                        <button class="btn" onclick="loadDateRange('3months')">最近3个月</button>
+                        <button class="btn" onclick="loadDateRange('year')">最近1年</button>
+                    </div>
+                </div>
+            </div>
+            <div class="divider"></div>
+            <div class="controls-row">
+                <div class="control-group">
+                    <label>自定义日期范围</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="date" id="startDate" />
+                        <input type="date" id="endDate" />
+                        <button class="btn btn-primary" onclick="loadCustomDateData()">查询</button>
+                    </div>
+                </div>
+                <div class="control-group">
+                    <button class="btn btn-primary" onclick="refreshData()">刷新数据</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 统计面板 -->
+        <div class="stats-panel">
+            <div class="stat-card">
+                <div class="stat-card-title">总文章数</div>
+                <div class="stat-card-value" id="totalArticles">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-title">Publisher 数量</div>
+                <div class="stat-card-value" id="publisherCount">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-title">日期范围</div>
+                <div class="stat-card-value" style="font-size: 18px;" id="dateRange">-</div>
+            </div>
+        </div>
+
+        <!-- 图表面板 -->
+        <div class="chart-panel">
+            <div id="chart"></div>
+        </div>
+    </div>
+
+    <!-- 加载动画 -->
+    <div id="loading" class="loading-overlay">
+        <div style="text-align: center;">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">加载中...</div>
+        </div>
+    </div>
+
+    <script>
+        // 配置
+        const API_BASE_URL = 'http://localhost:8000/portal/news/v1';
+        const API_ENDPOINT = `${API_BASE_URL}/api/chart/data`;
+
+        // 全局变量
+        let myChart = null;
+        let currentPeriod = 'week'; // 默认显示最近7天
+
+        // 颜色配置 - Grafana 风格配色方案（高对比度，易于区分）
+        const COLORS = [
+            '#3274d9',  // 主蓝色
+            '#e24d42',  // 红色
+            '#1f78c1',  // 深蓝色
+            '#f59d56',  // 橙色
+            '#73bf69',  // 绿色
+            '#eb46b1',  // 粉色
+            '#5195ce',  // 天蓝色
+            '#f2cc0c',  // 黄色
+            '#56a192',  // 青绿色
+            '#e877b0',  // 粉红色
+            '#4fb5d6',  // 浅蓝色
+            '#ff6b6b',  // 珊瑚红
+            '#51cf66',  // 浅绿色
+            '#ffd43b',  // 金黄色
+            '#845ef7'   // 紫色
+        ];
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            initChart();
+            updateCurrentDate();
+            loadChartData('week'); // 默认加载最近7天数据
+        });
+
+        // 初始化图表
+        function initChart() {
+            const chartDom = document.getElementById('chart');
+            myChart = echarts.init(chartDom);
+
+            // 设置初始配置 - Grafana 风格白色主题
+            const option = {
+                backgroundColor: 'transparent',
+                title: {
+                    text: 'Publisher 文章数量统计',
+                    left: 'center',
+                    top: 10,
+                    textStyle: {
+                        fontSize: 20,
+                        fontWeight: 600,
+                        color: '#202226'
+                    }
+                },
+                tooltip: {
+                    trigger: 'axis',
+                    backgroundColor: '#ffffff',
+                    borderColor: '#e8e9eb',
+                    borderWidth: 1,
+                    textStyle: {
+                        color: '#202226',
+                        fontSize: 13
+                    },
+                    axisPointer: {
+                        type: 'shadow',
+                        shadowStyle: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    },
+                    padding: [8, 12]
+                },
+                legend: {
+                    top: 50,
+                    type: 'scroll',
+                    orient: 'horizontal',
+                    textStyle: {
+                        color: '#525860',
+                        fontSize: 12
+                    },
+                    pageTextStyle: {
+                        color: '#202226'
+                    },
+                    itemGap: 20
+                },
+                grid: {
+                    left: '3%',
+                    right: '4%',
+                    bottom: '3%',
+                    top: 100,
+                    containLabel: true
+                },
+                xAxis: {
+                    type: 'category',
+                    data: [],
+                    axisLabel: {
+                        rotate: 45,
+                        fontSize: 11,
+                        color: '#73777f'
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: '#e8e9eb'
+                        }
+                    },
+                    splitLine: {
+                        show: false
+                    }
+                },
+                yAxis: {
+                    type: 'value',
+                    name: '文章数量',
+                    nameTextStyle: {
+                        color: '#525860',
+                        fontSize: 12
+                    },
+                    minInterval: 1,
+                    axisLabel: {
+                        color: '#73777f',
+                        fontSize: 11
+                    },
+                    axisLine: {
+                        lineStyle: {
+                            color: '#e8e9eb'
+                        }
+                    },
+                    splitLine: {
+                        lineStyle: {
+                            color: '#e8e9eb',
+                            type: 'solid',
+                            width: 1
+                        }
+                    }
+                },
+                series: []
+            };
+
+            myChart.setOption(option);
+
+            // 响应式调整
+            window.addEventListener('resize', function() {
+                myChart.resize();
+            });
+        }
+
+        // 更新当前日期显示
+        function updateCurrentDate() {
+            const now = new Date();
+            const dateStr = now.toLocaleDateString('zh-CN', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+                weekday: 'long'
+            });
+            document.getElementById('currentDate').textContent = dateStr;
+        }
+
+        // 更新快捷选择按钮状态
+        function updateButtonStates(activePeriod) {
+            const buttons = document.querySelectorAll('.btn-group .btn');
+            buttons.forEach(btn => {
+                btn.classList.remove('active');
+                if ((activePeriod === 'week' && btn.textContent.includes('7天')) ||
+                    (activePeriod === 'month' && btn.textContent.includes('30天'))) {
+                    btn.classList.add('active');
+                }
+            });
+        }
+        
+        // 计算日期范围并加载数据（用于3个月和1年）
+        function loadDateRange(range) {
+            const today = new Date();
+            let startDate;
+            
+            if (range === '3months') {
+                startDate = new Date(today.getTime() - 90 * 24 * 60 * 60 * 1000);
+            } else if (range === 'year') {
+                startDate = new Date(today.getTime() - 365 * 24 * 60 * 60 * 1000);
+            } else {
+                return;
+            }
+            
+            const startDateStr = startDate.toISOString().split('T')[0];
+            const endDateStr = today.toISOString().split('T')[0];
+            
+            // 设置日期输入框
+            document.getElementById('startDate').value = startDateStr;
+            document.getElementById('endDate').value = endDateStr;
+            
+            // 清除快捷选择的激活状态
+            document.querySelectorAll('.btn-group .btn').forEach(btn => btn.classList.remove('active'));
+            
+            // 加载数据
+            loadCustomDateData();
+        }
+
+        // 加载图表数据（快捷选择）
+        function loadChartData(period) {
+            // 只支持 week 和 month
+            if (period !== 'week' && period !== 'month') {
+                showError('不支持的 period 参数，只支持 week 和 month');
+                return;
+            }
+            
+            currentPeriod = period;
+            updateButtonStates(period);
+            showLoading(true);
+            const url = `${API_ENDPOINT}?period=${period}`;
+            
+            console.log('请求 URL:', url);
+            
+            fetch(url)
+                .then(async response => {
+                    const responseText = await response.text();
+                    console.log('响应状态:', response.status);
+                    console.log('响应内容:', responseText);
+                    
+                    if (!response.ok) {
+                        let errorMessage = `HTTP ${response.status} 错误`;
+                        try {
+                            const errorData = JSON.parse(responseText);
+                            errorMessage += ': ' + (errorData.message || errorData.error || responseText);
+                        } catch (e) {
+                            errorMessage += ': ' + responseText;
+                        }
+                        throw new Error(errorMessage);
+                    }
+                    
+                    try {
+                        return JSON.parse(responseText);
+                    } catch (e) {
+                        throw new Error('响应不是有效的 JSON: ' + responseText);
+                    }
+                })
+                .then(result => {
+                    if (result.code === 200 && result.data) {
+                        updateChart(result.data);
+                        updateStats(result.data);
+                        updateTime();
+                    } else {
+                        throw new Error(result.message || '数据格式错误: code=' + result.code);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading chart data:', error);
+                    showError('加载数据失败: ' + error.message);
+                })
+                .finally(() => {
+                    showLoading(false);
+                });
+        }
+
+        // 加载自定义日期范围数据
+        function loadCustomDateData() {
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            
+            if (!startDate || !endDate) {
+                alert('请选择开始日期和结束日期');
+                return;
+            }
+            
+            if (new Date(startDate) > new Date(endDate)) {
+                alert('开始日期不能晚于结束日期');
+                return;
+            }
+            
+            // 验证日期格式 YYYY-MM-DD
+            const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+            if (!dateRegex.test(startDate) || !dateRegex.test(endDate)) {
+                alert('日期格式不正确，请使用 YYYY-MM-DD 格式');
+                return;
+            }
+
+            // 清除快捷选择的激活状态
+            document.querySelectorAll('.btn-group .btn').forEach(btn => btn.classList.remove('active'));
+
+            showLoading(true);
+            const url = `${API_ENDPOINT}?startDate=${startDate}&endDate=${endDate}`;
+            
+            console.log('请求 URL:', url);
+            
+            fetch(url)
+                .then(async response => {
+                    const responseText = await response.text();
+                    console.log('响应状态:', response.status);
+                    console.log('响应内容:', responseText);
+                    
+                    if (!response.ok) {
+                        let errorMessage = `HTTP ${response.status} 错误`;
+                        try {
+                            const errorData = JSON.parse(responseText);
+                            errorMessage += ': ' + (errorData.message || errorData.error || responseText);
+                        } catch (e) {
+                            errorMessage += ': ' + responseText;
+                        }
+                        throw new Error(errorMessage);
+                    }
+                    
+                    try {
+                        return JSON.parse(responseText);
+                    } catch (e) {
+                        throw new Error('响应不是有效的 JSON: ' + responseText);
+                    }
+                })
+                .then(result => {
+                    if (result.code === 200 && result.data) {
+                        updateChart(result.data);
+                        updateStats(result.data);
+                        updateTime();
+                    } else {
+                        throw new Error(result.message || '数据格式错误: code=' + result.code);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading custom date data:', error);
+                    showError('加载数据失败: ' + error.message);
+                })
+                .finally(() => {
+                    showLoading(false);
+                });
+        }
+
+        // 刷新数据
+        function refreshData() {
+            const startDate = document.getElementById('startDate').value;
+            const endDate = document.getElementById('endDate').value;
+            
+            if (startDate && endDate) {
+                loadCustomDateData();
+            } else {
+                loadChartData(currentPeriod);
+            }
+        }
+
+        // 更新图表
+        function updateChart(data) {
+            if (!data || !data.dates || !data.publishers || !data.series) {
+                console.error('Invalid chart data:', data);
+                showError('数据格式无效');
+                return;
+            }
+
+            // 检查是否有数据
+            if (data.publishers.length === 0) {
+                console.warn('No publisher data available');
+                // 显示空数据提示
+                const option = {
+                    xAxis: {
+                        data: data.dates
+                    },
+                    legend: {
+                        data: []
+                    },
+                    series: [],
+                    graphic: [{
+                        type: 'text',
+                        left: 'center',
+                        top: 'middle',
+                        style: {
+                            text: '暂无数据',
+                            fontSize: 20,
+                            fill: '#73777f'
+                        }
+                    }]
+                };
+                myChart.setOption(option, false);
+                return;
+            }
+
+            // 构建series数组 - Grafana 风格配色
+            const series = data.publishers.map((publisher, index) => {
+                const color = COLORS[index % COLORS.length];
+                return {
+                    name: publisher,
+                    type: 'bar',
+                    data: data.series[publisher] || [],
+                    itemStyle: {
+                        color: color,
+                        borderRadius: [2, 2, 0, 0]
+                    },
+                    emphasis: {
+                        focus: 'series',
+                        itemStyle: {
+                            shadowBlur: 8,
+                            shadowColor: 'rgba(0, 0, 0, 0.15)',
+                            borderColor: color,
+                            borderWidth: 2
+                        }
+                    },
+                    barMaxWidth: 40
+                };
+            });
+
+            // 更新图表配置（使用merge模式，保留原有配置）
+            const option = {
+                xAxis: {
+                    data: data.dates
+                },
+                legend: {
+                    data: data.publishers
+                },
+                series: series,
+                graphic: null // 清除"暂无数据"提示
+            };
+
+            myChart.setOption(option, false); // 合并配置而不是替换
+        }
+
+        // 更新统计信息
+        function updateStats(data) {
+            // 计算总文章数
+            let totalArticles = 0;
+            for (const publisher in data.series) {
+                totalArticles += data.series[publisher].reduce((a, b) => a + b, 0);
+            }
+
+            // 更新统计面板
+            document.getElementById('totalArticles').textContent = totalArticles.toLocaleString();
+            document.getElementById('publisherCount').textContent = data.publishers.length;
+
+            // 更新日期范围
+            if (data.dates && data.dates.length > 0) {
+                const dateRange = `${data.dates[0]} 至 ${data.dates[data.dates.length - 1]}`;
+                document.getElementById('dateRange').textContent = dateRange;
+            }
+        }
+
+        // 更新时间
+        function updateTime() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('zh-CN', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            document.getElementById('updateTime').textContent = timeStr;
+        }
+
+        // 显示/隐藏加载动画
+        function showLoading(show) {
+            const loading = document.getElementById('loading');
+            loading.style.display = show ? 'flex' : 'none';
+        }
+
+        // 显示错误信息
+        function showError(message) {
+            alert(message);
+            // 可以使用更友好的提示方式，比如toast通知
+        }
+
+        // 初始化日期选择器的默认值
+        function initDatePickers() {
+            const today = new Date();
+            const endDate = today.toISOString().split('T')[0];
+            const startDate = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+            document.getElementById('startDate').value = startDate;
+            document.getElementById('endDate').value = endDate;
+        }
+
+        // 页面加载时初始化日期选择器
+        initDatePickers();
+    </script>
+</body>
+</html>
+

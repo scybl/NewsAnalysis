@@ -10,7 +10,7 @@ import threading
 import time
 
 from config import config
-from mysql import Mysql
+from mongodb import MongoNewsStore
 from page import Fetcher, Page, types as available_types
 
 
@@ -38,7 +38,7 @@ def parse_args():
     parser.add_argument("--max-page-failures", type=int, default=3, help="同一分类连续列表页失败多少次后停止")
     parser.add_argument("--log-file", default="logs/spider.log", help="日志文件路径")
     parser.add_argument("--dry-run", action="store_true", help="只抓取解析，不写入数据库")
-    parser.add_argument("--no-migrate", action="store_true", help="不自动补齐数据库字段和索引")
+    parser.add_argument("--no-migrate", action="store_true", help="不自动创建 MongoDB 索引")
     return parser.parse_args()
 
 
@@ -64,66 +64,21 @@ def normalize_types(type_names):
     return selected
 
 
-def ensure_schema(mysql):
-    columns = {row[0] for row in mysql.queryall("SHOW COLUMNS FROM news")}
-    desired_columns = {
-        "seq": "ALTER TABLE news ADD COLUMN seq varchar(32) DEFAULT NULL",
-        "url": "ALTER TABLE news ADD COLUMN url varchar(255) DEFAULT NULL",
-        "source": "ALTER TABLE news ADD COLUMN source varchar(128) DEFAULT NULL",
-        "summary": "ALTER TABLE news ADD COLUMN summary text DEFAULT NULL",
-        "created_at": "ALTER TABLE news ADD COLUMN created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP",
-    }
-    for column, sql in desired_columns.items():
-        if column not in columns:
-            logging.info("migrate add column %s", column)
-            mysql.execute(sql)
-
-    indexes = {row[2] for row in mysql.queryall("SHOW INDEX FROM news")}
-    if "uk_news_seq" not in indexes:
-        logging.info("migrate add unique index uk_news_seq")
-        mysql.execute("ALTER TABLE news ADD UNIQUE KEY uk_news_seq (seq)")
-    if "idx_news_time" not in indexes:
-        logging.info("migrate add index idx_news_time")
-        mysql.execute("ALTER TABLE news ADD KEY idx_news_time (time)")
-    if "idx_news_type_time" not in indexes:
-        logging.info("migrate add index idx_news_type_time")
-        mysql.execute("ALTER TABLE news ADD KEY idx_news_type_time (type(32), time)")
+def ensure_schema(store):
+    store.ensure_schema()
 
 
-def is_exist(mysql, info):
-    if info.get("seq"):
-        data = mysql.query("SELECT COUNT(*) FROM news WHERE seq = %s", (info.get("seq"),))
-        return bool(data and data[0])
-    if info.get("url"):
-        data = mysql.query("SELECT COUNT(*) FROM news WHERE url = %s", (info.get("url"),))
-        return bool(data and data[0])
-    data = mysql.query("SELECT COUNT(*) FROM news WHERE title = %s", (info.get("title"),))
-    return bool(data and data[0])
+def is_exist(store, info):
+    return store.is_exist(info)
 
 
-def insert(mysql, info):
-    sql = """
-        INSERT INTO news (seq, url, type, title, content, time, source, summary)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    """
-    mysql.insert(
-        sql,
-        (
-            info.get("seq"),
-            info.get("url"),
-            info.get("type"),
-            info.get("title"),
-            info.get("content"),
-            info.get("time"),
-            info.get("source"),
-            info.get("summary"),
-        ),
-    )
+def insert(store, info):
+    return store.insert(info)
 
 
 def spider(kind, args, semaphore):
     with semaphore:
-        mysql = None if args.dry_run else Mysql(config)
+        store = None if args.dry_run else MongoNewsStore(config)
         fetcher = Fetcher()
         pn = 1
         stale_count = 0
@@ -133,65 +88,73 @@ def spider(kind, args, semaphore):
         parsed = 0
         page_failures = 0
 
-        while True:
-            if args.max_pages and pn > args.max_pages:
-                logging.info("%s finish: reached max pages %s", kind, args.max_pages)
-                break
-
-            try:
-                page = Page(kind, pn, fetcher=fetcher, article_sleep=args.article_sleep)
-                articles = page.get_articles()
-                page_failures = 0
-            except Exception as exc:
-                page_failures += 1
-                logging.exception("page failed kind=%s page=%s error=%s", kind, pn, exc)
-                if page_failures >= args.max_page_failures:
-                    logging.error("%s finish: reached max page failures %s", kind, args.max_page_failures)
+        try:
+            while True:
+                if args.max_pages and pn > args.max_pages:
+                    logging.info("%s finish: reached max pages %s", kind, args.max_pages)
                     break
+
+                try:
+                    page = Page(kind, pn, fetcher=fetcher, article_sleep=args.article_sleep)
+                    articles = page.get_articles()
+                    page_failures = 0
+                except Exception as exc:
+                    page_failures += 1
+                    logging.exception("page failed kind=%s page=%s error=%s", kind, pn, exc)
+                    if page_failures >= args.max_page_failures:
+                        logging.error("%s finish: reached max page failures %s", kind, args.max_page_failures)
+                        break
+                    time.sleep(random.uniform(*args.page_sleep))
+                    continue
+
+                if not articles:
+                    logging.info("%s finish: no articles at page %s", kind, pn)
+                    break
+
+                for article in articles:
+                    info = article.get_info_dict()
+                    parsed += 1
+
+                    if info.get("time") < args.since:
+                        stale_count += 1
+                        if stale_count >= args.stale_stop_count:
+                            logging.info("%s finish: %s stale articles since %s", kind, stale_count, args.since)
+                            return
+                        continue
+                    stale_count = 0
+
+                    if args.dry_run:
+                        logging.info("dry-run kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
+                        continue
+
+                    if is_exist(store, info):
+                        skipped += 1
+                        existing_count += 1
+                        logging.info("skip exists kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
+                        if args.new_only and existing_count >= args.existing_stop_count:
+                            logging.info(
+                                "%s finish: %s continuous existing articles in new-only mode",
+                                kind,
+                                existing_count,
+                            )
+                            return
+                        continue
+
+                    if insert(store, info):
+                        inserted += 1
+                        existing_count = 0
+                        logging.info("insert kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
+                    else:
+                        skipped += 1
+                        existing_count += 1
+                        logging.info("skip duplicate kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
+
+                logging.info("%s page=%s parsed=%s inserted=%s skipped=%s", kind, pn, parsed, inserted, skipped)
+                pn += 1
                 time.sleep(random.uniform(*args.page_sleep))
-                continue
-
-            if not articles:
-                logging.info("%s finish: no articles at page %s", kind, pn)
-                break
-
-            for article in articles:
-                info = article.get_info_dict()
-                parsed += 1
-
-                if info.get("time") < args.since:
-                    stale_count += 1
-                    if stale_count >= args.stale_stop_count:
-                        logging.info("%s finish: %s stale articles since %s", kind, stale_count, args.since)
-                        return
-                    continue
-                stale_count = 0
-
-                if args.dry_run:
-                    logging.info("dry-run kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
-                    continue
-
-                if is_exist(mysql, info):
-                    skipped += 1
-                    existing_count += 1
-                    logging.info("skip exists kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
-                    if args.new_only and existing_count >= args.existing_stop_count:
-                        logging.info(
-                            "%s finish: %s continuous existing articles in new-only mode",
-                            kind,
-                            existing_count,
-                        )
-                        return
-                    continue
-
-                insert(mysql, info)
-                inserted += 1
-                existing_count = 0
-                logging.info("insert kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
-
-            logging.info("%s page=%s parsed=%s inserted=%s skipped=%s", kind, pn, parsed, inserted, skipped)
-            pn += 1
-            time.sleep(random.uniform(*args.page_sleep))
+        finally:
+            if store:
+                store.close()
 
 
 def main():
@@ -200,9 +163,9 @@ def main():
     selected_types = normalize_types(args.types)
 
     if not args.dry_run and not args.no_migrate:
-        mysql = Mysql(config)
-        ensure_schema(mysql)
-        mysql.close()
+        store = MongoNewsStore(config)
+        ensure_schema(store)
+        store.close()
 
     semaphore = threading.BoundedSemaphore(max(1, args.threads))
     thread_list = []
