@@ -25,6 +25,8 @@ pip install -r requirments.txt
 export MONGODB_URI=
 export MONGO_HOST=localhost
 export MONGO_PORT=27017
+export MONGO_DB=news
+export MONGO_COLLECTION=articles
 export MONGO_USER=
 export MONGO_PASSWORD=
 export MONGO_AUTHSOURCE=admin
@@ -107,4 +109,4 @@ NewsWeaver 已放到 `newsweaver/`：
 - `newsweaver/schedule.txt`：原 Windows 定时任务安排。
 - `newsweaver/demo/`：文章数量统计静态 dashboard。
 
-这些脚本继续使用 MongoDB，本地 `.env` 没有合入。运行前请按各子目录 README 配置环境变量，例如 `MONGODB_DATABASE`、`MONGODB_COLLECTION`、`MONGO_*`、`SSH_*`、`GUARDIAN_API_KEY` 等。
+这些脚本继续使用 MongoDB，并会读取项目根目录 `.env`。运行前请按各子目录 README 或根目录 `.env.sample` 配置环境变量，例如 `MONGODB_DATABASE`、`MONGODB_COLLECTION`、`MONGO_*`、`SSH_*`、`GUARDIAN_API_KEY` 等。

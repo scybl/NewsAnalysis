@@ -1,0 +1,12 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: newsanalysis-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-Rich@2026}
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./local_data/mongo:/data/db

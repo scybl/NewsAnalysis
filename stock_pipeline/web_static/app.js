@@ -13,10 +13,20 @@ const multiAgentBtn = document.querySelector("#multiAgentBtn");
 const agentRunSelect = document.querySelector("#agentRunSelect");
 const readAgentRunBtn = document.querySelector("#readAgentRunBtn");
 const themeToggleBtn = document.querySelector("#themeToggleBtn");
+const adminPanelLink = document.querySelector("#adminPanelLink");
 const logoutBtn = document.querySelector("#logoutBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
 const output = document.querySelector("#analysisOutput");
 const scorePanel = document.querySelector("#scorePanel");
+const metricLatestPrice = document.querySelector("#metricLatestPrice");
+const metricPe = document.querySelector("#metricPe");
+const metricPb = document.querySelector("#metricPb");
+const metricDividend = document.querySelector("#metricDividend");
+const agentDashboard = document.querySelector("#agentDashboard");
+const agentDashboardMeta = document.querySelector("#agentDashboardMeta");
+const agentFinalScore = document.querySelector("#agentFinalScore");
+const agentProgressPanel = document.querySelector("#agentProgressPanel");
+const agentCards = document.querySelector("#agentCards");
 const dataPanel = document.querySelector("#dataPanel");
 const dataMeta = document.querySelector("#dataMeta");
 const datasetSelect = document.querySelector("#datasetSelect");
@@ -78,9 +88,12 @@ const defaultAnalysisFrameworks = [
   { key: "oversold_rebound", label: "超跌反弹" },
 ];
 let analysisFrameworks = defaultAnalysisFrameworks;
+let currentSession = null;
 
 initializeTheme();
+initializeSession();
 loadAnalysisFrameworks();
+loadInitialStockList();
 
 function initializeTheme() {
   let savedTheme = "light";
@@ -268,6 +281,7 @@ async function pollMultiAgentJob(jobId, framework, token) {
     });
     const payload = await readApiPayload(response, "读取多 Agent 进度失败");
     lastPayload = payload;
+    renderAgentProgress(payload, framework);
     output.textContent = formatMultiAgentJobProgress(payload, framework);
     if (payload.status === "succeeded") break;
     if (payload.status === "failed") throw new Error(formatMultiAgentJobProgress(payload, framework));
@@ -331,6 +345,7 @@ loadDataBtn.addEventListener("click", async () => {
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || "读取失败");
     loadedDatasets = payload.datasets || [];
+    renderStockMetricsFromDatasets(loadedDatasets);
     renderDatasetOptions();
     dataMeta.textContent = `本地目录：${payload.local_dir}`;
     if (loadedDatasets.length) {
@@ -478,6 +493,30 @@ async function search(query) {
   }
 }
 
+async function loadInitialStockList() {
+  if (input.value.trim()) return;
+  statusEl.textContent = "正在加载股票列表...";
+  try {
+    const response = await fetch("/api/search?q=000");
+    const payload = await response.json();
+    renderResults(payload.items || []);
+    if (!input.value.trim()) statusEl.textContent = payload.items?.length ? "默认展示部分 A 股，输入关键词可筛选" : "输入关键词开始检索";
+  } catch (error) {
+    statusEl.textContent = `股票列表加载失败：${error.message}`;
+  }
+}
+
+async function initializeSession() {
+  try {
+    const response = await fetch("/api/session");
+    const payload = await readApiPayload(response, "读取会话失败");
+    currentSession = payload;
+    if (payload.role === "admin" && adminPanelLink) {
+      adminPanelLink.hidden = false;
+    }
+  } catch {}
+}
+
 function renderResults(items) {
   statusEl.textContent = items.length ? `找到 ${items.length} 个结果` : "没有匹配结果";
   results.innerHTML = "";
@@ -502,6 +541,8 @@ function selectStock(item) {
   selected = item;
   selectedTitle.textContent = `${item.name}（${item.ts_code}）`;
   selectedMeta.textContent = [item.industry, item.area, item.market, item.list_date && `上市日 ${item.list_date}`].filter(Boolean).join(" · ");
+  resetStockMetrics();
+  resetAgentDashboard();
   analyzeBtn.disabled = true;
   multiAgentBtn.disabled = false;
   updateDataBtn.disabled = false;
@@ -518,6 +559,7 @@ function selectStock(item) {
   for (const button of results.querySelectorAll(".result")) {
     button.classList.toggle("active", button.textContent.includes(item.ts_code));
   }
+  loadStockSnapshotMetrics(item.ts_code);
   checkSelectedStatus();
   refreshAnalysisResults();
   refreshAgentRuns();
@@ -542,6 +584,7 @@ async function syncSelectedData() {
     if (!payload.ok) throw new Error(payload.error || "更新失败");
     if (token !== syncToken) return;
     loadedDatasets = payload.datasets || [];
+    renderStockMetricsFromDatasets(loadedDatasets);
     const meta = payload.metadata || {};
     const snapshotCount = meta.snapshots?.length || 0;
     const range = meta.date_range ? `${formatDateLabel(meta.date_range.start_date)} 至 ${formatDateLabel(meta.date_range.end_date)}` : "未知";
@@ -690,6 +733,7 @@ function formatAgentConversation(messages) {
 function renderMultiAgentResult(payload, metaItems = []) {
   const conversation = payload.agent_conversation || [];
   const enrichedMetaItems = [...metaItems, ...learningMetaItems(payload.learning_context)];
+  renderAgentDashboard(payload);
   output.innerHTML = `
     <article class="agent-report">
       <header class="report-hero">
@@ -707,6 +751,193 @@ function renderMultiAgentResult(payload, metaItems = []) {
       ${renderMarkdownReport(payload.answer || "")}
     </article>
   `;
+}
+
+async function loadStockSnapshotMetrics(tsCode) {
+  try {
+    const response = await fetch("/api/local-stock-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: tsCode }),
+    });
+    const payload = await response.json();
+    if (!payload.ok || selected?.ts_code !== tsCode) return;
+    loadedDatasets = payload.datasets || loadedDatasets;
+    renderStockMetricsFromDatasets(payload.datasets || []);
+  } catch {
+    resetStockMetrics();
+  }
+}
+
+function resetStockMetrics() {
+  for (const element of [metricLatestPrice, metricPe, metricPb, metricDividend]) {
+    if (element) element.textContent = "-";
+  }
+}
+
+function renderStockMetricsFromDatasets(datasets) {
+  const dailyBasic = latestRecord(findDataset(datasets, "daily_basic")?.records || [], "trade_date");
+  const daily = latestRecord(findDataset(datasets, "daily")?.records || [], "trade_date");
+  const latestPrice = firstFinite(dailyBasic?.close, daily?.close);
+  const pe = firstFinite(dailyBasic?.pe_ttm, dailyBasic?.pe);
+  const pb = firstFinite(dailyBasic?.pb);
+  const dividend = firstFinite(dailyBasic?.dv_ttm);
+  if (metricLatestPrice) metricLatestPrice.textContent = formatMetric(latestPrice, 2);
+  if (metricPe) metricPe.textContent = formatMetric(pe, 2);
+  if (metricPb) metricPb.textContent = formatMetric(pb, 2);
+  if (metricDividend) metricDividend.textContent = Number.isFinite(dividend) ? `${formatMetric(dividend, 2)}%` : "-";
+}
+
+function findDataset(datasets, key) {
+  return (datasets || []).find((item) => item.key === key);
+}
+
+function latestRecord(records, dateKey) {
+  return [...(records || [])]
+    .filter((row) => row && row[dateKey])
+    .sort((a, b) => String(b[dateKey]).localeCompare(String(a[dateKey])))[0] || records?.[0] || null;
+}
+
+function firstFinite(...values) {
+  for (const value of values) {
+    const number = toNumber(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function formatMetric(value, digits = 2) {
+  if (!Number.isFinite(value)) return "-";
+  return value.toLocaleString("zh-CN", { maximumFractionDigits: digits, minimumFractionDigits: value % 1 === 0 ? 0 : Math.min(2, digits) });
+}
+
+function resetAgentDashboard() {
+  if (agentDashboard) agentDashboard.hidden = true;
+  if (agentProgressPanel) {
+    agentProgressPanel.hidden = true;
+    agentProgressPanel.innerHTML = "";
+  }
+  if (agentCards) agentCards.innerHTML = "";
+  if (agentFinalScore) agentFinalScore.textContent = "-";
+  if (agentDashboardMeta) agentDashboardMeta.textContent = "运行完成后展示各 Agent 观点。";
+}
+
+function renderAgentProgress(job, framework) {
+  if (!agentDashboard || !agentProgressPanel) return;
+  agentDashboard.hidden = false;
+  agentProgressPanel.hidden = false;
+  const statusText = {
+    queued: "排队中",
+    running: "运行中",
+    succeeded: "已完成",
+    failed: "失败",
+  }[job.status] || job.status || "未知";
+  const progress = job.progress || [];
+  const latest = progress[progress.length - 1]?.message || "等待任务进度...";
+  const percent = job.status === "succeeded" ? 100 : job.status === "failed" ? 100 : Math.min(90, 12 + progress.length * 8);
+  if (agentDashboardMeta) agentDashboardMeta.textContent = `${framework.label} · ${statusText}`;
+  if (agentFinalScore) agentFinalScore.textContent = statusText;
+  agentProgressPanel.innerHTML = `
+    <div class="agent-progress-top">
+      <strong>${escapeHtml(statusText)}</strong>
+      <span>${escapeHtml(job.job_id || "")}</span>
+    </div>
+    <div class="agent-progress-track"><span style="width: ${percent}%"></span></div>
+    <p>${escapeHtml(latest)}</p>
+  `;
+}
+
+function renderAgentDashboard(payload) {
+  if (!agentDashboard || !agentCards) return;
+  const agentResults = payload.agent_results || payload.manifest?.agent_results || [];
+  const trace = payload.confidence_trace || {};
+  const debate = payload.debate || {};
+  const finalRating = trace.final_rating || payload.rating_hint || debate.final_direction?.label || "-";
+  const confidence = trace.final_confidence ?? payload.confidence ?? "-";
+  agentDashboard.hidden = false;
+  if (agentProgressPanel) agentProgressPanel.hidden = true;
+  if (agentDashboardMeta) {
+    const mode = payload.analysis_label || selectedAnalysisFramework().label;
+    const count = agentResults.length ? `${agentResults.length} 个 Agent` : "暂无 Agent 明细";
+    agentDashboardMeta.textContent = `${mode} · ${count} · 置信度 ${confidence}`;
+  }
+  if (agentFinalScore) agentFinalScore.innerHTML = `<strong>${escapeHtml(finalRating)}</strong><span>${escapeHtml(String(confidence))}</span>`;
+  agentCards.innerHTML = agentResults.length
+    ? agentResults.map(renderAgentResultCard).join("")
+    : `<div class="agent-empty-card">当前报告没有返回 Agent 明细。</div>`;
+}
+
+function renderAgentResultCard(item) {
+  const name = agentDisplayName(item.agent || item.agent_role || "agent");
+  const rating = item.rating_hint || item.rating_direction?.label || "-";
+  const confidence = item.confidence ?? "-";
+  const summary = item.reasoning_summary || firstFindingText(item.findings) || "暂无摘要。";
+  const scoreItems = Object.entries(item.scores || {}).slice(0, 4);
+  return `
+    <article class="agent-result-card ${ratingTone(rating)}">
+      <div class="agent-result-head">
+        <div>
+          <h4>${escapeHtml(name)}</h4>
+          <span>${escapeHtml(item.source === "llm_agent" ? "LLM 专家" : "规则/数据 Agent")}</span>
+        </div>
+        <strong>${escapeHtml(rating)}</strong>
+      </div>
+      <p>${escapeHtml(summary)}</p>
+      <div class="agent-confidence">
+        <span>置信度</span>
+        <div><i style="width: ${confidencePercent(confidence)}%"></i></div>
+        <b>${escapeHtml(String(confidence))}</b>
+      </div>
+      ${scoreItems.length ? `<div class="agent-score-list">${scoreItems.map(([key, value]) => `<span>${escapeHtml(scoreLabel(key))} ${escapeHtml(value)}/5</span>`).join("")}</div>` : ""}
+    </article>
+  `;
+}
+
+function firstFindingText(findings) {
+  const first = Array.isArray(findings) ? findings[0] : null;
+  return first?.claim || "";
+}
+
+function confidencePercent(value) {
+  const number = toNumber(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(4, Math.min(100, number <= 1 ? number * 100 : number));
+}
+
+function agentDisplayName(agent) {
+  const labels = {
+    valuation_agent: "估值 Agent",
+    technical_timing_agent: "技术时机 Agent",
+    moneyflow_agent: "资金流 Agent",
+    catalyst_agent: "催化 Agent",
+    risk_auditor: "风险审计 Agent",
+    value_floor_agent: "价值底线 Agent",
+    cheapness_agent: "低估 Agent",
+    dividend_sustainability_agent: "分红 Agent",
+    cashflow_agent: "现金流 Agent",
+    financial_trend_agent: "财务趋势 Agent",
+    business_quality_agent: "商业质量 Agent",
+    governance_agent: "治理 Agent",
+    industry_cycle_agent: "行业周期 Agent",
+  };
+  return labels[agent] || String(agent).replace(/_/g, " ");
+}
+
+function scoreLabel(key) {
+  const labels = {
+    valuation_attractiveness: "估值",
+    technical_timing: "技术",
+    capital_confirmation: "资金",
+    catalyst_strength: "催化",
+    risk_pressure: "风险",
+    earnings_trend: "业绩",
+    value_basis: "价值",
+    industry_cycle: "行业",
+    business_quality: "质量",
+    cashflow_quality: "现金流",
+    dividend_attractiveness: "分红",
+  };
+  return labels[key] || key;
 }
 
 function renderMetaGrid(items) {

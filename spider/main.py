@@ -169,13 +169,28 @@ def main():
 
     semaphore = threading.BoundedSemaphore(max(1, args.threads))
     thread_list = []
+    thread_errors = []
+    thread_errors_lock = threading.Lock()
+
+    def run_spider(kind):
+        try:
+            spider(kind, args, semaphore)
+        except Exception as exc:
+            logging.exception("%s failed: %s", kind, exc)
+            with thread_errors_lock:
+                thread_errors.append((kind, exc))
+
     for kind in selected_types:
-        thread = threading.Thread(target=spider, args=(kind, args, semaphore), name=kind)
+        thread = threading.Thread(target=run_spider, args=(kind,), name=kind)
         thread_list.append(thread)
         thread.start()
 
     for thread in thread_list:
         thread.join()
+
+    if thread_errors:
+        failed = ", ".join(kind for kind, _ in thread_errors)
+        raise SystemExit("spider failed for categories: " + failed)
 
     logging.info("all done at %s", datetime.datetime.now())
 

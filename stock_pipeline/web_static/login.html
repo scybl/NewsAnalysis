@@ -31,9 +31,9 @@
       }
 
       main {
-        width: min(420px, 100%);
+        width: min(460px, 100%);
         border: 1px solid #e4e7ec;
-        border-radius: 10px;
+        border-radius: 8px;
         background: #fff;
         padding: 28px;
         box-shadow: 0 12px 30px rgba(23, 32, 42, 0.08);
@@ -45,9 +45,36 @@
       }
 
       p {
-        margin: 8px 0 24px;
+        margin: 8px 0 22px;
         color: #667085;
         font-size: 14px;
+      }
+
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 18px;
+      }
+
+      .tab {
+        height: 38px;
+        border: 1px solid #cfd6df;
+        border-radius: 6px;
+        background: #fff;
+        color: #344054;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .tab.active {
+        background: #17202a;
+        border-color: #17202a;
+        color: #fff;
+      }
+
+      form[hidden] {
+        display: none;
       }
 
       label {
@@ -62,7 +89,7 @@
         width: 100%;
         height: 42px;
         border: 1px solid #cfd6df;
-        border-radius: 8px;
+        border-radius: 6px;
         padding: 0 12px;
         font: inherit;
         outline: none;
@@ -73,12 +100,12 @@
         box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.12);
       }
 
-      button {
+      button.submit {
         width: 100%;
         height: 42px;
         margin-top: 20px;
         border: 1px solid #17202a;
-        border-radius: 8px;
+        border-radius: 6px;
         background: #17202a;
         color: #fff;
         font: inherit;
@@ -90,7 +117,18 @@
         opacity: 0.65;
       }
 
-      .error {
+      .notice {
+        margin-top: 18px;
+        padding: 12px;
+        border: 1px solid #e4e7ec;
+        border-radius: 6px;
+        background: #f9fafb;
+        color: #667085;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .message {
         min-height: 20px;
         margin-top: 12px;
         color: #c0392b;
@@ -118,71 +156,119 @@
         color: #9aa7b5;
       }
 
+      html.theme-dark .tab,
       html.theme-dark input {
         background: #151f2b;
         border-color: #344154;
         color: #e6edf3;
       }
 
-      html.theme-dark input:focus {
-        border-color: #5aa2ff;
-        box-shadow: 0 0 0 3px rgba(90, 162, 255, 0.16);
-      }
-
-      html.theme-dark button {
+      html.theme-dark .tab.active,
+      html.theme-dark button.submit {
         background: #e6edf3;
         border-color: #e6edf3;
         color: #0f141b;
       }
 
-      html.theme-dark .error {
+      html.theme-dark .notice {
+        background: #151f2b;
+        border-color: #344154;
+        color: #9aa7b5;
+      }
+
+      html.theme-dark .message {
         color: #ff9a9a;
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>登录</h1>
-      <p>进入价值投机分析系统</p>
+      <h1>价值投机</h1>
+      <p>登录或使用邀请码创建账号</p>
+
+      <div class="tabs" role="tablist" aria-label="认证方式">
+        <button class="tab active" id="loginTab" type="button">登录</button>
+        <button class="tab" id="registerTab" type="button">注册</button>
+      </div>
+
       <form id="loginForm">
         <label>
           <span>账号</span>
-          <input id="username" name="username" autocomplete="username" required />
+          <input id="loginUsername" name="username" autocomplete="username" required />
         </label>
         <label>
           <span>密码</span>
-          <input id="password" name="password" type="password" autocomplete="current-password" required />
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
         </label>
-        <button id="loginBtn" type="submit">登录</button>
-        <div id="error" class="error"></div>
+        <button class="submit" id="loginBtn" type="submit">登录</button>
       </form>
+
+      <form id="registerForm" hidden>
+        <label>
+          <span>账号</span>
+          <input id="registerUsername" name="username" autocomplete="username" minlength="3" maxlength="32" required />
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="registerPassword" name="password" type="password" autocomplete="new-password" minlength="8" required />
+        </label>
+        <label>
+          <span>邀请码</span>
+          <input id="inviteCode" name="invite_code" autocomplete="off" required />
+        </label>
+        <button class="submit" id="registerBtn" type="submit">创建账号</button>
+      </form>
+
+      <div id="message" class="message"></div>
+      <div class="notice">
+        朋友测试账号由管理员生成，默认有请求次数限制。注册只接受管理员生成的邀请码。
+      </div>
     </main>
     <script>
-      const form = document.querySelector("#loginForm");
-      const button = document.querySelector("#loginBtn");
-      const error = document.querySelector("#error");
+      const loginTab = document.querySelector("#loginTab");
+      const registerTab = document.querySelector("#registerTab");
+      const loginForm = document.querySelector("#loginForm");
+      const registerForm = document.querySelector("#registerForm");
+      const message = document.querySelector("#message");
 
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
+      function setMode(mode) {
+        const isLogin = mode === "login";
+        loginTab.classList.toggle("active", isLogin);
+        registerTab.classList.toggle("active", !isLogin);
+        loginForm.hidden = !isLogin;
+        registerForm.hidden = isLogin;
+        message.textContent = "";
+      }
+
+      async function submitJson(path, form, button) {
         button.disabled = true;
-        error.textContent = "";
+        message.textContent = "";
         try {
-          const response = await fetch("/api/login", {
+          const body = Object.fromEntries(new FormData(form).entries());
+          const response = await fetch(path, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              username: form.username.value,
-              password: form.password.value,
-            }),
+            body: JSON.stringify(body),
           });
           const payload = await response.json();
-          if (!payload.ok) throw new Error(payload.error || "登录失败");
+          if (!payload.ok) throw new Error(payload.error || "操作失败");
           window.location.href = "/";
         } catch (err) {
-          error.textContent = err.message;
+          message.textContent = err.message;
         } finally {
           button.disabled = false;
         }
+      }
+
+      loginTab.addEventListener("click", () => setMode("login"));
+      registerTab.addEventListener("click", () => setMode("register"));
+      loginForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        submitJson("/api/login", loginForm, document.querySelector("#loginBtn"));
+      });
+      registerForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        submitJson("/api/register", registerForm, document.querySelector("#registerBtn"));
       });
     </script>
   </body>

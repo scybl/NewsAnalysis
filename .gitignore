@@ -2,9 +2,12 @@
 .env
 .env.example
 .venv/
+.pip-cache/
 __pycache__/
 *.pyc
 reports/
 sessions/
 cache/
 local_data/
+
+logs/

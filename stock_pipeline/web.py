@@ -7,6 +7,10 @@ import hmac
 import hashlib
 import threading
 import uuid
+import os
+import signal
+import subprocess
+import sys
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +33,7 @@ from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_js
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
+SPIDER_TYPES = ("财经要闻", "宏观经济", "产经新闻", "国际财经", "金融市场", "公司新闻", "区域经济", "财经评论", "财经人物")
 
 
 class StockWebApp:
@@ -38,9 +43,17 @@ class StockWebApp:
         self.settings = get_settings(require_deepseek=False)
         self.tushare = TushareClient(self.settings.tushare_token, self.settings.tushare_base_url)
         self.index = StockSearchIndex(self.tushare, PROJECT_ROOT / "cache" / "stocks.json")
-        self.sessions: dict[str, float] = {}
+        self.sessions: dict[str, dict] = {}
+        self.active_session_by_user: dict[str, str] = {}
+        self.session_lock = threading.Lock()
         self.session_ttl_seconds = 60 * 60 * 12
         self.auth_secret = self.settings.web_session_secret or secrets.token_urlsafe(32)
+        self.user_store = UserStore(PROJECT_ROOT / "local_data" / "web_users.json")
+        self.invite_codes = {code.strip() for code in self.settings.web_invite_codes.split(",") if code.strip()}
+        self.user_store.seed_invites(self.invite_codes, ttl_seconds=self.settings.web_invite_ttl_seconds, created_by="env")
+        self.demo_usage = {"window_start": time.time(), "count": 0}
+        self.demo_window_seconds = max(60, self.settings.web_demo_window_seconds)
+        self.spider_controller = SpiderController(PROJECT_ROOT)
         self.multi_agent_jobs: dict[str, dict] = {}
         self.multi_agent_jobs_lock = threading.Lock()
 
@@ -137,6 +150,47 @@ class StockWebApp:
             return None, True
         return int(value), False
 
+    def _replace_user_session(self, token: str, account: dict) -> None:
+        username = account["username"]
+        with self.session_lock:
+            old_token = self.active_session_by_user.get(username)
+            if old_token:
+                self.sessions.pop(old_token, None)
+            self.sessions[token] = {
+                "username": username,
+                "role": account["role"],
+                "managed_demo": bool(account.get("managed_demo")),
+                "expires_at": time.time() + self.session_ttl_seconds,
+            }
+            self.active_session_by_user[username] = token
+
+    def _session_for_token(self, token: str) -> dict | None:
+        with self.session_lock:
+            session = self.sessions.get(token)
+            if not session:
+                return None
+            username = session.get("username", "")
+            if self.active_session_by_user.get(username) != token:
+                self.sessions.pop(token, None)
+                return None
+            if session.get("expires_at", 0) < time.time():
+                self._remove_session_locked(token, session)
+                return None
+            session["expires_at"] = time.time() + self.session_ttl_seconds
+            return dict(session)
+
+    def _remove_session(self, token: str) -> None:
+        with self.session_lock:
+            self._remove_session_locked(token, self.sessions.get(token))
+
+    def _remove_session_locked(self, token: str, session: dict | None) -> None:
+        if not session:
+            return
+        self.sessions.pop(token, None)
+        username = session.get("username", "")
+        if username and self.active_session_by_user.get(username) == token:
+            self.active_session_by_user.pop(username, None)
+
     def serve(self) -> None:
         app = self
 
@@ -162,7 +216,16 @@ class StockWebApp:
                     super().do_GET()
                     return
                 if parsed.path == "/api/session":
-                    self._json({"ok": True, "authenticated": self._is_authenticated(), "user": app.settings.web_username if self._is_authenticated() else ""})
+                    session = self._current_session()
+                    self._json(
+                        {
+                            "ok": True,
+                            "authenticated": bool(session),
+                            "user": session.get("username", "") if session else "",
+                            "role": session.get("role", "") if session else "",
+                            "demo_remaining": self._demo_remaining(session) if session and session.get("role") == "demo" else None,
+                        }
+                    )
                     return
                 if not self._require_auth(parsed.path):
                     return
@@ -177,6 +240,23 @@ class StockWebApp:
                 if parsed.path == "/api/analysis-frameworks":
                     self._json({"ok": True, "items": list_analysis_frameworks()})
                     return
+                if parsed.path == "/api/admin/overview":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **app.user_store.admin_overview(), "demo": self._demo_state()})
+                    return
+                if parsed.path == "/api/admin/spider/status":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **app.spider_controller.status()})
+                    return
+                if parsed.path == "/api/admin/spider/logs":
+                    if not self._require_admin():
+                        return
+                    query = parse_qs(parsed.query)
+                    lines = max(20, min(500, int(query.get("lines", ["120"])[0] or 120)))
+                    self._json({"ok": True, **app.spider_controller.logs(lines=lines)})
+                    return
                 super().do_GET()
 
             def do_POST(self) -> None:
@@ -184,8 +264,31 @@ class StockWebApp:
                 if parsed.path == "/api/login":
                     self._handle_login()
                     return
+                if parsed.path == "/api/register":
+                    self._handle_register()
+                    return
                 if parsed.path == "/api/logout":
                     self._handle_logout()
+                    return
+                if parsed.path == "/api/admin/invite":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_invite()
+                    return
+                if parsed.path == "/api/admin/demo-account":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_demo_account()
+                    return
+                if parsed.path == "/api/admin/spider/start":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_spider_start()
+                    return
+                if parsed.path == "/api/admin/spider/stop":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **app.spider_controller.stop()})
                     return
                 if not self._require_auth(parsed.path):
                     return
@@ -229,17 +332,53 @@ class StockWebApp:
                     payload = self._read_json()
                     username = str(payload.get("username") or "")
                     password = str(payload.get("password") or "")
-                    valid_user = secrets.compare_digest(username, app.settings.web_username)
-                    valid_password = secrets.compare_digest(password, app.settings.web_password)
-                    if not (valid_user and valid_password):
+                    account = self._authenticate(username, password)
+                    if not account:
                         self._json({"ok": False, "error": "账号或密码错误"}, status=401)
                         return
-                    token = secrets.token_urlsafe(32)
-                    app.sessions[token] = time.time() + app.session_ttl_seconds
-                    self._json(
-                        {"ok": True, "user": app.settings.web_username},
-                        headers={"Set-Cookie": self._session_cookie(self._signed_token(token))},
-                    )
+                    self._login_account(account)
+                except Exception as exc:  # noqa: BLE001 - return readable UI error
+                    self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_register(self) -> None:
+                try:
+                    payload = self._read_json()
+                    username = str(payload.get("username") or "").strip()
+                    password = str(payload.get("password") or "")
+                    invite_code = str(payload.get("invite_code") or "").strip()
+                    if not invite_code:
+                        self._json({"ok": False, "error": "请输入邀请码。"}, status=400)
+                        return
+                    invite_status = app.user_store.invite_status(invite_code)
+                    if invite_status == "missing":
+                        self._json({"ok": False, "error": "邀请码无效。"}, status=403)
+                        return
+                    if invite_status == "used":
+                        self._json({"ok": False, "error": "邀请码已被使用。"}, status=403)
+                        return
+                    if invite_status == "expired":
+                        self._json({"ok": False, "error": "邀请码已过期。"}, status=403)
+                        return
+                    if not self._valid_username(username):
+                        self._json({"ok": False, "error": "账号只能包含字母、数字、下划线和短横线，长度 3-32。"}, status=400)
+                        return
+                    if len(password) < 8:
+                        self._json({"ok": False, "error": "密码至少 8 位。"}, status=400)
+                        return
+                    if self._reserved_username(username):
+                        self._json({"ok": False, "error": "该账号名不可注册。"}, status=409)
+                        return
+                    created, error = app.user_store.create_user(username, password, invite_code)
+                    if not created:
+                        if error == "invite_used":
+                            self._json({"ok": False, "error": "邀请码已被使用。"}, status=403)
+                            return
+                        if error == "user_exists":
+                            self._json({"ok": False, "error": "账号已存在。"}, status=409)
+                            return
+                        self._json({"ok": False, "error": "注册失败。"}, status=500)
+                        return
+                    self._login_account({"username": username, "role": "user"})
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=500)
 
@@ -282,8 +421,41 @@ class StockWebApp:
             def _handle_logout(self) -> None:
                 token = self._session_token()
                 if token:
-                    app.sessions.pop(token, None)
+                    app._remove_session(token)
                 self._json({"ok": True}, headers={"Set-Cookie": "stock_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"})
+
+            def _handle_admin_invite(self) -> None:
+                payload = self._read_json()
+                count = max(1, min(20, int(payload.get("count") or 1)))
+                session = self._current_session() or {}
+                invites = [app.user_store.create_invite(session.get("username") or "admin", app.settings.web_invite_ttl_seconds) for _ in range(count)]
+                self._json({"ok": True, "items": invites})
+
+            def _handle_admin_demo_account(self) -> None:
+                payload = self._read_json()
+                count = max(1, min(20, int(payload.get("count") or 1)))
+                limit = max(1, int(payload.get("limit") or app.settings.web_demo_request_limit))
+                window_seconds = max(60, int(payload.get("window_seconds") or app.settings.web_demo_window_seconds))
+                session = self._current_session() or {}
+                accounts = [
+                    app.user_store.create_demo_account(
+                        created_by=session.get("username") or "admin",
+                        limit=limit,
+                        window_seconds=window_seconds,
+                    )
+                    for _ in range(count)
+                ]
+                self._json({"ok": True, "items": accounts})
+
+            def _handle_admin_spider_start(self) -> None:
+                payload = self._read_json()
+                try:
+                    result = app.spider_controller.start(payload)
+                    self._json({"ok": True, **result})
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+                except RuntimeError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=409)
 
             def _handle_analyze(self) -> None:
                 try:
@@ -393,26 +565,99 @@ class StockWebApp:
                 return app._parse_history_scope_value(payload.get("years"))
 
             def _require_auth(self, path: str) -> bool:
-                if self._is_authenticated():
-                    return True
+                session = self._current_session()
+                if session:
+                    allowed = self._check_demo_budget(path, session)
+                    if allowed:
+                        self._record_usage(path, session)
+                    return allowed
                 if path.startswith("/api/"):
                     self._json({"ok": False, "error": "请先登录"}, status=401)
                 else:
                     self._redirect("/login")
                 return False
 
+            def _require_admin(self) -> bool:
+                session = self._current_session()
+                if not session:
+                    self._json({"ok": False, "error": "请先登录"}, status=401)
+                    return False
+                if session.get("role") != "admin":
+                    self._json({"ok": False, "error": "需要管理员权限"}, status=403)
+                    return False
+                return True
+
             def _is_authenticated(self) -> bool:
+                return bool(self._current_session())
+
+            def _current_session(self) -> dict | None:
                 token = self._session_token()
                 if not token:
+                    return None
+                return app._session_for_token(token)
+
+            def _authenticate(self, username: str, password: str) -> dict | None:
+                if secrets.compare_digest(username, app.settings.web_username) and secrets.compare_digest(password, app.settings.web_password):
+                    return {"username": app.settings.web_username, "role": "admin"}
+                if app.user_store.verify_demo_account(username, password):
+                    return {"username": username, "role": "demo", "managed_demo": True}
+                if app.user_store.verify_user(username, password):
+                    return {"username": username, "role": "user"}
+                return None
+
+            def _login_account(self, account: dict) -> None:
+                token = secrets.token_urlsafe(32)
+                app._replace_user_session(token, account)
+                session = app._session_for_token(token) or account
+                self._json(
+                    {
+                        "ok": True,
+                        "user": account["username"],
+                        "role": account["role"],
+                        "demo_remaining": self._demo_remaining(session) if account["role"] == "demo" else None,
+                    },
+                    headers={"Set-Cookie": self._session_cookie(self._signed_token(token))},
+                )
+
+            def _reserved_username(self, username: str) -> bool:
+                reserved = {app.settings.web_username}
+                return username in reserved
+
+            def _valid_username(self, username: str) -> bool:
+                if not 3 <= len(username) <= 32:
                     return False
-                expires_at = app.sessions.get(token)
-                if not expires_at:
-                    return False
-                if expires_at < time.time():
-                    app.sessions.pop(token, None)
-                    return False
-                app.sessions[token] = time.time() + app.session_ttl_seconds
-                return True
+                return all(char.isalnum() or char in {"_", "-"} for char in username)
+
+            def _check_demo_budget(self, path: str, session: dict) -> bool:
+                if session.get("role") != "demo" or not path.startswith("/api/") or path in {"/api/session", "/api/logout"} or path.startswith("/api/admin/"):
+                    return True
+                allowed, _state = app.user_store.consume_demo_budget(session.get("username") or "")
+                if not allowed:
+                    self._json({"ok": False, "error": "测试账号请求次数已用完，请稍后再试。"}, status=429)
+                return allowed
+
+            def _demo_remaining(self, session: dict | None = None) -> int:
+                if session and session.get("managed_demo"):
+                    state = app.user_store.demo_account_state(session.get("username") or "")
+                    return int(state.get("remaining") or 0)
+                now = time.time()
+                if now - app.demo_usage["window_start"] > app.demo_window_seconds:
+                    return app.settings.web_demo_request_limit
+                return max(0, app.settings.web_demo_request_limit - app.demo_usage["count"])
+
+            def _demo_state(self) -> dict:
+                return {
+                    "username": "",
+                    "limit": app.settings.web_demo_request_limit,
+                    "window_seconds": app.demo_window_seconds,
+                    "remaining": app.settings.web_demo_request_limit,
+                    "resets_in_seconds": app.demo_window_seconds,
+                }
+
+            def _record_usage(self, path: str, session: dict) -> None:
+                if not path.startswith("/api/") or path in {"/api/session", "/api/logout"} or path.startswith("/api/admin/"):
+                    return
+                app.user_store.record_usage(session.get("username") or "", session.get("role") or "", path)
 
             def _session_token(self) -> str:
                 header = self.headers.get("Cookie", "")
@@ -462,3 +707,453 @@ class StockWebApp:
 
 def serve_web(host: str = "127.0.0.1", port: int = 8765) -> None:
     StockWebApp(host=host, port=port).serve()
+
+
+class SpiderController:
+    def __init__(self, project_root: Path):
+        self.project_root = project_root
+        self.spider_dir = project_root / "spider"
+        self.logs_dir = project_root / "logs"
+        self.lock = threading.Lock()
+        self.process: subprocess.Popen | None = None
+        self.current: dict | None = None
+
+    def start(self, payload: dict) -> dict:
+        with self.lock:
+            self._refresh_locked()
+            if self.process and self.process.poll() is None:
+                raise RuntimeError("已有爬虫任务正在运行。")
+
+            selected_types = self._parse_types(payload.get("types"))
+            max_pages = self._bounded_int(payload.get("max_pages"), default=1, minimum=1, maximum=50, field="max_pages")
+            threads = self._bounded_int(payload.get("threads"), default=1, minimum=1, maximum=4, field="threads")
+            dry_run = payload.get("dry_run", True) is not False
+            new_only = bool(payload.get("new_only", False))
+            article_sleep = self._sleep_range(payload.get("article_sleep"), default="0,0" if dry_run else "3,8", field="article_sleep")
+            page_sleep = self._sleep_range(payload.get("page_sleep"), default="0,0" if dry_run else "10,30", field="page_sleep")
+
+            job_id = timestamp() + "_" + uuid.uuid4().hex[:8]
+            log_file = self.logs_dir / f"admin-spider-{job_id}.log"
+            ensure_dir(log_file.parent)
+            cmd = [
+                sys.executable,
+                "main.py",
+                "--types",
+                ",".join(selected_types),
+                "--max-pages",
+                str(max_pages),
+                "--threads",
+                str(threads),
+                "--article-sleep",
+                article_sleep,
+                "--page-sleep",
+                page_sleep,
+                "--max-page-failures",
+                "2",
+                "--log-file",
+                str(log_file),
+            ]
+            if dry_run:
+                cmd.append("--dry-run")
+            if new_only:
+                cmd.extend(["--new-only", "--existing-stop-count", "10"])
+
+            with log_file.open("a", encoding="utf-8") as output:
+                output.write("admin spider command: " + " ".join(cmd) + "\n")
+            self.process = subprocess.Popen(
+                cmd,
+                cwd=str(self.spider_dir),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                start_new_session=True,
+            )
+            self.current = {
+                "job_id": job_id,
+                "status": "running",
+                "pid": self.process.pid,
+                "started_at": timestamp(),
+                "finished_at": "",
+                "returncode": None,
+                "types": selected_types,
+                "max_pages": max_pages,
+                "threads": threads,
+                "dry_run": dry_run,
+                "new_only": new_only,
+                "log_file": str(log_file),
+            }
+            return self.status_locked()
+
+    def stop(self) -> dict:
+        with self.lock:
+            self._refresh_locked()
+            if not self.process or self.process.poll() is not None:
+                return self.status_locked()
+            try:
+                os.killpg(self.process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            self.current = dict(self.current or {})
+            self.current["status"] = "stopping"
+            return self.status_locked()
+
+    def status(self) -> dict:
+        with self.lock:
+            self._refresh_locked()
+            return self.status_locked()
+
+    def logs(self, lines: int = 120) -> dict:
+        with self.lock:
+            self._refresh_locked()
+            current = self.current or {}
+            log_file = current.get("log_file") or ""
+        if not log_file or not Path(log_file).exists():
+            return {"log_file": log_file, "content": ""}
+        return {"log_file": log_file, "content": "\n".join(Path(log_file).read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])}
+
+    def status_locked(self) -> dict:
+        return {"spider": self.current or {"status": "idle", "pid": None, "log_file": ""}, "available_types": list(SPIDER_TYPES)}
+
+    def _refresh_locked(self) -> None:
+        if not self.process or not self.current:
+            return
+        returncode = self.process.poll()
+        if returncode is None:
+            return
+        self.current["returncode"] = returncode
+        self.current["finished_at"] = self.current.get("finished_at") or timestamp()
+        if self.current.get("status") == "stopping":
+            self.current["status"] = "stopped"
+        else:
+            self.current["status"] = "succeeded" if returncode == 0 else "failed"
+        self.process = None
+
+    def _parse_types(self, raw_value) -> list[str]:
+        if isinstance(raw_value, list):
+            candidates = [str(item).strip() for item in raw_value]
+        else:
+            candidates = [part.strip() for part in str(raw_value or "财经要闻").split(",")]
+        selected = [item for item in candidates if item]
+        if not selected:
+            raise ValueError("至少选择一个爬虫分类。")
+        unknown = [item for item in selected if item not in SPIDER_TYPES]
+        if unknown:
+            raise ValueError("未知爬虫分类：" + ",".join(unknown))
+        return selected
+
+    def _bounded_int(self, value, default: int, minimum: int, maximum: int, field: str) -> int:
+        try:
+            parsed = int(value if value not in (None, "") else default)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} 必须是数字。") from exc
+        if parsed < minimum or parsed > maximum:
+            raise ValueError(f"{field} 必须在 {minimum}-{maximum} 之间。")
+        return parsed
+
+    def _sleep_range(self, value, default: str, field: str) -> str:
+        raw = str(value or default).strip()
+        parts = raw.split(",")
+        if len(parts) != 2:
+            raise ValueError(f"{field} 格式必须是 min,max。")
+        try:
+            left, right = float(parts[0]), float(parts[1])
+        except ValueError as exc:
+            raise ValueError(f"{field} 必须是数字范围。") from exc
+        if left < 0 or right < left or right > 300:
+            raise ValueError(f"{field} 范围不合法。")
+        return f"{left:g},{right:g}"
+
+
+class UserStore:
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.Lock()
+        ensure_dir(path.parent)
+
+    def create_user(self, username: str, password: str, invite_code: str) -> tuple[bool, str]:
+        with self.lock:
+            data = self._read()
+            users = data.setdefault("users", {})
+            used_invites = data.setdefault("used_invites", {})
+            invites = data.setdefault("invites", {})
+            if invite_code in used_invites:
+                return False, "invite_used"
+            invite = invites.get(invite_code)
+            if not invite:
+                return False, "invite_missing"
+            if invite.get("used_at"):
+                return False, "invite_used"
+            if invite.get("expires_at", 0) < time.time():
+                return False, "invite_expired"
+            if username in users:
+                return False, "user_exists"
+            users[username] = {
+                "password": self._hash_password(password),
+                "created_at": timestamp(),
+                "invite_code": invite_code,
+            }
+            used_invites[invite_code] = {
+                "username": username,
+                "used_at": timestamp(),
+            }
+            invite["used_by"] = username
+            invite["used_at"] = timestamp()
+            self._write(data)
+            return True, ""
+
+    def seed_invites(self, invite_codes: set[str], ttl_seconds: int, created_by: str) -> None:
+        if not invite_codes:
+            return
+        now = time.time()
+        with self.lock:
+            data = self._read()
+            invites = data.setdefault("invites", {})
+            changed = False
+            for code in invite_codes:
+                if code in invites:
+                    continue
+                invites[code] = {
+                    "code": code,
+                    "created_by": created_by,
+                    "created_at": timestamp(),
+                    "expires_at": now + ttl_seconds,
+                    "used_by": "",
+                    "used_at": "",
+                }
+                changed = True
+            if changed:
+                self._write(data)
+
+    def create_invite(self, created_by: str, ttl_seconds: int) -> dict:
+        now = time.time()
+        with self.lock:
+            data = self._read()
+            invites = data.setdefault("invites", {})
+            code = self._new_numeric_invite_code(invites)
+            invite = {
+                "code": code,
+                "created_by": created_by,
+                "created_at": timestamp(),
+                "expires_at": now + ttl_seconds,
+                "used_by": "",
+                "used_at": "",
+            }
+            invites[code] = invite
+            self._write(data)
+        return self._public_invite(invite)
+
+    def _new_numeric_invite_code(self, invites: dict) -> str:
+        for _ in range(100):
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            if code not in invites:
+                return code
+        raise RuntimeError("无法生成唯一邀请码，请稍后重试。")
+
+    def invite_status(self, invite_code: str) -> str:
+        with self.lock:
+            invite = self._read().get("invites", {}).get(invite_code)
+        if not invite:
+            return "missing"
+        if invite.get("used_at"):
+            return "used"
+        if invite.get("expires_at", 0) < time.time():
+            return "expired"
+        return "active"
+
+    def verify_user(self, username: str, password: str) -> bool:
+        with self.lock:
+            user = self._read().get("users", {}).get(username)
+        if not user:
+            return False
+        return self._verify_password(password, user.get("password", ""))
+
+    def create_demo_account(self, created_by: str, limit: int, window_seconds: int) -> dict:
+        now = time.time()
+        password = secrets.token_urlsafe(10)
+        with self.lock:
+            data = self._read()
+            demo_accounts = data.setdefault("demo_accounts", {})
+            username = self._new_demo_username(data)
+            account = {
+                "username": username,
+                "password": self._hash_password(password),
+                "created_by": created_by,
+                "created_at": timestamp(),
+                "limit": limit,
+                "window_seconds": window_seconds,
+                "window_start": now,
+                "count": 0,
+                "disabled": False,
+            }
+            demo_accounts[username] = account
+            self._write(data)
+        public = self._public_demo_account(account)
+        public["password"] = password
+        return public
+
+    def verify_demo_account(self, username: str, password: str) -> bool:
+        with self.lock:
+            account = self._read().get("demo_accounts", {}).get(username)
+        if not account or account.get("disabled"):
+            return False
+        return self._verify_password(password, account.get("password", ""))
+
+    def consume_demo_budget(self, username: str) -> tuple[bool, dict]:
+        now = time.time()
+        with self.lock:
+            data = self._read()
+            account = data.get("demo_accounts", {}).get(username)
+            if not account or account.get("disabled"):
+                return False, {}
+            window_seconds = max(60, int(account.get("window_seconds") or 86400))
+            if now - float(account.get("window_start") or 0) >= window_seconds:
+                account["window_start"] = now
+                account["count"] = 0
+            limit = max(1, int(account.get("limit") or 1))
+            if int(account.get("count") or 0) >= limit:
+                state = self._public_demo_account(account)
+                return False, state
+            account["count"] = int(account.get("count") or 0) + 1
+            self._write(data)
+            return True, self._public_demo_account(account)
+
+    def demo_account_state(self, username: str) -> dict:
+        with self.lock:
+            account = self._read().get("demo_accounts", {}).get(username)
+            if not account:
+                return {}
+            return self._public_demo_account(account)
+
+    def record_usage(self, username: str, role: str, path: str) -> None:
+        if not username:
+            return
+        with self.lock:
+            data = self._read()
+            usage = data.setdefault("usage", {})
+            item = usage.setdefault(username, {"username": username, "role": role, "total": 0, "by_path": {}, "last_request_at": ""})
+            item["role"] = role
+            item["total"] = int(item.get("total") or 0) + 1
+            item["last_request_at"] = timestamp()
+            by_path = item.setdefault("by_path", {})
+            by_path[path] = int(by_path.get(path) or 0) + 1
+            self._write(data)
+
+    def admin_overview(self) -> dict:
+        with self.lock:
+            data = self._read()
+        users = []
+        usage = data.get("usage", {})
+        for username, user in sorted(data.get("users", {}).items()):
+            user_usage = usage.get(username, {})
+            users.append(
+                {
+                    "username": username,
+                    "role": "user",
+                    "created_at": user.get("created_at", ""),
+                    "invite_code": user.get("invite_code", ""),
+                    "usage_total": int(user_usage.get("total") or 0),
+                    "last_request_at": user_usage.get("last_request_at", ""),
+                    "by_path": user_usage.get("by_path", {}),
+                }
+            )
+        for username, user_usage in sorted(usage.items()):
+            if any(item["username"] == username for item in users):
+                continue
+            users.append(
+                {
+                    "username": username,
+                    "role": user_usage.get("role", ""),
+                    "created_at": "",
+                    "invite_code": "",
+                    "usage_total": int(user_usage.get("total") or 0),
+                    "last_request_at": user_usage.get("last_request_at", ""),
+                    "by_path": user_usage.get("by_path", {}),
+                }
+            )
+        return {
+            "users": users,
+            "invites": [self._public_invite(invite) for invite in sorted(data.get("invites", {}).values(), key=lambda item: item.get("expires_at", 0), reverse=True)],
+            "demo_accounts": [
+                self._public_demo_account(account)
+                for account in sorted(data.get("demo_accounts", {}).values(), key=lambda item: item.get("created_at", ""), reverse=True)
+            ],
+        }
+
+    def _read(self) -> dict:
+        if not self.path.exists():
+            return {"users": {}, "used_invites": {}, "invites": {}, "usage": {}, "demo_accounts": {}}
+        data = read_json(self.path)
+        data.setdefault("users", {})
+        data.setdefault("used_invites", {})
+        data.setdefault("invites", {})
+        data.setdefault("usage", {})
+        data.setdefault("demo_accounts", {})
+        return data
+
+    def _write(self, data: dict) -> None:
+        write_json(self.path, data)
+
+    def _hash_password(self, password: str) -> str:
+        salt = os.urandom(16)
+        iterations = 200_000
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+
+    def _new_demo_username(self, data: dict) -> str:
+        users = set(data.get("users", {}))
+        demo_accounts = set(data.get("demo_accounts", {}))
+        for _ in range(100):
+            username = f"demo{secrets.randbelow(1_000_000):06d}"
+            if username not in users and username not in demo_accounts:
+                return username
+        raise RuntimeError("无法生成唯一测试账号，请稍后重试。")
+
+    def _verify_password(self, password: str, encoded: str) -> bool:
+        try:
+            algorithm, iterations, salt_hex, digest_hex = encoded.split("$", 3)
+            if algorithm != "pbkdf2_sha256":
+                return False
+            digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations))
+            return hmac.compare_digest(digest.hex(), digest_hex)
+        except (ValueError, TypeError):
+            return False
+
+    def _public_invite(self, invite: dict) -> dict:
+        status = "active"
+        if invite.get("used_at"):
+            status = "used"
+        elif invite.get("expires_at", 0) < time.time():
+            status = "expired"
+        return {
+            "code": invite.get("code", ""),
+            "created_by": invite.get("created_by", ""),
+            "created_at": invite.get("created_at", ""),
+            "expires_at": invite.get("expires_at", 0),
+            "expires_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(invite.get("expires_at", 0))) if invite.get("expires_at") else "",
+            "used_by": invite.get("used_by", ""),
+            "used_at": invite.get("used_at", ""),
+            "status": status,
+        }
+
+    def _public_demo_account(self, account: dict) -> dict:
+        now = time.time()
+        window_seconds = max(60, int(account.get("window_seconds") or 86400))
+        window_start = float(account.get("window_start") or now)
+        count = int(account.get("count") or 0)
+        if now - window_start >= window_seconds:
+            count = 0
+            resets_in = window_seconds
+        else:
+            resets_in = max(0, int(window_seconds - (now - window_start)))
+        limit = max(1, int(account.get("limit") or 1))
+        return {
+            "username": account.get("username", ""),
+            "created_by": account.get("created_by", ""),
+            "created_at": account.get("created_at", ""),
+            "limit": limit,
+            "window_seconds": window_seconds,
+            "used": count,
+            "remaining": max(0, limit - count),
+            "resets_in_seconds": resets_in,
+            "disabled": bool(account.get("disabled")),
+        }

@@ -1,0 +1,15 @@
+.DS_Store
+.git
+.env
+.env.*
+.venv
+.pip-cache
+__pycache__
+*.pyc
+cache
+local_data
+logs
+reports
+sessions
+spider/**/__pycache__
+spider/newsweaver/**/__pycache__

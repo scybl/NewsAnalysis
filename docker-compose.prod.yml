@@ -1,0 +1,38 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?set MONGO_PASSWORD in .env}
+    volumes:
+      - ./local_data/mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    env_file:
+      - .env
+    environment:
+      STOCK_WEB_HOST: 0.0.0.0
+      STOCK_WEB_PORT: 8765
+      MONGODB_URI: mongodb://${MONGO_USER:-admin}:${MONGO_PASSWORD_URI:?set URL-encoded MONGO_PASSWORD_URI in .env}@mongo:27017/?authSource=${MONGO_AUTHSOURCE:-admin}
+      MONGO_HOST: mongo
+      MONGO_PORT: 27017
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-news}
+      MONGODB_COLLECTION: ${MONGODB_COLLECTION:-articles}
+    ports:
+      - "${PUBLIC_WEB_PORT:-8765}:8765"
+    volumes:
+      - ./cache:/app/cache
+      - ./local_data:/app/local_data
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      - ./sessions:/app/sessions
