@@ -75,6 +75,7 @@ def build_dossier(full_data: dict[str, Any]) -> dict[str, Any]:
             "fetch_errors": full_data.get("fetch_errors", []),
         },
     }
+    compact["news_context"] = _build_news_context(compact)
     return compact
 
 
@@ -141,6 +142,21 @@ def _filter_announcements(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     keywords = ("年度报告", "年报", "半年度报告", "半年报", "季度报告", "季报", "业绩说明", "审计", "分红", "回购", "重大")
     matched = [row for row in rows if any(word in str(row.get("title", "")) for word in keywords)]
     return limit_records(matched or rows, 60, ["ann_date", "ts_code", "name", "title", "url"])
+
+
+def _build_news_context(dossier: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from .config import get_news_db_config
+        from .news.context import build_news_context
+
+        return build_news_context(get_news_db_config(), dossier)
+    except Exception as exc:
+        return {
+            "company_news": [],
+            "industry_news": [],
+            "macro_news": [],
+            "fetch_error": str(exc),
+        }
 
 
 def _to_float(value: Any) -> float | None:

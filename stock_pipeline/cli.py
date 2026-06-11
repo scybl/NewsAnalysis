@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from .analyst import INITIAL_QUESTION, StockAnalyst, session_path_for
 from .collector import StockDataCollector
-from .config import PROJECT_ROOT, get_settings
+from .config import PROJECT_ROOT, get_news_db_config, get_settings
 from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
+from .news.crawler import CATEGORIES, CrawlOptions, crawl_news, parse_sleep
+from .news.storage import Mysql, search_news
 from .tushare_client import TushareClient
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 from .value_speculation import VALUE_SPECULATION_QUESTION, build_value_speculation_dossier
@@ -44,6 +47,26 @@ def main() -> None:
     web_parser.add_argument("--host", default="127.0.0.1", help="监听地址")
     web_parser.add_argument("--port", type=int, default=8765, help="监听端口")
 
+    news_parser = subparsers.add_parser("news", help="财经新闻抓取和检索")
+    news_subparsers = news_parser.add_subparsers(dest="news_command", required=True)
+    news_crawl_parser = news_subparsers.add_parser("crawl", help="抓取同花顺财经新闻入库")
+    news_crawl_parser.add_argument("--types", default=",".join(CATEGORIES.keys()), help="逗号分隔的分类名称")
+    news_crawl_parser.add_argument("--since", default="2019-01-01 00:00:00", help="抓取到该发布时间后停止，格式: YYYY-MM-DD HH:MM:SS")
+    news_crawl_parser.add_argument("--max-pages", type=int, default=0, help="每个分类最多抓取页数，0 表示不限制")
+    news_crawl_parser.add_argument("--threads", type=int, default=2, help="最大并发分类数")
+    news_crawl_parser.add_argument("--article-sleep", type=parse_sleep, default=(2.0, 5.0), help="单篇文章请求间隔，格式: min,max")
+    news_crawl_parser.add_argument("--page-sleep", type=parse_sleep, default=(5.0, 15.0), help="分页请求间隔，格式: min,max")
+    news_crawl_parser.add_argument("--stale-stop-count", type=int, default=10, help="连续多少篇早于 since 后停止该分类")
+    news_crawl_parser.add_argument("--new-only", action="store_true", help="只抓新增文章，连续遇到已存在文章后停止该分类")
+    news_crawl_parser.add_argument("--existing-stop-count", type=int, default=10, help="new-only 模式下连续多少篇已存在后停止")
+    news_crawl_parser.add_argument("--max-page-failures", type=int, default=3, help="同一分类连续列表页失败多少次后停止")
+    news_crawl_parser.add_argument("--dry-run", action="store_true", help="只抓取解析，不写入数据库")
+    news_crawl_parser.add_argument("--no-migrate", action="store_true", help="不自动补齐数据库字段和索引")
+
+    news_search_parser = news_subparsers.add_parser("search", help="从本地新闻库检索关键词")
+    news_search_parser.add_argument("terms", nargs="+", help="检索关键词，多个关键词按 OR 匹配")
+    news_search_parser.add_argument("--limit", type=int, default=20, help="最多返回条数")
+
     args = parser.parse_args()
     if args.command == "collect":
         run_collect(args)
@@ -55,6 +78,8 @@ def main() -> None:
         run_chat(args)
     elif args.command == "web":
         serve_web(args.host, args.port)
+    elif args.command == "news":
+        run_news(args)
 
 
 def _add_collect_args(parser: argparse.ArgumentParser) -> None:
@@ -149,3 +174,35 @@ def _print_collect_summary(dossier: dict, output_dir: Path) -> None:
     if errors:
         print(f"有 {len(errors)} 个接口未成功，已写入 dossier.data_quality.fetch_errors。")
     print(f"dossier：{output_dir / 'dossier.json'}")
+
+
+def run_news(args: argparse.Namespace) -> None:
+    if args.news_command == "crawl":
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s")
+        options = CrawlOptions(
+            types=args.types,
+            since=args.since,
+            max_pages=args.max_pages,
+            threads=args.threads,
+            article_sleep=args.article_sleep,
+            page_sleep=args.page_sleep,
+            stale_stop_count=args.stale_stop_count,
+            new_only=args.new_only,
+            existing_stop_count=args.existing_stop_count,
+            max_page_failures=args.max_page_failures,
+            dry_run=args.dry_run,
+            migrate=not args.no_migrate,
+        )
+        result = crawl_news(get_news_db_config(), options)
+        print("新闻抓取完成：")
+        for kind, stats in result["categories"].items():
+            print(f"  {kind}: parsed={stats['parsed']} inserted={stats['inserted']} skipped={stats['skipped']}")
+        return
+
+    if args.news_command == "search":
+        with Mysql(get_news_db_config()) as mysql:
+            rows = search_news(mysql, args.terms, limit=args.limit)
+        for row in rows:
+            print(f"{row.get('time')} [{row.get('type')}] {row.get('title')}")
+            if row.get("url"):
+                print(f"  {row.get('url')}")

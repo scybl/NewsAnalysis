@@ -4,6 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>价值投机分析</title>
+    <script>
+      try {
+        if (localStorage.getItem("stockTheme") === "dark") {
+          document.documentElement.classList.add("theme-dark");
+        }
+      } catch {}
+    </script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -52,6 +59,7 @@
               <option value="">暂无多Agent历史</option>
             </select>
             <button id="readAgentRunBtn" type="button" disabled>读取多Agent</button>
+            <button id="themeToggleBtn" type="button" aria-pressed="false">深色模式</button>
             <button id="logoutBtn" type="button">退出</button>
           </div>
         </div>
@@ -147,6 +155,6 @@
         </section>
       </section>
     </main>
-    <script src="/app.js?v=multi-agent-20260604"></script>
+    <script src="/app.js?v=theme-20260605"></script>
   </body>
 </html>

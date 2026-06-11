@@ -10,6 +10,7 @@ from ..analysis_frameworks import get_analysis_framework
 from ..collector import StockDataCollector
 from ..deepseek_client import DeepSeekClient, DeepSeekError
 from ..dossier import build_dossier
+from ..pattern_learning import build_similarity_learning
 from ..stock_storage import (
     build_local_stock_payload,
     current_dir,
@@ -187,6 +188,9 @@ class MultiAgentRunner:
         self._progress("hypotheses", f"已建立 {len(hypotheses.get('hypotheses', []))} 条初始假设。")
 
         analysis_dossier = read_json(base_dir / f"{framework.key}_dossier.json") if (base_dir / f"{framework.key}_dossier.json").exists() else {}
+        learning_context = self._build_learning_context(full_data, framework.key, run_dir)
+        if learning_context:
+            analysis_dossier = {**analysis_dossier, "learning_context": learning_context}
         agent_results = _run_specialists(
             framework.key,
             mode,
@@ -207,8 +211,8 @@ class MultiAgentRunner:
         debate = _debate(agent_results, analysis_dossier.get("decision_helper", {}))
         agent_data_requests = _collect_agent_data_requests(agent_results)
         confidence_trace = _confidence_trace(agent_results, debate, framework.key)
-        conversation = _agent_conversation(framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, agent_results, debate, confidence_trace)
-        final_report = _final_report(code, framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, agent_results, debate, confidence_trace, agent_data_requests)
+        conversation = _agent_conversation(framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, learning_context, agent_results, debate, confidence_trace)
+        final_report = _final_report(code, framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, learning_context, agent_results, debate, confidence_trace, agent_data_requests)
 
         write_json(run_dir / "debate_council.json", debate)
         write_json(run_dir / "confidence_trace.json", confidence_trace)
@@ -231,6 +235,7 @@ class MultiAgentRunner:
             "rating_hint": confidence_trace["final_rating"],
             "confidence": confidence_trace["final_confidence"],
             "agent_conversation": conversation,
+            "learning_context": learning_context,
             "data_requests": broker_result,
             "agent_data_requests": agent_data_requests,
             "fetch_result": fetch_result,
@@ -241,6 +246,45 @@ class MultiAgentRunner:
         if not self.progress_callback:
             return
         self.progress_callback({"time": timestamp(), "stage": stage, "message": message, "details": details or {}})
+
+    def _build_learning_context(self, full_data: dict[str, Any], analysis_type: str, run_dir: Path) -> dict[str, Any]:
+        try:
+            context = build_similarity_learning(full_data, analysis_type)
+            write_json(run_dir / "similarity_learning.json", context)
+            distribution = context.get("outcome_distribution", {}).get("distribution", {})
+            self._progress(
+                "pattern_learning",
+                (
+                    f"历史相似走势学习完成，找到 {len(context.get('similar_cases', []))} 个相似窗口；"
+                    f"结局概率：价值修复 {distribution.get('value_repair', 0)}%，"
+                    f"价值陷阱 {distribution.get('value_trap', 0)}%，"
+                    f"长期横盘 {distribution.get('long_flat', 0)}%。"
+                ),
+                {
+                    "market_regime": context.get("market_regime", {}),
+                    "outcome_distribution": context.get("outcome_distribution", {}),
+                    "failure_case_matches": context.get("failure_case_matches", []),
+                },
+            )
+            return context
+        except Exception as exc:  # noqa: BLE001 - learning context should not block core analysis
+            context = {
+                "version": "phase1_euclidean_v1",
+                "analysis_type": analysis_type,
+                "error": str(exc),
+                "similar_cases": [],
+                "outcome_distribution": {
+                    "sample_size": 0,
+                    "distribution": {"value_repair": 0, "value_trap": 0, "long_flat": 0},
+                    "uncertainty_level": "high",
+                    "interpretation": "历史学习模块异常，不能形成结局概率。",
+                },
+                "failure_case_matches": [],
+                "warnings": [f"历史学习模块执行失败：{exc}"],
+            }
+            write_json(run_dir / "similarity_learning.json", context)
+            self._progress("pattern_learning_error", f"历史相似走势学习失败：{exc}", {"error": str(exc)})
+            return context
 
     def _fetch_and_rebuild(
         self,
@@ -363,6 +407,7 @@ def read_agent_run(code: str, run_id: str) -> dict[str, Any]:
         "manifest": manifest,
         "agent_conversation": read_json(conversation_path) if conversation_path.exists() else [],
         "agent_data_requests": read_json(agent_requests_path) if agent_requests_path.exists() else [],
+        "learning_context": read_json(run_dir / "similarity_learning.json") if (run_dir / "similarity_learning.json").exists() else {},
         "rating_hint": confidence_trace.get("final_rating"),
         "confidence": confidence_trace.get("final_confidence"),
         "answer": report_path.read_text(encoding="utf-8"),
@@ -622,6 +667,7 @@ def _llm_agent_result(
         },
         "quantitative_checks": _quantitative_checks(dossier, analysis_dossier),
         "analysis_slice": _agent_analysis_slice(analysis_dossier, spec.get("slice_keys", [])),
+        "learning_context": _limit_nested_records(analysis_dossier.get("learning_context", {}), 12),
         "raw_dossier_slice": _agent_raw_slice(dossier, agent, analysis_type),
     }
     system_prompt = f"""你是 A 股投研多 Agent 系统中的「{spec['role']}」。
@@ -953,15 +999,20 @@ def _money_net(row: dict[str, Any]) -> float | None:
 
 def _agent_analysis_slice(analysis_dossier: dict[str, Any], keys: list[str]) -> dict[str, Any]:
     if not keys:
-        return {
+        selected = {
             "decision_helper": analysis_dossier.get("decision_helper", {}),
             "risk_flags": analysis_dossier.get("risk_flags", []),
             "data_quality": analysis_dossier.get("data_quality", {}),
         }
+        if analysis_dossier.get("learning_context"):
+            selected["learning_context"] = analysis_dossier.get("learning_context", {})
+        return _limit_nested_records(selected)
     selected = {key: analysis_dossier.get(key) for key in keys if key in analysis_dossier}
     selected["decision_helper"] = analysis_dossier.get("decision_helper", {})
     selected["risk_flags"] = analysis_dossier.get("risk_flags", [])
     selected["data_quality"] = analysis_dossier.get("data_quality", {})
+    if analysis_dossier.get("learning_context"):
+        selected["learning_context"] = analysis_dossier.get("learning_context", {})
     return _limit_nested_records(selected)
 
 
@@ -1177,6 +1228,7 @@ def _agent_conversation(
     broker_result: dict[str, Any],
     fetch_result: dict[str, Any],
     hypotheses: dict[str, Any],
+    learning_context: dict[str, Any],
     agent_results: list[dict[str, Any]],
     debate: dict[str, Any],
     confidence_trace: dict[str, Any],
@@ -1198,6 +1250,32 @@ def _agent_conversation(
             "message": "提出初始假设：" + _join_text(hypotheses.get("hypotheses", []), "；", 3),
         },
     ]
+    if learning_context:
+        outcome = learning_context.get("outcome_distribution", {})
+        distribution = outcome.get("distribution", {})
+        regime = learning_context.get("market_regime", {})
+        messages.append(
+            {
+                "speaker": "Pattern Learning",
+                "role": "历史学习",
+                "message": (
+                    f"市场状态：趋势 {_text(regime.get('trend') or 'unknown')}、流动性 {_text(regime.get('liquidity') or 'unknown')}；"
+                    f"相似窗口 {len(learning_context.get('similar_cases', []))} 个；"
+                    f"结局概率：价值修复 {distribution.get('value_repair', 0)}%，"
+                    f"价值陷阱 {distribution.get('value_trap', 0)}%，"
+                    f"长期横盘 {distribution.get('long_flat', 0)}%。"
+                ),
+            }
+        )
+        failure_matches = learning_context.get("failure_case_matches", [])
+        if failure_matches:
+            messages.append(
+                {
+                    "speaker": "Failure Case Library",
+                    "role": "打脸案例",
+                    "message": f"命中过去系统误判案例 {len(failure_matches)} 个，需要降低单一结论自信并复核失败原因。",
+                }
+            )
     requests = broker_result.get("approved_requests", [])
     if requests:
         messages.append(
@@ -1268,6 +1346,7 @@ def _final_report(
     broker_result: dict[str, Any],
     fetch_result: dict[str, Any],
     hypotheses: dict[str, Any],
+    learning_context: dict[str, Any],
     agent_results: list[dict[str, Any]],
     debate: dict[str, Any],
     confidence_trace: dict[str, Any],
@@ -1309,6 +1388,8 @@ def _final_report(
             f"- {_text(req.get('requested_by'))}：{_text(req.get('dataset'))} / {_text(req.get('need'))}（{_text(req.get('status'))}）"
             for req in agent_data_requests
         )
+    if learning_context:
+        lines.extend(_learning_report_lines(learning_context))
     lines.extend(["", "## Agent 观点"])
     for result in agent_results:
         source = "LLM 专家" if result.get("source") == "llm_agent" else "规则回退"
@@ -1335,6 +1416,79 @@ def _final_report(
         lines.append(f"- {item}")
     lines.extend(["", "免责声明：以上内容仅用于研究和情景推演，不构成投资建议。"])
     return "\n".join(lines)
+
+
+def _learning_report_lines(learning_context: dict[str, Any]) -> list[str]:
+    lines = ["", "## 历史相似走势学习"]
+    if learning_context.get("error"):
+        lines.append(f"- 模块状态：失败，错误信息：{_text(learning_context.get('error'))}")
+        return lines
+
+    regime = learning_context.get("market_regime", {})
+    distribution = learning_context.get("outcome_distribution", {})
+    probabilities = distribution.get("distribution", {})
+    query_features = learning_context.get("query_features", {})
+    lines.append(
+        "- 市场状态："
+        f"趋势={_text(regime.get('trend') or 'unknown')}，"
+        f"流动性={_text(regime.get('liquidity') or 'unknown')}，"
+        f"风偏={_text(regime.get('risk_appetite') or 'unknown')}，"
+        f"风格={_text(regime.get('style') or 'unknown')}"
+    )
+    for evidence in regime.get("evidence", [])[:2]:
+        lines.append(f"- Regime 证据：{_text(evidence)}")
+    if query_features:
+        lines.append("- 当前核心特征：" + "，".join(f"{key}={value}" for key, value in query_features.items()))
+    lines.append(
+        "- 结局概率："
+        f"价值修复 {_text(probabilities.get('value_repair', 0))}%，"
+        f"价值陷阱 {_text(probabilities.get('value_trap', 0))}%，"
+        f"长期横盘 {_text(probabilities.get('long_flat', 0))}%"
+    )
+    lines.append(f"- 样本数量：{distribution.get('sample_size', 0)}，不确定性：{_text(distribution.get('uncertainty_level') or 'unknown')}")
+    if distribution.get("interpretation"):
+        lines.append(f"- 概率解读：{_text(distribution.get('interpretation'))}")
+    for warning in learning_context.get("warnings", [])[:4]:
+        lines.append(f"- 提醒：{_text(warning)}")
+
+    similar_cases = learning_context.get("similar_cases", [])
+    if similar_cases:
+        lines.extend(["", "### Top 相似案例"])
+        for case in similar_cases[:5]:
+            returns = case.get("forward_returns", {})
+            drawdown = case.get("forward_max_drawdown", {})
+            lines.append(
+                f"- {case.get('trade_date')}：相似度 {case.get('similarity')}，"
+                f"结局={_outcome_label(case.get('outcome_class'))}，"
+                f"后20/60/120日收益={returns.get('20d')}/{returns.get('60d')}/{returns.get('120d')}%，"
+                f"后60日最大回撤={drawdown.get('60d')}%"
+            )
+    else:
+        lines.append("- Top 相似案例：暂无可用样本。")
+
+    failure_matches = learning_context.get("failure_case_matches", [])
+    lines.extend(["", "## Failure Case Library"])
+    if failure_matches:
+        for item in failure_matches:
+            actual = item.get("actual_outcome", {})
+            postmortem = item.get("postmortem", {})
+            lines.append(
+                f"- {item.get('case_id') or '未命名案例'}：相似度 {item.get('failure_similarity')}，"
+                f"类型={_text(item.get('failure_type')) or 'unknown'}，"
+                f"实际结果={_text(actual.get('summary') if isinstance(actual, dict) else actual)}，"
+                f"复盘={_text(postmortem.get('root_cause') if isinstance(postmortem, dict) else postmortem)}"
+            )
+    else:
+        lines.append("- 暂无命中的打脸案例；后续真实复盘案例写入后，这里会自动参与提醒。")
+    return lines
+
+
+def _outcome_label(value: Any) -> str:
+    return {
+        "value_repair": "价值修复",
+        "value_trap": "价值陷阱",
+        "long_flat": "长期横盘",
+    }.get(_text(value), _text(value) or "unknown")
 
 
 def _fetch_status_text(broker_result: dict[str, Any], fetch_result: dict[str, Any]) -> str:

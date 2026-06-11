@@ -12,6 +12,11 @@ DEEPSEEK_API=你的DeepSeekKey
 STOCK_WEB_USER=admin
 STOCK_WEB_PASSWORD=请换成强密码
 STOCK_WEB_SESSION_SECRET=一段随机字符串
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=root
+MYSQL_DATABASE=news
 ```
 
 也兼容 `TUSHARE_TOKEN` 和 `DEEPSEEK_API_KEY`。
@@ -45,6 +50,26 @@ python3 -m stock_pipeline web
 然后打开 `http://127.0.0.1:8765`，可以用股票代码、名称、首字母或拼音检索，例如 `000001`、`平安银行`、`mygf`、`muyuangufen`。
 
 前端默认启用账号密码登录。若未配置，默认账号密码为 `admin/admin`，只适合本地测试；部署到服务器前请务必在 `.env` 中设置 `STOCK_WEB_USER`、`STOCK_WEB_PASSWORD` 和 `STOCK_WEB_SESSION_SECRET`。
+
+抓取同花顺财经新闻到本地 MySQL：
+
+```bash
+python3 -m stock_pipeline news crawl --types 财经要闻,公司新闻 --max-pages 3
+```
+
+只抓新增新闻，适合日常定时运行：
+
+```bash
+python3 -m stock_pipeline news crawl --types 财经要闻,公司新闻 --new-only --existing-stop-count 10
+```
+
+检索本地新闻库：
+
+```bash
+python3 -m stock_pipeline news search 平安银行 银行
+```
+
+股票资料包会自动尝试读取本地新闻库，并在 `dossier.json` 中加入 `news_context`，包括公司新闻、行业新闻和宏观新闻；如果本地 MySQL 或新闻表不可用，会记录 `news_context.fetch_error`，不会中断股票数据采集。
 
 如果希望全市场股票名称的拼音/首字母检索更完整，建议安装：
 

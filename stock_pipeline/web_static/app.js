@@ -12,6 +12,7 @@ const analysisHistorySelect = document.querySelector("#analysisHistorySelect");
 const multiAgentBtn = document.querySelector("#multiAgentBtn");
 const agentRunSelect = document.querySelector("#agentRunSelect");
 const readAgentRunBtn = document.querySelector("#readAgentRunBtn");
+const themeToggleBtn = document.querySelector("#themeToggleBtn");
 const logoutBtn = document.querySelector("#logoutBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
 const output = document.querySelector("#analysisOutput");
@@ -78,7 +79,50 @@ const defaultAnalysisFrameworks = [
 ];
 let analysisFrameworks = defaultAnalysisFrameworks;
 
+initializeTheme();
 loadAnalysisFrameworks();
+
+function initializeTheme() {
+  let savedTheme = "light";
+  try {
+    savedTheme = localStorage.getItem("stockTheme") || "light";
+  } catch {}
+  applyTheme(savedTheme === "dark" ? "dark" : "light");
+}
+
+function applyTheme(theme) {
+  const isDark = theme === "dark";
+  document.documentElement.classList.toggle("theme-dark", isDark);
+  if (themeToggleBtn) {
+    themeToggleBtn.textContent = isDark ? "浅色模式" : "深色模式";
+    themeToggleBtn.setAttribute("aria-pressed", String(isDark));
+  }
+  if (viewMode === "chart" && activeDataset) renderChart();
+}
+
+themeToggleBtn?.addEventListener("click", () => {
+  const nextTheme = document.documentElement.classList.contains("theme-dark") ? "light" : "dark";
+  try {
+    localStorage.setItem("stockTheme", nextTheme);
+  } catch {}
+  applyTheme(nextTheme);
+});
+
+function chartPalette() {
+  const styles = getComputedStyle(document.documentElement);
+  return {
+    text: styles.getPropertyValue("--chart-text").trim() || "#17202a",
+    muted: styles.getPropertyValue("--chart-muted").trim() || "#667085",
+    axis: styles.getPropertyValue("--chart-axis").trim() || "#d0d5dd",
+    grid: styles.getPropertyValue("--chart-grid").trim() || "#eef1f5",
+    primary: styles.getPropertyValue("--chart-primary").trim() || "#2f80ed",
+    tooltip: styles.getPropertyValue("--chart-tooltip").trim() || "rgba(23, 32, 42, 0.9)",
+    tooltipText: styles.getPropertyValue("--chart-tooltip-text").trim() || "#ffffff",
+    panel: styles.getPropertyValue("--chart-panel").trim() || "#ffffff",
+    candleUp: styles.getPropertyValue("--chart-up").trim() || "#eb5757",
+    candleDown: styles.getPropertyValue("--chart-down").trim() || "#27ae60",
+  };
+}
 
 async function readApiPayload(response, fallbackMessage) {
   const text = await response.text();
@@ -645,6 +689,7 @@ function formatAgentConversation(messages) {
 
 function renderMultiAgentResult(payload, metaItems = []) {
   const conversation = payload.agent_conversation || [];
+  const enrichedMetaItems = [...metaItems, ...learningMetaItems(payload.learning_context)];
   output.innerHTML = `
     <article class="agent-report">
       <header class="report-hero">
@@ -657,7 +702,7 @@ function renderMultiAgentResult(payload, metaItems = []) {
           <span>置信度 ${escapeHtml(payload.confidence ?? "-")}</span>
         </div>
       </header>
-      ${renderMetaGrid(metaItems)}
+      ${renderMetaGrid(enrichedMetaItems)}
       ${renderConversationTimeline(conversation)}
       ${renderMarkdownReport(payload.answer || "")}
     </article>
@@ -677,6 +722,24 @@ function renderMetaGrid(items) {
       `).join("")}
     </section>
   `;
+}
+
+function learningMetaItems(learningContext = {}) {
+  if (!learningContext || learningContext.error) return [];
+  const regime = learningContext.market_regime || {};
+  const distribution = learningContext.outcome_distribution?.distribution || {};
+  const pieces = [];
+  const trend = [regime.trend, regime.liquidity].filter(Boolean).join(" / ");
+  if (trend) pieces.push(["市场状态", trend]);
+  if (Array.isArray(learningContext.similar_cases)) pieces.push(["相似样本", `${learningContext.similar_cases.length} 个`]);
+  pieces.push([
+    "结局概率",
+    `修复 ${distribution.value_repair ?? 0}% · 陷阱 ${distribution.value_trap ?? 0}% · 横盘 ${distribution.long_flat ?? 0}%`,
+  ]);
+  if (Array.isArray(learningContext.failure_case_matches)) {
+    pieces.push(["打脸案例", `${learningContext.failure_case_matches.length} 个`]);
+  }
+  return pieces;
 }
 
 function renderConversationTimeline(messages) {
@@ -1463,18 +1526,22 @@ function canvasContext() {
   const ratio = window.devicePixelRatio || 1;
   const width = Math.max(360, Math.floor(rect.width || dataChart.clientWidth || 960));
   const height = 420;
+  const palette = chartPalette();
   dataChart.width = width * ratio;
   dataChart.height = height * ratio;
   const ctx = dataChart.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = palette.panel;
+  ctx.fillRect(0, 0, width, height);
   ctx.font = "13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
   return { ctx, width, height };
 }
 
 function drawEmptyChart(message) {
   const { ctx, width, height } = canvasContext();
-  ctx.fillStyle = "#667085";
+  const palette = chartPalette();
+  ctx.fillStyle = palette.muted;
   ctx.textAlign = "center";
   ctx.fillText(message, width / 2, height / 2);
 }
@@ -1505,7 +1572,8 @@ function drawLineChart(data, metricLabel, secondary = null) {
   const span = max - min || 1;
 
   drawAxes(ctx, margin, plotW, plotH, min, max);
-  ctx.strokeStyle = "#2f80ed";
+  const palette = chartPalette();
+  ctx.strokeStyle = palette.primary;
   ctx.lineWidth = 2;
   ctx.beginPath();
   linePlotArea = { left: margin.left, right: margin.left + plotW, top: margin.top, bottom: secondaryArea?.bottom || margin.top + plotH };
@@ -1523,7 +1591,7 @@ function drawLineChart(data, metricLabel, secondary = null) {
   ctx.stroke();
   if (secondaryArea) drawSecondaryBars(ctx, data, margin, plotW, secondaryArea, secondary.label);
   drawLineCrosshair(ctx, margin, plotW, plotH, metricLabel, secondaryArea);
-  ctx.fillStyle = "#17202a";
+  ctx.fillStyle = palette.text;
   ctx.textAlign = "left";
   ctx.fillText(fitText(ctx, metricLabel, width - margin.left - margin.right), margin.left, 22);
   drawXAxisLabels(ctx, data, margin, plotW, plotH);
@@ -1580,7 +1648,8 @@ function drawCandlestickChart(data, secondary = null) {
 
   for (const point of lineHitPoints) {
     const rising = point.close >= point.open;
-    const color = rising ? "#eb5757" : "#27ae60";
+    const palette = chartPalette();
+    const color = rising ? palette.candleUp : palette.candleDown;
     const highY = valueToY(point.high);
     const lowY = valueToY(point.low);
     const openY = valueToY(point.open);
@@ -1604,7 +1673,8 @@ function drawCandlestickChart(data, secondary = null) {
 
   if (secondaryArea) drawSecondaryBars(ctx, data, margin, plotW, secondaryArea, secondary.label);
   drawLineCrosshair(ctx, margin, plotW, plotH, "收盘价", secondaryArea);
-  ctx.fillStyle = "#17202a";
+  const palette = chartPalette();
+  ctx.fillStyle = palette.text;
   ctx.textAlign = "left";
   ctx.fillText("K线图", margin.left, 22);
   drawXAxisLabels(ctx, data, margin, plotW, plotH);
@@ -1618,7 +1688,8 @@ function drawSecondaryBars(ctx, data, margin, plotW, area, label) {
   const barW = Math.max(2, Math.min(12, gap * 0.58));
 
   ctx.save();
-  ctx.strokeStyle = "#eef1f5";
+  const palette = chartPalette();
+  ctx.strokeStyle = palette.grid;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(margin.left, area.top);
@@ -1636,7 +1707,7 @@ function drawSecondaryBars(ctx, data, margin, plotW, area, label) {
     ctx.fillRect(x - barW / 2, area.bottom - h, barW, h);
   });
 
-  ctx.fillStyle = "#667085";
+  ctx.fillStyle = palette.muted;
   ctx.textAlign = "left";
   ctx.font = "12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
   ctx.fillText(fitText(ctx, label, plotW * 0.45), margin.left, area.top - 10);
@@ -1655,7 +1726,8 @@ function drawLineCrosshair(ctx, margin, plotW, plotH, metricLabel, secondaryArea
   const verticalBottom = secondaryArea?.bottom || plotBottom;
 
   ctx.save();
-  ctx.strokeStyle = "#98a2b3";
+  const palette = chartPalette();
+  ctx.strokeStyle = palette.muted;
   ctx.lineWidth = 1;
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
@@ -1666,8 +1738,8 @@ function drawLineCrosshair(ctx, margin, plotW, plotH, metricLabel, secondaryArea
   ctx.stroke();
   ctx.setLineDash([]);
 
-  ctx.fillStyle = "#2f80ed";
-  ctx.strokeStyle = "#ffffff";
+  ctx.fillStyle = palette.primary;
+  ctx.strokeStyle = palette.panel;
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
@@ -1680,9 +1752,9 @@ function drawLineCrosshair(ctx, margin, plotW, plotH, metricLabel, secondaryArea
   const valueX = Math.max(4, plotLeft - valueW - 8);
   const valueY = clampNumber(point.y - 13, plotTop, plotBottom - 26);
   roundedRect(ctx, valueX, valueY, valueW, 26, 4);
-  ctx.fillStyle = "#2f80ed";
+  ctx.fillStyle = palette.primary;
   ctx.fill();
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = palette.tooltipText;
   ctx.textAlign = "center";
   ctx.fillText(fitText(ctx, valueLabel, valueW - 10), valueX + valueW / 2, valueY + 17);
 
@@ -1690,9 +1762,9 @@ function drawLineCrosshair(ctx, margin, plotW, plotH, metricLabel, secondaryArea
   const dateX = clampNumber(point.x - dateW / 2, plotLeft, plotRight - dateW);
   const dateY = verticalBottom + 34;
   roundedRect(ctx, dateX, dateY, dateW, 26, 4);
-  ctx.fillStyle = "#2f80ed";
+  ctx.fillStyle = palette.primary;
   ctx.fill();
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = palette.tooltipText;
   ctx.textAlign = "center";
   ctx.fillText(point.label, dateX + dateW / 2, dateY + 17);
 
@@ -1704,9 +1776,9 @@ function drawLineCrosshair(ctx, margin, plotW, plotH, metricLabel, secondaryArea
   const tooltipX = point.x + tooltipW + 14 > plotRight ? point.x - tooltipW - 14 : point.x + 14;
   const tooltipY = clampNumber(point.y - tooltipH - 12, plotTop + 4, plotBottom - tooltipH - 4);
   roundedRect(ctx, tooltipX, tooltipY, tooltipW, tooltipH, 6);
-  ctx.fillStyle = "rgba(23, 32, 42, 0.9)";
+  ctx.fillStyle = palette.tooltip;
   ctx.fill();
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = palette.tooltipText;
   ctx.textAlign = "left";
   ctx.font = "700 12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
   tooltipLines.forEach((line, index) => {
@@ -1733,17 +1805,19 @@ function drawBarChart(data, metricLabel) {
     const x = margin.left + index * (barW + gap);
     const h = (item.value / max) * plotH;
     const y = margin.top + plotH - h;
-    ctx.fillStyle = "#2f80ed";
+    const palette = chartPalette();
+    ctx.fillStyle = palette.primary;
     ctx.fillRect(x, y, barW, h);
     ctx.save();
     ctx.translate(x + barW / 2, margin.top + plotH + 12);
     ctx.rotate(-Math.PI / 4);
-    ctx.fillStyle = "#667085";
+    ctx.fillStyle = palette.muted;
     ctx.textAlign = "right";
     ctx.fillText(item.label.slice(0, 12), 0, 0);
     ctx.restore();
   });
-  ctx.fillStyle = "#17202a";
+  const palette = chartPalette();
+  ctx.fillStyle = palette.text;
   ctx.textAlign = "left";
   ctx.fillText(metricLabel, margin.left, 18);
 }
@@ -1778,10 +1852,11 @@ function drawPieChart(data, metricLabel) {
     ctx.fillStyle = colors[index % colors.length];
     ctx.fill();
     if (isHovered) {
-      ctx.strokeStyle = "#ffffff";
+      const palette = chartPalette();
+      ctx.strokeStyle = palette.panel;
       ctx.lineWidth = 4;
       ctx.stroke();
-      ctx.strokeStyle = "#17202a";
+      ctx.strokeStyle = palette.text;
       ctx.lineWidth = 1;
       ctx.stroke();
     }
@@ -1789,7 +1864,8 @@ function drawPieChart(data, metricLabel) {
     pieSlices.push({ start, end, cx, cy, radius, item });
     start = end;
   });
-  ctx.fillStyle = "#17202a";
+  const palette = chartPalette();
+  ctx.fillStyle = palette.text;
   ctx.textAlign = "left";
   ctx.fillText(metricLabel, 20, 22);
   data.forEach((item, index) => {
@@ -1798,7 +1874,7 @@ function drawPieChart(data, metricLabel) {
     const isHovered = index === hoveredPieIndex;
     ctx.fillStyle = colors[index % colors.length];
     ctx.fillRect(x, y - 10, 14, 14);
-    ctx.fillStyle = "#17202a";
+    ctx.fillStyle = palette.text;
     ctx.font = `${isHovered ? "700 " : ""}13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif`;
     ctx.fillText(fitText(ctx, `${item.label} ${item.percentText}`, legendWidth - 22), x + 22, y);
     ctx.font = "13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif";
@@ -1869,21 +1945,22 @@ function roundedRect(ctx, x, y, width, height, radius) {
 }
 
 function drawAxes(ctx, margin, plotW, plotH, min, max) {
-  ctx.strokeStyle = "#d0d5dd";
+  const palette = chartPalette();
+  ctx.strokeStyle = palette.axis;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(margin.left, margin.top);
   ctx.lineTo(margin.left, margin.top + plotH);
   ctx.lineTo(margin.left + plotW, margin.top + plotH);
   ctx.stroke();
-  ctx.fillStyle = "#667085";
+  ctx.fillStyle = palette.muted;
   ctx.textAlign = "right";
   const labelWidth = Math.max(36, margin.left - 16);
   for (let i = 0; i <= 4; i += 1) {
     const value = min + ((max - min) * i) / 4;
     const y = margin.top + plotH - (plotH * i) / 4;
     ctx.fillText(fitText(ctx, formatNumber(value), labelWidth), margin.left - 10, y + 4);
-    ctx.strokeStyle = "#eef1f5";
+    ctx.strokeStyle = palette.grid;
     ctx.beginPath();
     ctx.moveTo(margin.left, y);
     ctx.lineTo(margin.left + plotW, y);
@@ -1892,7 +1969,8 @@ function drawAxes(ctx, margin, plotW, plotH, min, max) {
 }
 
 function drawXAxisLabels(ctx, data, margin, plotW, plotH) {
-  ctx.fillStyle = "#667085";
+  const palette = chartPalette();
+  ctx.fillStyle = palette.muted;
   const positions = [
     { index: 0, align: "left", maxWidth: Math.max(70, plotW * 0.28) },
     { index: Math.floor(data.length / 2), align: "center", maxWidth: Math.max(70, plotW * 0.26) },

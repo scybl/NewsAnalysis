@@ -1,1 +1,5 @@
 pypinyin>=0.53.0
+requests
+lxml
+beautifulsoup4
+pymysql

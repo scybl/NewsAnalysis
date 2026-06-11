@@ -31,6 +31,11 @@ class Settings:
     web_username: str = "admin"
     web_password: str = "admin"
     web_session_secret: str = ""
+    mysql_host: str = "localhost"
+    mysql_port: int = 3306
+    mysql_user: str = "root"
+    mysql_password: str = "root"
+    mysql_database: str = "news"
 
 
 def get_settings(require_deepseek: bool = False) -> Settings:
@@ -50,4 +55,22 @@ def get_settings(require_deepseek: bool = False) -> Settings:
         web_username=os.getenv("STOCK_WEB_USER", "admin"),
         web_password=os.getenv("STOCK_WEB_PASSWORD") or os.getenv("STOCK_WEB_PASS") or "admin",
         web_session_secret=os.getenv("STOCK_WEB_SESSION_SECRET", ""),
+        mysql_host=os.getenv("MYSQL_HOST", "localhost"),
+        mysql_port=int(os.getenv("MYSQL_PORT", "3306")),
+        mysql_user=os.getenv("MYSQL_USER", "root"),
+        mysql_password=os.getenv("MYSQL_PASSWORD", "root"),
+        mysql_database=os.getenv("MYSQL_DATABASE", "news"),
+    )
+
+
+def get_news_db_config():
+    from .news.storage import NewsDatabaseConfig
+
+    load_dotenv()
+    return NewsDatabaseConfig(
+        host=os.getenv("MYSQL_HOST", "localhost"),
+        port=int(os.getenv("MYSQL_PORT", "3306")),
+        user=os.getenv("MYSQL_USER", "root"),
+        password=os.getenv("MYSQL_PASSWORD", "root"),
+        database=os.getenv("MYSQL_DATABASE", "news"),
     )
