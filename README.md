@@ -20,10 +20,14 @@ DEEPSEEK_API=你的DeepSeekKey
 STOCK_WEB_USER=admin
 STOCK_WEB_PASSWORD=请换成强密码
 STOCK_WEB_SESSION_SECRET=一段随机字符串
+STOCK_WEB_KEY_ENCRYPTION_SECRET=另一段长期固定的随机字符串
 STOCK_WEB_INVITE_CODES=
 STOCK_WEB_INVITE_TTL_SECONDS=259200
 STOCK_WEB_DEMO_REQUEST_LIMIT=30
 STOCK_WEB_DEMO_WINDOW_SECONDS=86400
+STOCK_DATA_CACHE_TTL_SECONDS=86400
+STOCK_ANALYSIS_HISTORY_REVIEW_LIMIT=3
+STOCK_ANALYSIS_REUSE_TTL_SECONDS=1800
 MONGODB_URI=mongodb://localhost:27017/
 MONGODB_DATABASE=news
 MONGODB_COLLECTION=articles
@@ -62,6 +66,10 @@ scripts/run_web.sh
 前端默认启用账号密码登录。若未配置，默认账号密码为 `admin/admin`，只适合本地测试；部署到服务器前请务必在 `.env` 中设置 `STOCK_WEB_USER`、`STOCK_WEB_PASSWORD` 和 `STOCK_WEB_SESSION_SECRET`。
 
 注册功能只接受管理员后台生成的邀请码。管理员登录后可在“管理”面板生成 6 位数字邀请码，默认 3 天有效，成功注册后会被标记为已使用，不能再次注册。`STOCK_WEB_INVITE_CODES` 只作为可选启动种子，不建议日常使用。朋友测试账号也在管理员面板生成，默认每 24 小时最多 30 次 API 请求，可用 `STOCK_WEB_DEMO_REQUEST_LIMIT` 和 `STOCK_WEB_DEMO_WINDOW_SECONDS` 调整新生成测试账号的默认额度。
+
+股票数据按股票代码共享保存到 `local_data/{ts_code}`，不是按用户隔离。`STOCK_DATA_CACHE_TTL_SECONDS` 控制共享缓存有效期，默认 24 小时内同一只股票不会重复调用 Tushare 更新。`STOCK_ANALYSIS_REUSE_TTL_SECONDS` 控制近期 DeepSeek / 多 Agent 分析结果的复用窗口，默认 30 分钟。`STOCK_ANALYSIS_HISTORY_REVIEW_LIMIT` 控制 LLM 分析时纳入最近几份历史分析做复盘，默认 3 份。
+
+账号分为管理员、VIP、普通用户和测试账号。管理员和 VIP 使用系统 `.env` 中的 Tushare / DeepSeek key；普通用户需要在页面内保存自己的 key。用户 key 会用 `STOCK_WEB_KEY_ENCRYPTION_SECRET` 派生的 Fernet 密钥加密保存，删除时会直接移除密文记录，不保留删除痕迹。管理员可在账户管理页生成 VIP 兑换码，并自定义兑换后的 VIP 天数；兑换码默认 3 天内有效，一次性使用。
 
 抓取同花顺财经新闻到 MongoDB：
 

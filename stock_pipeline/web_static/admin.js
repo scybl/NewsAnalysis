@@ -2,12 +2,16 @@ const themeToggleBtn = document.querySelector("#themeToggleBtn");
 const logoutBtn = document.querySelector("#logoutBtn");
 const createInviteBtn = document.querySelector("#createInviteBtn");
 const createDemoAccountBtn = document.querySelector("#createDemoAccountBtn");
+const createVipCodeBtn = document.querySelector("#createVipCodeBtn");
+const vipCodeDaysInput = document.querySelector("#vipCodeDaysInput");
 const adminSummary = document.querySelector("#adminSummary");
 const adminUsersTable = document.querySelector("#adminUsersTable");
 const adminInvitesTable = document.querySelector("#adminInvitesTable");
+const adminVipCodesTable = document.querySelector("#adminVipCodesTable");
 const adminDemoAccountsTable = document.querySelector("#adminDemoAccountsTable");
 const adminUserCount = document.querySelector("#adminUserCount");
 const adminInviteCount = document.querySelector("#adminInviteCount");
+const adminVipCodeCount = document.querySelector("#adminVipCodeCount");
 const adminDemoCount = document.querySelector("#adminDemoCount");
 const spiderStatus = document.querySelector("#spiderStatus");
 const spiderStateText = document.querySelector("#spiderStateText");
@@ -99,6 +103,27 @@ createDemoAccountBtn?.addEventListener("click", async () => {
   }
 });
 
+createVipCodeBtn?.addEventListener("click", async () => {
+  createVipCodeBtn.disabled = true;
+  try {
+    const response = await fetch("/api/admin/vip-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ count: 1, days: Number(vipCodeDaysInput?.value || 30) }),
+    });
+    const payload = await readApiPayload(response, "生成 VIP 兑换码失败");
+    const item = payload.items?.[0];
+    await loadAdminOverview();
+    if (item) {
+      adminSummary.textContent = `VIP 兑换码已生成：${item.code}，兑换后有效 ${item.vip_days} 天。`;
+    }
+  } catch (error) {
+    adminSummary.textContent = `生成 VIP 兑换码失败：${error.message}`;
+  } finally {
+    createVipCodeBtn.disabled = false;
+  }
+});
+
 startSpiderBtn?.addEventListener("click", async () => {
   startSpiderBtn.disabled = true;
   let started = false;
@@ -168,13 +193,16 @@ async function loadAdminOverview() {
     const payload = await readApiPayload(response, "读取账户管理失败");
     const demo = payload.demo || {};
     const invites = payload.invites || [];
+    const vipCodes = payload.vip_codes || [];
     const demoAccounts = payload.demo_accounts || [];
     adminSummary.textContent = `新测试账号默认额度：${demo.limit ?? "-"} 次 / ${formatDuration(demo.window_seconds || 0)}。`;
     renderAdminUsers(payload.users || []);
     renderAdminInvites(invites);
+    renderAdminVipCodes(vipCodes);
     renderAdminDemoAccounts(demoAccounts);
     if (adminUserCount) adminUserCount.textContent = String((payload.users || []).length);
     if (adminInviteCount) adminInviteCount.textContent = String(invites.filter((item) => item.status === "active").length);
+    if (adminVipCodeCount) adminVipCodeCount.textContent = String(vipCodes.filter((item) => item.status === "active").length);
     if (adminDemoCount) adminDemoCount.textContent = String(demoAccounts.length);
   } catch (error) {
     adminSummary.textContent = `读取失败：${error.message}`;
@@ -188,12 +216,14 @@ function renderAdminUsers(users) {
       <td>${escapeHtml(user.role || "")}</td>
       <td>${escapeHtml(String(user.usage_total || 0))}</td>
       <td>${escapeHtml(user.last_request_at || "-")}</td>
+      <td>${escapeHtml(user.vip_until_text || "-")}</td>
+      <td>${escapeHtml(apiKeySummary(user.api_keys || {}))}</td>
       <td>${escapeHtml(user.invite_code || "-")}</td>
     </tr>
   `).join("");
   adminUsersTable.innerHTML = `
-    <thead><tr><th>账号</th><th>角色</th><th>API 用量</th><th>最近请求</th><th>邀请码</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="5">暂无注册用户</td></tr>`}</tbody>
+    <thead><tr><th>账号</th><th>角色</th><th>API 用量</th><th>最近请求</th><th>VIP 到期</th><th>用户 Key</th><th>邀请码</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="7">暂无注册用户</td></tr>`}</tbody>
   `;
 }
 
@@ -209,6 +239,23 @@ function renderAdminInvites(invites) {
   adminInvitesTable.innerHTML = `
     <thead><tr><th>邀请码</th><th>状态</th><th>过期时间</th><th>使用者</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="4">暂无邀请码</td></tr>`}</tbody>
+  `;
+}
+
+function renderAdminVipCodes(items) {
+  if (!adminVipCodesTable) return;
+  const rows = items.map((item) => `
+    <tr>
+      <td><code>${escapeHtml(item.code || "")}</code></td>
+      <td>${inviteStatusLabel(item.status)}</td>
+      <td>${escapeHtml(`${item.vip_days || "-"} 天`)}</td>
+      <td>${escapeHtml(item.expires_at_text || "-")}</td>
+      <td>${escapeHtml(item.used_by || "-")}</td>
+    </tr>
+  `).join("");
+  adminVipCodesTable.innerHTML = `
+    <thead><tr><th>兑换码</th><th>状态</th><th>VIP 天数</th><th>过期时间</th><th>使用者</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="5">暂无 VIP 兑换码</td></tr>`}</tbody>
   `;
 }
 
@@ -310,6 +357,13 @@ function formatDuration(seconds) {
   if (seconds % 86400 === 0) return `${seconds / 86400} 天`;
   if (seconds % 3600 === 0) return `${seconds / 3600} 小时`;
   return `${seconds} 秒`;
+}
+
+function apiKeySummary(keys) {
+  const names = [];
+  if (keys.tushare?.configured) names.push("Tushare");
+  if (keys.deepseek?.configured) names.push("DeepSeek");
+  return names.length ? names.join(" / ") : "-";
 }
 
 function escapeHtml(value) {

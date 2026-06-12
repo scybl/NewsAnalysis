@@ -114,13 +114,25 @@ class StockAnalyst:
         framework: AnalysisFramework,
         question: str | None = None,
         stream: bool = False,
+        historical_context: str = "",
     ) -> str:
         prompt = question or framework.question
+        review_instruction = ""
+        if historical_context:
+            review_instruction = (
+                "\n\n历史分析复盘材料：\n"
+                f"{historical_context}\n\n"
+                "请先对这些历史分析做复盘：\n"
+                "1. 哪些判断被最新数据支持；\n"
+                "2. 哪些判断可能已经被证伪或需要降权；\n"
+                "3. 本次结论相较过去应如何调整，原因是什么。\n"
+                "如果历史材料不足以复盘，请明确说明不可判断，不要硬凑。"
+            )
         messages = [
             {"role": "system", "content": framework.system_prompt},
             {
                 "role": "user",
-                "content": f"{prompt}\n\n{framework.label}资料包 JSON：\n{json.dumps(analysis_dossier, ensure_ascii=False)}",
+                "content": f"{prompt}{review_instruction}\n\n{framework.label}资料包 JSON：\n{json.dumps(analysis_dossier, ensure_ascii=False)}",
             },
         ]
         answer = self.client.chat(messages, stream=stream)

@@ -68,11 +68,28 @@ def stock_status(code: str) -> dict[str, Any]:
     }
 
 
-def sync_stock_data(client: TushareClient, code: str, years: int | None = None, full_history: bool = True) -> dict[str, Any]:
+def sync_stock_data(
+    client: TushareClient,
+    code: str,
+    years: int | None = None,
+    full_history: bool = True,
+    force: bool = False,
+    max_age_seconds: int | None = None,
+) -> dict[str, Any]:
     ts_code = normalize_ts_code(code)
     ensure_current_layout(ts_code)
     base_dir = stock_dir(ts_code)
     target_dir = current_dir(ts_code)
+    if not force and max_age_seconds is not None and stock_exists(ts_code):
+        status = stock_status(ts_code)
+        age = status.get("age_seconds")
+        if isinstance(age, int) and age <= max_age_seconds:
+            payload = build_local_stock_payload(ts_code)
+            payload["cache_hit"] = True
+            payload["cache_age_seconds"] = age
+            payload["cache_max_age_seconds"] = max_age_seconds
+            return payload
+
     temp_dir = LOCAL_DATA_DIR / f".{ts_code}.tmp_{timestamp()}"
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
@@ -112,7 +129,10 @@ def sync_stock_data(client: TushareClient, code: str, years: int | None = None, 
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
-    return build_local_stock_payload(ts_code)
+    payload = build_local_stock_payload(ts_code)
+    payload["cache_hit"] = False
+    payload["cache_max_age_seconds"] = max_age_seconds
+    return payload
 
 
 def build_local_stock_payload(code: str) -> dict[str, Any]:
@@ -288,6 +308,39 @@ def read_analysis_result(code: str, analysis_type: str, snapshot_name: str = "")
         "answer": path.read_text(encoding="utf-8"),
         "items": list_analysis_results(ts_code, framework.key),
     }
+
+
+def analysis_review_context(code: str, analysis_type: str, limit: int = 3, max_chars: int = 9000) -> str:
+    ts_code = normalize_ts_code(code)
+    if limit <= 0:
+        return ""
+    pieces: list[str] = []
+    used = 0
+    for item in list_analysis_results(ts_code, analysis_type)[:limit]:
+        raw_path = item.get("analysis_path", "")
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        if not path.exists() or not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            continue
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        clipped = text[:remaining]
+        used += len(clipped)
+        label = "当前旧分析" if item.get("location") == "current" else f"历史快照 {item.get('snapshot_name', '')}"
+        pieces.append(
+            f"### {label}\n"
+            f"- 更新时间：{item.get('updated_at') or '未知'}\n"
+            f"- 分析文件：{item.get('analysis_path')}\n\n"
+            f"{clipped}"
+        )
+    if not pieces:
+        return ""
+    return "\n\n".join(pieces)
 
 
 def _append_analysis_results(

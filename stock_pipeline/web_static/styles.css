@@ -1982,7 +1982,7 @@ body:has(.admin-shell) {
 
 .admin-kpis {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
   padding: 0;
   border-bottom: 1px solid #eef1f5;
@@ -2027,6 +2027,47 @@ body:has(.admin-shell) {
 .account-grid > .admin-card.account-users-card {
   grid-column: 1 / -1;
   grid-row: auto;
+}
+
+.inline-admin-form {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  border-bottom: 1px solid #eef1f5;
+  padding: 12px 14px;
+  background: #fbfcfd;
+}
+
+.inline-admin-form label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.inline-admin-form label span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inline-admin-form input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid #cfd6df;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #17202a;
+  font: inherit;
+  font-size: 13px;
+}
+
+.inline-admin-form button {
+  height: 34px;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 750;
 }
 
 .admin-card {
@@ -2308,7 +2349,9 @@ html.theme-dark .admin-sidebar .admin-nav a.active .admin-nav-icon {
 html.theme-dark .admin-nav-icon,
 html.theme-dark .admin-table-wrap code,
 html.theme-dark .spider-form .check-row,
-html.theme-dark .admin-summary {
+html.theme-dark .admin-summary,
+html.theme-dark .inline-admin-form,
+html.theme-dark .inline-admin-form input {
   background: #151f2b;
   border-color: #2f3b4e;
 }
@@ -2319,10 +2362,15 @@ html.theme-dark .admin-page-head p,
 html.theme-dark .admin-card-head span,
 html.theme-dark .card-title-row span,
 html.theme-dark .admin-kpis span,
+html.theme-dark .inline-admin-form label span,
 html.theme-dark .spider-state-grid span,
 html.theme-dark .admin-summary,
 html.theme-dark .spider-form label {
   color: #9aa7b5;
+}
+
+html.theme-dark .inline-admin-form input {
+  color: #e6edf3;
 }
 
 html.theme-dark .admin-table-wrap,
@@ -2534,6 +2582,72 @@ html.theme-dark .spider-logs {
   padding-right: 2px;
 }
 
+.api-key-panel {
+  display: grid;
+  gap: 9px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfd;
+}
+
+.api-key-panel[hidden] {
+  display: none;
+}
+
+.api-key-head,
+.api-key-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.api-key-head strong {
+  font-size: 14px;
+}
+
+.api-key-head span,
+.api-key-panel label span,
+.api-key-panel p {
+  color: #667085;
+  font-size: 12px;
+}
+
+.api-key-panel label {
+  display: grid;
+  gap: 5px;
+}
+
+.api-key-panel input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid #cfd6df;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #17202a;
+  font: inherit;
+  font-size: 13px;
+}
+
+.api-key-panel input:disabled {
+  background: #eef1f5;
+  color: #667085;
+}
+
+.api-key-panel button {
+  height: 34px;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.api-key-panel p {
+  margin: 0;
+  line-height: 1.45;
+}
+
 .result {
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 74px;
@@ -2571,9 +2685,11 @@ html.theme-dark .spider-logs {
   color: #344054;
   font-size: 13px;
   font-weight: 750;
+  line-height: 1;
 }
 
 .sidebar-footer .admin-entry-link {
+  grid-column: 1 / -1;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -2595,6 +2711,8 @@ html.theme-dark .spider-logs {
 }
 
 .sidebar-footer .admin-entry-link strong {
+  font: inherit;
+  font-weight: 750;
   color: #17202a;
 }
 
@@ -2941,9 +3059,16 @@ html.theme-dark .stock-metrics-panel div,
 html.theme-dark .sidebar-footer button,
 html.theme-dark .sidebar-footer .admin-entry-link,
 html.theme-dark .admin-entry-icon,
-html.theme-dark .agent-score-list span {
+html.theme-dark .agent-score-list span,
+html.theme-dark .api-key-panel,
+html.theme-dark .api-key-panel input {
   background: #151f2b;
   border-color: #344154;
+}
+
+html.theme-dark .api-key-panel input:disabled {
+  background: #101822;
+  color: #697789;
 }
 
 html.theme-dark .stock-metrics-panel strong,

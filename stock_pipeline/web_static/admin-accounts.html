@@ -50,7 +50,7 @@
           <div>
             <span class="admin-kicker">ACCESS</span>
             <h1>账户管理</h1>
-            <p>查看用户用量，生成 3 天有效的一次性邀请码和限额测试账号。</p>
+            <p>查看用户用量，生成 3 天有效的一次性邀请码、VIP 兑换码和限额测试账号。</p>
           </div>
           <div class="admin-actions">
             <button id="createDemoAccountBtn" type="button">生成测试账号</button>
@@ -62,6 +62,7 @@
           <div class="admin-kpis">
             <div><span>注册用户</span><strong id="adminUserCount">-</strong></div>
             <div><span>可用邀请码</span><strong id="adminInviteCount">-</strong></div>
+            <div><span>可用 VIP 码</span><strong id="adminVipCodeCount">-</strong></div>
             <div><span>测试账号</span><strong id="adminDemoCount">-</strong></div>
           </div>
           <div id="adminSummary" class="admin-summary"></div>
@@ -73,6 +74,22 @@
               </div>
               <div class="admin-table-wrap">
                 <table id="adminUsersTable"></table>
+              </div>
+            </section>
+            <section class="admin-card">
+              <div class="admin-card-head">
+                <h4>VIP 兑换码</h4>
+                <span>普通用户兑换后临时升级</span>
+              </div>
+              <div class="inline-admin-form">
+                <label>
+                  <span>VIP 天数</span>
+                  <input id="vipCodeDaysInput" type="number" min="1" max="3650" value="30" />
+                </label>
+                <button id="createVipCodeBtn" type="button">生成 VIP 码</button>
+              </div>
+              <div class="admin-table-wrap">
+                <table id="adminVipCodesTable"></table>
               </div>
             </section>
             <section class="admin-card">

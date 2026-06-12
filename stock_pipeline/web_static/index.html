@@ -31,6 +31,30 @@
 
         <div id="status" class="status">输入关键词开始检索</div>
         <div id="results" class="results stock-list"></div>
+        <section id="apiKeyPanel" class="api-key-panel" hidden>
+          <div class="api-key-head">
+            <strong>我的 API</strong>
+            <span id="accountTierText">普通用户</span>
+          </div>
+          <label>
+            <span>Tushare API</span>
+            <input id="userTushareApiInput" type="password" autocomplete="off" placeholder="输入后加密保存" />
+          </label>
+          <label>
+            <span>DeepSeek API</span>
+            <input id="userDeepSeekApiInput" type="password" autocomplete="off" placeholder="输入后加密保存" />
+          </label>
+          <div class="api-key-actions">
+            <button id="saveUserApiKeysBtn" type="button">保存</button>
+            <button id="deleteUserApiKeysBtn" type="button">删除</button>
+          </div>
+          <label>
+            <span>VIP 兑换码</span>
+            <input id="vipRedeemCodeInput" autocomplete="off" placeholder="6 位兑换码" />
+          </label>
+          <button id="redeemVipBtn" type="button">兑换 VIP</button>
+          <p id="apiKeyStatus">普通用户需提供自己的 API key。</p>
+        </section>
         <div class="sidebar-footer">
           <a id="adminPanelLink" class="admin-entry-link" href="/admin-accounts.html" hidden>
             <span class="admin-entry-icon">A</span>

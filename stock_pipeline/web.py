@@ -5,6 +5,7 @@ import json
 import time
 import hmac
 import hashlib
+import base64
 import threading
 import uuid
 import os
@@ -16,6 +17,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from http.cookies import SimpleCookie
+from cryptography.fernet import Fernet, InvalidToken
 
 from .analyst import StockAnalyst, session_path_for
 from .agents import MultiAgentRunner, list_agent_runs, read_agent_run
@@ -27,13 +29,20 @@ from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
 from .field_labels import build_table_datasets
 from .stock_search import StockSearchIndex
-from .stock_storage import analysis_dossier_path, analysis_output_path, build_local_stock_payload, current_dir, list_analysis_results, read_analysis_result, stock_exists, stock_status, sync_stock_data
+from .stock_storage import analysis_dossier_path, analysis_output_path, analysis_review_context, build_local_stock_payload, current_dir, list_analysis_results, read_analysis_result, stock_exists, stock_status, sync_stock_data
 from .tushare_client import TushareClient
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 SPIDER_TYPES = ("财经要闻", "宏观经济", "产经新闻", "国际财经", "金融市场", "公司新闻", "区域经济", "财经评论", "财经人物")
+BILLABLE_API_PATHS = {
+    "/api/refresh",
+    "/api/sync-stock-data",
+    "/api/analyze",
+    "/api/multi-agent-analyze",
+}
+USER_KEY_NAMES = {"tushare", "deepseek"}
 
 
 class StockWebApp:
@@ -48,7 +57,9 @@ class StockWebApp:
         self.session_lock = threading.Lock()
         self.session_ttl_seconds = 60 * 60 * 12
         self.auth_secret = self.settings.web_session_secret or secrets.token_urlsafe(32)
-        self.user_store = UserStore(PROJECT_ROOT / "local_data" / "web_users.json")
+        key_secret = self.settings.web_key_encryption_secret or self.settings.web_session_secret or self.settings.web_password
+        self.key_cipher = ApiKeyCipher(key_secret)
+        self.user_store = UserStore(PROJECT_ROOT / "local_data" / "web_users.json", self.key_cipher)
         self.invite_codes = {code.strip() for code in self.settings.web_invite_codes.split(",") if code.strip()}
         self.user_store.seed_invites(self.invite_codes, ttl_seconds=self.settings.web_invite_ttl_seconds, created_by="env")
         self.demo_usage = {"window_start": time.time(), "count": 0}
@@ -63,16 +74,15 @@ class StockWebApp:
         years, full_history = self._parse_history_scope_value(payload.get("years"))
         allow_dynamic_fetch = payload.get("allow_dynamic_fetch", True) is not False
         max_parallel_agents = int(payload.get("max_parallel_agents") or 8)
-        llm_client = (
-            DeepSeekClient(
+        tushare_client = payload.get("_tushare_client") or self.tushare
+        llm_client = payload.get("_deepseek_client")
+        if llm_client is None and self.settings.deepseek_api_key:
+            llm_client = DeepSeekClient(
                 self.settings.deepseek_api_key,
                 self.settings.deepseek_base_url,
                 model=self.settings.deepseek_model,
             )
-            if self.settings.deepseek_api_key
-            else None
-        )
-        return MultiAgentRunner(self.tushare, llm_client=llm_client, progress_callback=progress_callback).run(
+        return MultiAgentRunner(tushare_client, llm_client=llm_client, progress_callback=progress_callback).run(
             ts_code,
             MultiAgentOptions(
                 analysis_type=analysis_type,
@@ -144,6 +154,59 @@ class StockWebApp:
             if not job:
                 raise FileNotFoundError(f"找不到多 Agent 后台任务：{job_id}")
             return json.loads(json.dumps(job, ensure_ascii=False, default=str))
+
+    def _completed_multi_agent_job(self, result: dict, message: str) -> dict:
+        job_id = uuid.uuid4().hex
+        now = timestamp()
+        job = {
+            "ok": True,
+            "job_id": job_id,
+            "status": "succeeded",
+            "created_at": now,
+            "updated_at": now,
+            "progress": [
+                {"time": now, "stage": "queued", "message": "后台任务已创建，等待共享结果。", "details": {}},
+                {"time": now, "stage": "cache", "message": message, "details": {"cache_hit": True}},
+                {"time": now, "stage": "succeeded", "message": "共享分析结果已加载。", "details": {}},
+            ],
+            "result": result,
+            "error": "",
+        }
+        with self.multi_agent_jobs_lock:
+            self.multi_agent_jobs[job_id] = job
+        return {"ok": True, "job_id": job_id, "status": "succeeded", "progress": job["progress"]}
+
+    def _recent_analysis_result(self, ts_code: str, analysis_type: str) -> dict | None:
+        ttl = max(0, int(self.settings.stock_analysis_reuse_ttl_seconds or 0))
+        if ttl <= 0:
+            return None
+        path = analysis_output_path(ts_code, analysis_type)
+        if not path.exists():
+            return None
+        age = int(time.time() - path.stat().st_mtime)
+        if age > ttl:
+            return None
+        payload = read_analysis_result(ts_code, analysis_type)
+        payload["cached_analysis"] = True
+        payload["cache_age_seconds"] = age
+        return payload
+
+    def _recent_agent_result(self, ts_code: str, analysis_type: str) -> dict | None:
+        ttl = max(0, int(self.settings.stock_analysis_reuse_ttl_seconds or 0))
+        if ttl <= 0:
+            return None
+        for item in list_agent_runs(ts_code, analysis_type):
+            run_dir = Path(item.get("run_dir") or "")
+            if not run_dir.exists():
+                continue
+            age = int(time.time() - run_dir.stat().st_mtime)
+            if age > ttl:
+                continue
+            payload = read_agent_run(ts_code, item.get("run_id") or "")
+            payload["cached_analysis"] = True
+            payload["cache_age_seconds"] = age
+            return payload
+        return None
 
     def _parse_history_scope_value(self, value) -> tuple[int | None, bool]:
         if value in (None, "", "all", "full", "history"):
@@ -217,12 +280,14 @@ class StockWebApp:
                     return
                 if parsed.path == "/api/session":
                     session = self._current_session()
+                    access = self._access_state(session)
                     self._json(
                         {
                             "ok": True,
                             "authenticated": bool(session),
                             "user": session.get("username", "") if session else "",
                             "role": session.get("role", "") if session else "",
+                            **access,
                             "demo_remaining": self._demo_remaining(session) if session and session.get("role") == "demo" else None,
                         }
                     )
@@ -234,7 +299,10 @@ class StockWebApp:
                     self._json({"items": app.index.search(query)})
                     return
                 if parsed.path == "/api/refresh":
+                    if not self._consume_billable_budget(parsed.path):
+                        return
                     app.index.stocks(refresh=True)
+                    self._record_billable_usage(parsed.path)
                     self._json({"ok": True})
                     return
                 if parsed.path == "/api/analysis-frameworks":
@@ -256,6 +324,13 @@ class StockWebApp:
                     query = parse_qs(parsed.query)
                     lines = max(20, min(500, int(query.get("lines", ["120"])[0] or 120)))
                     self._json({"ok": True, **app.spider_controller.logs(lines=lines)})
+                    return
+                if parsed.path == "/api/user/api-keys":
+                    session = self._current_session()
+                    if not session:
+                        self._json({"ok": False, "error": "请先登录"}, status=401)
+                        return
+                    self._json({"ok": True, **self._access_state(session)})
                     return
                 super().do_GET()
 
@@ -280,6 +355,11 @@ class StockWebApp:
                         return
                     self._handle_admin_demo_account()
                     return
+                if parsed.path == "/api/admin/vip-code":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_vip_code()
+                    return
                 if parsed.path == "/api/admin/spider/start":
                     if not self._require_admin():
                         return
@@ -291,6 +371,15 @@ class StockWebApp:
                     self._json({"ok": True, **app.spider_controller.stop()})
                     return
                 if not self._require_auth(parsed.path):
+                    return
+                if parsed.path == "/api/redeem-vip":
+                    self._handle_redeem_vip()
+                    return
+                if parsed.path == "/api/user/api-keys":
+                    self._handle_save_user_api_keys()
+                    return
+                if parsed.path == "/api/user/api-keys/delete":
+                    self._handle_delete_user_api_keys()
                     return
                 if parsed.path == "/api/analyze":
                     self._handle_analyze()
@@ -385,10 +474,27 @@ class StockWebApp:
             def _handle_multi_agent_analyze(self) -> None:
                 try:
                     payload = self._read_json()
+                    ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
+                    analysis_type = str(payload.get("analysis_type") or "value_speculation")
+                    cached = app._recent_agent_result(ts_code, analysis_type)
+                    if cached:
+                        if payload.get("async"):
+                            self._json(app._completed_multi_agent_job(cached, "检测到近期共享多 Agent 分析，已复用结果。"))
+                        else:
+                            self._json(cached)
+                        return
+                    payload["_tushare_client"] = self._tushare_for_session()
+                    payload["_deepseek_client"] = self._deepseek_for_session()
+                    if not self._consume_billable_budget("/api/multi-agent-analyze"):
+                        return
                     if payload.get("async"):
-                        self._json(app._start_multi_agent_job(payload))
+                        result = app._start_multi_agent_job(payload)
                     else:
-                        self._json(app._build_multi_agent_result(payload))
+                        result = app._build_multi_agent_result(payload)
+                    self._record_billable_usage("/api/multi-agent-analyze")
+                    self._json(result)
+                except PermissionError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=403)
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=500)
 
@@ -447,6 +553,60 @@ class StockWebApp:
                 ]
                 self._json({"ok": True, "items": accounts})
 
+            def _handle_admin_vip_code(self) -> None:
+                payload = self._read_json()
+                count = max(1, min(20, int(payload.get("count") or 1)))
+                days = max(1, min(3650, int(payload.get("days") or 30)))
+                ttl_seconds = max(300, min(31_536_000, int(payload.get("ttl_seconds") or app.settings.web_invite_ttl_seconds)))
+                session = self._current_session() or {}
+                items = [
+                    app.user_store.create_vip_code(session.get("username") or "admin", days, ttl_seconds)
+                    for _ in range(count)
+                ]
+                self._json({"ok": True, "items": items})
+
+            def _handle_redeem_vip(self) -> None:
+                session = self._current_session() or {}
+                if session.get("role") != "user":
+                    self._json({"ok": False, "error": "只有普通注册用户需要兑换 VIP。"}, status=400)
+                    return
+                code = str(self._read_json().get("code") or "").strip()
+                ok, reason, access = app.user_store.redeem_vip_code(session.get("username") or "", code)
+                if not ok:
+                    message = {
+                        "missing": "VIP 兑换码无效。",
+                        "used": "VIP 兑换码已被使用。",
+                        "expired": "VIP 兑换码已过期。",
+                        "user_missing": "找不到当前用户。",
+                    }.get(reason, "VIP 兑换失败。")
+                    self._json({"ok": False, "error": message}, status=400)
+                    return
+                self._json({"ok": True, **self._access_state(session, access_override=access)})
+
+            def _handle_save_user_api_keys(self) -> None:
+                session = self._current_session() or {}
+                if session.get("role") != "user":
+                    self._json({"ok": False, "error": "只有普通注册用户可以保存自己的 API key。"}, status=400)
+                    return
+                payload = self._read_json()
+                state = app.user_store.save_user_api_keys(
+                    session.get("username") or "",
+                    {"tushare": payload.get("tushare_api") or payload.get("tushare"), "deepseek": payload.get("deepseek_api") or payload.get("deepseek")},
+                )
+                self._json({"ok": True, **self._access_state(session, api_key_state=state)})
+
+            def _handle_delete_user_api_keys(self) -> None:
+                session = self._current_session() or {}
+                if session.get("role") != "user":
+                    self._json({"ok": False, "error": "只有普通注册用户可以删除自己的 API key。"}, status=400)
+                    return
+                payload = self._read_json()
+                names = payload.get("keys")
+                if not isinstance(names, list):
+                    names = None
+                state = app.user_store.delete_user_api_keys(session.get("username") or "", names)
+                self._json({"ok": True, **self._access_state(session, api_key_state=state)})
+
             def _handle_admin_spider_start(self) -> None:
                 payload = self._read_json()
                 try:
@@ -464,26 +624,42 @@ class StockWebApp:
                     framework = get_analysis_framework(str(payload.get("analysis_type") or "value_speculation"))
                     years, full_history = self._parse_history_scope(payload)
                     question = str(payload.get("question") or framework.question)
+                    cached = app._recent_analysis_result(ts_code, framework.key)
+                    if cached:
+                        self._json(cached)
+                        return
+                    tushare_client = self._tushare_for_session()
+                    deepseek_client = self._deepseek_for_session()
+                    billable = bool(deepseek_client) or not stock_exists(ts_code)
+                    if billable and not self._consume_billable_budget("/api/analyze"):
+                        return
                     if not stock_exists(ts_code):
-                        sync_stock_data(app.tushare, ts_code, years=years, full_history=full_history)
+                        sync_stock_data(tushare_client, ts_code, years=years, full_history=full_history)
                     local_dir = current_dir(ts_code)
                     analysis_dossier = read_json(analysis_dossier_path(ts_code, framework.key))
                     metadata = read_json(local_dir / "metadata.json") if (local_dir / "metadata.json").exists() else {}
+                    historical_context = analysis_review_context(
+                        ts_code,
+                        framework.key,
+                        limit=app.settings.analysis_history_review_limit,
+                    )
 
                     answer = ""
                     session_path = ""
-                    if app.settings.deepseek_api_key:
-                        analyst = StockAnalyst(
-                            DeepSeekClient(
-                                app.settings.deepseek_api_key,
-                                app.settings.deepseek_base_url,
-                                model=app.settings.deepseek_model,
-                            )
-                        )
+                    if deepseek_client:
+                        analyst = StockAnalyst(deepseek_client)
                         session = session_path_for(ts_code, PROJECT_ROOT / "sessions", framework.key)
-                        answer = analyst.framework_analysis(analysis_dossier, session, framework, question=question)
+                        answer = analyst.framework_analysis(
+                            analysis_dossier,
+                            session,
+                            framework,
+                            question=question,
+                            historical_context=historical_context,
+                        )
                         analysis_output_path(ts_code, framework.key).write_text(answer, encoding="utf-8")
                         session_path = str(session)
+                    if billable:
+                        self._record_billable_usage("/api/analyze")
 
                     self._json(
                         {
@@ -507,6 +683,8 @@ class StockWebApp:
                             "fetch_errors": metadata.get("fetch_errors", []),
                         }
                     )
+                except PermissionError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=403)
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=500)
 
@@ -535,7 +713,32 @@ class StockWebApp:
                     payload = self._read_json()
                     ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
                     years, full_history = self._parse_history_scope(payload)
-                    self._json(sync_stock_data(app.tushare, ts_code, years=years, full_history=full_history))
+                    tushare_client = self._tushare_for_session()
+                    force = bool(payload.get("force"))
+                    max_age = app.settings.stock_data_cache_ttl_seconds
+                    status = stock_status(ts_code)
+                    age = status.get("age_seconds")
+                    cache_fresh = (
+                        not force
+                        and status.get("exists")
+                        and isinstance(age, int)
+                        and age <= max_age
+                    )
+                    if not cache_fresh and not self._consume_billable_budget("/api/sync-stock-data"):
+                        return
+                    result = sync_stock_data(
+                        tushare_client,
+                        ts_code,
+                        years=years,
+                        full_history=full_history,
+                        force=force,
+                        max_age_seconds=max_age,
+                    )
+                    if not result.get("cache_hit"):
+                        self._record_billable_usage("/api/sync-stock-data")
+                    self._json(result)
+                except PermissionError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=403)
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=500)
 
@@ -567,10 +770,7 @@ class StockWebApp:
             def _require_auth(self, path: str) -> bool:
                 session = self._current_session()
                 if session:
-                    allowed = self._check_demo_budget(path, session)
-                    if allowed:
-                        self._record_usage(path, session)
-                    return allowed
+                    return True
                 if path.startswith("/api/"):
                     self._json({"ok": False, "error": "请先登录"}, status=401)
                 else:
@@ -595,6 +795,52 @@ class StockWebApp:
                 if not token:
                     return None
                 return app._session_for_token(token)
+
+            def _access_state(self, session: dict | None, access_override: dict | None = None, api_key_state: dict | None = None) -> dict:
+                if not session:
+                    return {"tier": "", "is_vip": False, "vip_until_text": "", "api_keys": {}}
+                role = session.get("role", "")
+                if role in {"admin", "demo"}:
+                    return {"tier": role, "is_vip": True, "vip_until_text": "", "api_keys": {}}
+                access = access_override or app.user_store.user_access_state(session.get("username") or "")
+                return {
+                    "tier": access.get("tier", "user"),
+                    "is_vip": bool(access.get("is_vip")),
+                    "vip_until_text": access.get("vip_until_text", ""),
+                    "api_keys": api_key_state if api_key_state is not None else app.user_store.user_api_key_state(session.get("username") or ""),
+                }
+
+            def _credential_mode(self, session: dict | None) -> str:
+                if not session:
+                    return "anonymous"
+                if session.get("role") in {"admin", "demo"}:
+                    return "system"
+                access = app.user_store.user_access_state(session.get("username") or "")
+                return "system" if access.get("is_vip") else "user"
+
+            def _tushare_for_session(self) -> TushareClient:
+                session = self._current_session()
+                mode = self._credential_mode(session)
+                if mode == "system":
+                    return app.tushare
+                keys = app.user_store.decrypted_user_api_keys(session.get("username") if session else "")
+                token = keys.get("tushare")
+                if not token:
+                    raise PermissionError("普通用户需要先保存自己的 Tushare API key，或兑换 VIP。")
+                return TushareClient(token, app.settings.tushare_base_url)
+
+            def _deepseek_for_session(self) -> DeepSeekClient | None:
+                session = self._current_session()
+                mode = self._credential_mode(session)
+                if mode == "system":
+                    if not app.settings.deepseek_api_key:
+                        return None
+                    return DeepSeekClient(app.settings.deepseek_api_key, app.settings.deepseek_base_url, model=app.settings.deepseek_model)
+                keys = app.user_store.decrypted_user_api_keys(session.get("username") if session else "")
+                token = keys.get("deepseek")
+                if not token:
+                    raise PermissionError("普通用户需要先保存自己的 DeepSeek API key，或兑换 VIP。")
+                return DeepSeekClient(token, app.settings.deepseek_base_url, model=app.settings.deepseek_model)
 
             def _authenticate(self, username: str, password: str) -> dict | None:
                 if secrets.compare_digest(username, app.settings.web_username) and secrets.compare_digest(password, app.settings.web_password):
@@ -629,7 +875,7 @@ class StockWebApp:
                 return all(char.isalnum() or char in {"_", "-"} for char in username)
 
             def _check_demo_budget(self, path: str, session: dict) -> bool:
-                if session.get("role") != "demo" or not path.startswith("/api/") or path in {"/api/session", "/api/logout"} or path.startswith("/api/admin/"):
+                if session.get("role") != "demo" or path not in BILLABLE_API_PATHS:
                     return True
                 allowed, _state = app.user_store.consume_demo_budget(session.get("username") or "")
                 if not allowed:
@@ -655,9 +901,21 @@ class StockWebApp:
                 }
 
             def _record_usage(self, path: str, session: dict) -> None:
-                if not path.startswith("/api/") or path in {"/api/session", "/api/logout"} or path.startswith("/api/admin/"):
+                if path not in BILLABLE_API_PATHS:
                     return
                 app.user_store.record_usage(session.get("username") or "", session.get("role") or "", path)
+
+            def _consume_billable_budget(self, path: str) -> bool:
+                session = self._current_session()
+                if not session:
+                    self._json({"ok": False, "error": "请先登录"}, status=401)
+                    return False
+                return self._check_demo_budget(path, session)
+
+            def _record_billable_usage(self, path: str) -> None:
+                session = self._current_session()
+                if session:
+                    self._record_usage(path, session)
 
             def _session_token(self) -> str:
                 header = self.headers.get("Cookie", "")
@@ -864,9 +1122,27 @@ class SpiderController:
         return f"{left:g},{right:g}"
 
 
+class ApiKeyCipher:
+    def __init__(self, secret: str):
+        if not secret:
+            raise RuntimeError("缺少 API key 加密密钥，请设置 STOCK_WEB_KEY_ENCRYPTION_SECRET。")
+        digest = hashlib.sha256(secret.encode("utf-8")).digest()
+        self.fernet = Fernet(base64.urlsafe_b64encode(digest))
+
+    def encrypt(self, value: str) -> str:
+        return self.fernet.encrypt(value.encode("utf-8")).decode("utf-8")
+
+    def decrypt(self, value: str) -> str:
+        try:
+            return self.fernet.decrypt(value.encode("utf-8")).decode("utf-8")
+        except InvalidToken as exc:
+            raise RuntimeError("用户 API key 解密失败，请检查加密密钥是否变更。") from exc
+
+
 class UserStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, key_cipher: ApiKeyCipher):
         self.path = path
+        self.key_cipher = key_cipher
         self.lock = threading.Lock()
         ensure_dir(path.parent)
 
@@ -891,6 +1167,8 @@ class UserStore:
                 "password": self._hash_password(password),
                 "created_at": timestamp(),
                 "invite_code": invite_code,
+                "tier": "user",
+                "vip_until": 0,
             }
             used_invites[invite_code] = {
                 "username": username,
@@ -942,6 +1220,49 @@ class UserStore:
             self._write(data)
         return self._public_invite(invite)
 
+    def create_vip_code(self, created_by: str, days: int, ttl_seconds: int) -> dict:
+        now = time.time()
+        days = max(1, min(3650, int(days or 1)))
+        with self.lock:
+            data = self._read()
+            vip_codes = data.setdefault("vip_codes", {})
+            code = self._new_numeric_invite_code(vip_codes)
+            item = {
+                "code": code,
+                "created_by": created_by,
+                "created_at": timestamp(),
+                "expires_at": now + ttl_seconds,
+                "vip_days": days,
+                "used_by": "",
+                "used_at": "",
+            }
+            vip_codes[code] = item
+            self._write(data)
+        return self._public_vip_code(item)
+
+    def redeem_vip_code(self, username: str, code: str) -> tuple[bool, str, dict]:
+        now = time.time()
+        with self.lock:
+            data = self._read()
+            users = data.setdefault("users", {})
+            user = users.get(username)
+            if not user:
+                return False, "user_missing", {}
+            item = data.setdefault("vip_codes", {}).get(code)
+            if not item:
+                return False, "missing", {}
+            if item.get("used_at"):
+                return False, "used", {}
+            if item.get("expires_at", 0) < now:
+                return False, "expired", {}
+            base = max(now, float(user.get("vip_until") or 0))
+            user["vip_until"] = base + int(item.get("vip_days") or 1) * 86400
+            user["tier"] = "vip"
+            item["used_by"] = username
+            item["used_at"] = timestamp()
+            self._write(data)
+            return True, "", self.user_access_state(username, data=data)
+
     def _new_numeric_invite_code(self, invites: dict) -> str:
         for _ in range(100):
             code = f"{secrets.randbelow(1_000_000):06d}"
@@ -966,6 +1287,77 @@ class UserStore:
         if not user:
             return False
         return self._verify_password(password, user.get("password", ""))
+
+    def user_access_state(self, username: str, data: dict | None = None) -> dict:
+        data = data or self._read()
+        if username == "":
+            return {"tier": "", "is_vip": False, "vip_until": 0, "vip_until_text": ""}
+        user = data.get("users", {}).get(username)
+        if not user:
+            return {"tier": "admin" if username else "", "is_vip": True, "vip_until": 0, "vip_until_text": ""}
+        vip_until = float(user.get("vip_until") or 0)
+        is_vip = vip_until > time.time()
+        return {
+            "tier": "vip" if is_vip else "user",
+            "is_vip": is_vip,
+            "vip_until": vip_until,
+            "vip_until_text": self._format_expiry(vip_until) if is_vip else "",
+        }
+
+    def user_api_key_state(self, username: str) -> dict:
+        with self.lock:
+            user = self._read().get("users", {}).get(username, {})
+        keys = user.get("api_keys") or {}
+        return {
+            name: {
+                "configured": bool(keys.get(name, {}).get("ciphertext")),
+                "updated_at": keys.get(name, {}).get("updated_at", ""),
+            }
+            for name in sorted(USER_KEY_NAMES)
+        }
+
+    def save_user_api_keys(self, username: str, values: dict[str, str]) -> dict:
+        cleaned = {name: str(value or "").strip() for name, value in values.items() if name in USER_KEY_NAMES}
+        with self.lock:
+            data = self._read()
+            user = data.get("users", {}).get(username)
+            if not user:
+                raise PermissionError("只有普通注册用户可以保存自己的 API key。")
+            keys = user.setdefault("api_keys", {})
+            for name, value in cleaned.items():
+                if not value:
+                    continue
+                keys[name] = {"ciphertext": self.key_cipher.encrypt(value), "updated_at": timestamp()}
+            self._write(data)
+        return self.user_api_key_state(username)
+
+    def delete_user_api_keys(self, username: str, names: list[str] | None = None) -> dict:
+        selected = set(names or USER_KEY_NAMES) & USER_KEY_NAMES
+        with self.lock:
+            data = self._read()
+            user = data.get("users", {}).get(username)
+            if not user:
+                return {}
+            keys = user.get("api_keys") or {}
+            for name in selected:
+                keys.pop(name, None)
+            if keys:
+                user["api_keys"] = keys
+            else:
+                user.pop("api_keys", None)
+            self._write(data)
+        return self.user_api_key_state(username)
+
+    def decrypted_user_api_keys(self, username: str) -> dict[str, str]:
+        with self.lock:
+            user = self._read().get("users", {}).get(username, {})
+            keys = user.get("api_keys") or {}
+        result = {}
+        for name in USER_KEY_NAMES:
+            ciphertext = keys.get(name, {}).get("ciphertext")
+            if ciphertext:
+                result[name] = self.key_cipher.decrypt(ciphertext)
+        return result
 
     def create_demo_account(self, created_by: str, limit: int, window_seconds: int) -> dict:
         now = time.time()
@@ -1038,6 +1430,18 @@ class UserStore:
             by_path[path] = int(by_path.get(path) or 0) + 1
             self._write(data)
 
+    def _billable_usage_view(self, user_usage: dict) -> dict:
+        by_path = {
+            path: int(count or 0)
+            for path, count in (user_usage.get("by_path") or {}).items()
+            if path in BILLABLE_API_PATHS
+        }
+        return {
+            "total": sum(by_path.values()),
+            "by_path": by_path,
+            "last_request_at": user_usage.get("last_request_at", "") if by_path else "",
+        }
+
     def admin_overview(self) -> dict:
         with self.lock:
             data = self._read()
@@ -1045,34 +1449,39 @@ class UserStore:
         usage = data.get("usage", {})
         for username, user in sorted(data.get("users", {}).items()):
             user_usage = usage.get(username, {})
+            billable_usage = self._billable_usage_view(user_usage)
             users.append(
                 {
                     "username": username,
-                    "role": "user",
+                    "role": self.user_access_state(username, data=data)["tier"],
                     "created_at": user.get("created_at", ""),
                     "invite_code": user.get("invite_code", ""),
-                    "usage_total": int(user_usage.get("total") or 0),
-                    "last_request_at": user_usage.get("last_request_at", ""),
-                    "by_path": user_usage.get("by_path", {}),
+                    "vip_until_text": self.user_access_state(username, data=data).get("vip_until_text", ""),
+                    "api_keys": self.user_api_key_state(username),
+                    "usage_total": billable_usage["total"],
+                    "last_request_at": billable_usage["last_request_at"],
+                    "by_path": billable_usage["by_path"],
                 }
             )
         for username, user_usage in sorted(usage.items()):
             if any(item["username"] == username for item in users):
                 continue
+            billable_usage = self._billable_usage_view(user_usage)
             users.append(
                 {
                     "username": username,
                     "role": user_usage.get("role", ""),
                     "created_at": "",
                     "invite_code": "",
-                    "usage_total": int(user_usage.get("total") or 0),
-                    "last_request_at": user_usage.get("last_request_at", ""),
-                    "by_path": user_usage.get("by_path", {}),
+                    "usage_total": billable_usage["total"],
+                    "last_request_at": billable_usage["last_request_at"],
+                    "by_path": billable_usage["by_path"],
                 }
             )
         return {
             "users": users,
             "invites": [self._public_invite(invite) for invite in sorted(data.get("invites", {}).values(), key=lambda item: item.get("expires_at", 0), reverse=True)],
+            "vip_codes": [self._public_vip_code(item) for item in sorted(data.get("vip_codes", {}).values(), key=lambda item: item.get("expires_at", 0), reverse=True)],
             "demo_accounts": [
                 self._public_demo_account(account)
                 for account in sorted(data.get("demo_accounts", {}).values(), key=lambda item: item.get("created_at", ""), reverse=True)
@@ -1081,13 +1490,14 @@ class UserStore:
 
     def _read(self) -> dict:
         if not self.path.exists():
-            return {"users": {}, "used_invites": {}, "invites": {}, "usage": {}, "demo_accounts": {}}
+            return {"users": {}, "used_invites": {}, "invites": {}, "usage": {}, "demo_accounts": {}, "vip_codes": {}}
         data = read_json(self.path)
         data.setdefault("users", {})
         data.setdefault("used_invites", {})
         data.setdefault("invites", {})
         data.setdefault("usage", {})
         data.setdefault("demo_accounts", {})
+        data.setdefault("vip_codes", {})
         return data
 
     def _write(self, data: dict) -> None:
@@ -1134,6 +1544,27 @@ class UserStore:
             "used_at": invite.get("used_at", ""),
             "status": status,
         }
+
+    def _public_vip_code(self, item: dict) -> dict:
+        status = "active"
+        if item.get("used_at"):
+            status = "used"
+        elif item.get("expires_at", 0) < time.time():
+            status = "expired"
+        return {
+            "code": item.get("code", ""),
+            "created_by": item.get("created_by", ""),
+            "created_at": item.get("created_at", ""),
+            "expires_at": item.get("expires_at", 0),
+            "expires_at_text": self._format_expiry(item.get("expires_at", 0)),
+            "vip_days": int(item.get("vip_days") or 0),
+            "used_by": item.get("used_by", ""),
+            "used_at": item.get("used_at", ""),
+            "status": status,
+        }
+
+    def _format_expiry(self, expires_at: float) -> str:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires_at)) if expires_at else ""
 
     def _public_demo_account(self, account: dict) -> dict:
         now = time.time()

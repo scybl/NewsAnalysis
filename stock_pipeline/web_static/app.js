@@ -18,6 +18,15 @@ const logoutBtn = document.querySelector("#logoutBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
 const output = document.querySelector("#analysisOutput");
 const scorePanel = document.querySelector("#scorePanel");
+const apiKeyPanel = document.querySelector("#apiKeyPanel");
+const accountTierText = document.querySelector("#accountTierText");
+const userTushareApiInput = document.querySelector("#userTushareApiInput");
+const userDeepSeekApiInput = document.querySelector("#userDeepSeekApiInput");
+const saveUserApiKeysBtn = document.querySelector("#saveUserApiKeysBtn");
+const deleteUserApiKeysBtn = document.querySelector("#deleteUserApiKeysBtn");
+const vipRedeemCodeInput = document.querySelector("#vipRedeemCodeInput");
+const redeemVipBtn = document.querySelector("#redeemVipBtn");
+const apiKeyStatus = document.querySelector("#apiKeyStatus");
 const metricLatestPrice = document.querySelector("#metricLatestPrice");
 const metricPe = document.querySelector("#metricPe");
 const metricPb = document.querySelector("#metricPb");
@@ -177,6 +186,10 @@ logoutBtn.addEventListener("click", async () => {
   await fetch("/api/logout", { method: "POST" });
   window.location.href = "/login";
 });
+
+saveUserApiKeysBtn?.addEventListener("click", saveUserApiKeys);
+deleteUserApiKeysBtn?.addEventListener("click", deleteUserApiKeys);
+redeemVipBtn?.addEventListener("click", redeemVipCode);
 
 updateDataBtn.addEventListener("click", async () => {
   await syncSelectedData(false);
@@ -514,7 +527,91 @@ async function initializeSession() {
     if (payload.role === "admin" && adminPanelLink) {
       adminPanelLink.hidden = false;
     }
+    renderApiKeyPanel(payload);
   } catch {}
+}
+
+function renderApiKeyPanel(session) {
+  if (!apiKeyPanel) return;
+  const role = session?.role || "";
+  const isUser = role === "user";
+  apiKeyPanel.hidden = !isUser;
+  if (!isUser) return;
+  const isVip = Boolean(session.is_vip);
+  const keys = session.api_keys || {};
+  if (accountTierText) accountTierText.textContent = isVip ? `VIP ${session.vip_until_text || ""}` : "普通用户";
+  for (const input of [userTushareApiInput, userDeepSeekApiInput]) {
+    if (!input) continue;
+    input.disabled = isVip;
+    input.value = "";
+    input.placeholder = isVip ? "VIP 使用系统 API，无需填写" : "输入后加密保存";
+  }
+  if (saveUserApiKeysBtn) saveUserApiKeysBtn.disabled = isVip;
+  if (deleteUserApiKeysBtn) deleteUserApiKeysBtn.disabled = isVip && !keys.tushare?.configured && !keys.deepseek?.configured;
+  if (apiKeyStatus) {
+    apiKeyStatus.textContent = isVip
+      ? "VIP 权限生效中，分析使用系统 API。"
+      : `Tushare：${keys.tushare?.configured ? "已保存" : "未保存"}；DeepSeek：${keys.deepseek?.configured ? "已保存" : "未保存"}。`;
+  }
+}
+
+async function saveUserApiKeys() {
+  if (!userTushareApiInput || !userDeepSeekApiInput) return;
+  saveUserApiKeysBtn.disabled = true;
+  try {
+    const response = await fetch("/api/user/api-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tushare_api: userTushareApiInput.value, deepseek_api: userDeepSeekApiInput.value }),
+    });
+    const payload = await readApiPayload(response, "保存 API key 失败");
+    currentSession = { ...currentSession, ...payload };
+    renderApiKeyPanel(currentSession);
+  } catch (error) {
+    if (apiKeyStatus) apiKeyStatus.textContent = `保存失败：${error.message}`;
+  } finally {
+    saveUserApiKeysBtn.disabled = false;
+  }
+}
+
+async function deleteUserApiKeys() {
+  deleteUserApiKeysBtn.disabled = true;
+  try {
+    const response = await fetch("/api/user/api-keys/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keys: ["tushare", "deepseek"] }),
+    });
+    const payload = await readApiPayload(response, "删除 API key 失败");
+    currentSession = { ...currentSession, ...payload };
+    renderApiKeyPanel(currentSession);
+    if (apiKeyStatus) apiKeyStatus.textContent = "API key 已删除，未保留删除记录。";
+  } catch (error) {
+    if (apiKeyStatus) apiKeyStatus.textContent = `删除失败：${error.message}`;
+  } finally {
+    deleteUserApiKeysBtn.disabled = false;
+  }
+}
+
+async function redeemVipCode() {
+  const code = vipRedeemCodeInput?.value.trim();
+  if (!code) return;
+  redeemVipBtn.disabled = true;
+  try {
+    const response = await fetch("/api/redeem-vip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    const payload = await readApiPayload(response, "兑换 VIP 失败");
+    currentSession = { ...currentSession, ...payload };
+    if (vipRedeemCodeInput) vipRedeemCodeInput.value = "";
+    renderApiKeyPanel(currentSession);
+  } catch (error) {
+    if (apiKeyStatus) apiKeyStatus.textContent = `兑换失败：${error.message}`;
+  } finally {
+    redeemVipBtn.disabled = false;
+  }
 }
 
 function renderResults(items) {
@@ -588,7 +685,10 @@ async function syncSelectedData() {
     const meta = payload.metadata || {};
     const snapshotCount = meta.snapshots?.length || 0;
     const range = meta.date_range ? `${formatDateLabel(meta.date_range.start_date)} 至 ${formatDateLabel(meta.date_range.end_date)}` : "未知";
-    output.textContent = `本地数据已更新。\n采集范围：${range}\n当前数据目录：${payload.local_dir}\n股票存储目录：${payload.stock_dir}\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或选择分析类型后点击“生成分析”。`;
+    const cacheLine = payload.cache_hit
+      ? `已复用共享缓存，缓存年龄：${formatDurationText(payload.cache_age_seconds)}。`
+      : "本地数据已更新。";
+    output.textContent = `${cacheLine}\n采集范围：${range}\n当前数据目录：${payload.local_dir}\n股票存储目录：${payload.stock_dir}\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或选择分析类型后点击“生成分析”。`;
     await refreshAnalysisResults();
   } catch (error) {
     if (token === syncToken) {
@@ -1114,6 +1214,15 @@ function formatUpdateTime(value) {
   const match = String(value).match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
   if (!match) return value;
   return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]}`;
+}
+
+function formatDurationText(seconds) {
+  const value = Number(seconds || 0);
+  if (!Number.isFinite(value) || value <= 0) return "刚刚";
+  if (value < 60) return `${Math.round(value)} 秒`;
+  if (value < 3600) return `${Math.round(value / 60)} 分钟`;
+  if (value < 86400) return `${Math.round(value / 3600)} 小时`;
+  return `${Math.round(value / 86400)} 天`;
 }
 
 function formatProgressTime(value) {
