@@ -62,8 +62,6 @@ class StockWebApp:
         self.user_store = UserStore(PROJECT_ROOT / "local_data" / "web_users.json", self.key_cipher)
         self.invite_codes = {code.strip() for code in self.settings.web_invite_codes.split(",") if code.strip()}
         self.user_store.seed_invites(self.invite_codes, ttl_seconds=self.settings.web_invite_ttl_seconds, created_by="env")
-        self.demo_usage = {"window_start": time.time(), "count": 0}
-        self.demo_window_seconds = max(60, self.settings.web_demo_window_seconds)
         self.spider_controller = SpiderController(PROJECT_ROOT)
         self.multi_agent_jobs: dict[str, dict] = {}
         self.multi_agent_jobs_lock = threading.Lock()
@@ -76,12 +74,6 @@ class StockWebApp:
         max_parallel_agents = int(payload.get("max_parallel_agents") or 8)
         tushare_client = payload.get("_tushare_client") or self.tushare
         llm_client = payload.get("_deepseek_client")
-        if llm_client is None and self.settings.deepseek_api_key:
-            llm_client = DeepSeekClient(
-                self.settings.deepseek_api_key,
-                self.settings.deepseek_base_url,
-                model=self.settings.deepseek_model,
-            )
         return MultiAgentRunner(tushare_client, llm_client=llm_client, progress_callback=progress_callback).run(
             ts_code,
             MultiAgentOptions(
@@ -886,18 +878,15 @@ class StockWebApp:
                 if session and session.get("managed_demo"):
                     state = app.user_store.demo_account_state(session.get("username") or "")
                     return int(state.get("remaining") or 0)
-                now = time.time()
-                if now - app.demo_usage["window_start"] > app.demo_window_seconds:
-                    return app.settings.web_demo_request_limit
-                return max(0, app.settings.web_demo_request_limit - app.demo_usage["count"])
+                return 0
 
             def _demo_state(self) -> dict:
                 return {
                     "username": "",
                     "limit": app.settings.web_demo_request_limit,
-                    "window_seconds": app.demo_window_seconds,
+                    "window_seconds": max(60, app.settings.web_demo_window_seconds),
                     "remaining": app.settings.web_demo_request_limit,
-                    "resets_in_seconds": app.demo_window_seconds,
+                    "resets_in_seconds": max(60, app.settings.web_demo_window_seconds),
                 }
 
             def _record_usage(self, path: str, session: dict) -> None:
@@ -1304,9 +1293,12 @@ class UserStore:
             "vip_until_text": self._format_expiry(vip_until) if is_vip else "",
         }
 
-    def user_api_key_state(self, username: str) -> dict:
-        with self.lock:
-            user = self._read().get("users", {}).get(username, {})
+    def user_api_key_state(self, username: str, data: dict | None = None) -> dict:
+        if data is None:
+            with self.lock:
+                user = self._read().get("users", {}).get(username, {})
+        else:
+            user = data.get("users", {}).get(username, {})
         keys = user.get("api_keys") or {}
         return {
             name: {
@@ -1450,14 +1442,15 @@ class UserStore:
         for username, user in sorted(data.get("users", {}).items()):
             user_usage = usage.get(username, {})
             billable_usage = self._billable_usage_view(user_usage)
+            access = self.user_access_state(username, data=data)
             users.append(
                 {
                     "username": username,
-                    "role": self.user_access_state(username, data=data)["tier"],
+                    "role": access["tier"],
                     "created_at": user.get("created_at", ""),
                     "invite_code": user.get("invite_code", ""),
-                    "vip_until_text": self.user_access_state(username, data=data).get("vip_until_text", ""),
-                    "api_keys": self.user_api_key_state(username),
+                    "vip_until_text": access.get("vip_until_text", ""),
+                    "api_keys": self.user_api_key_state(username, data=data),
                     "usage_total": billable_usage["total"],
                     "last_request_at": billable_usage["last_request_at"],
                     "by_path": billable_usage["by_path"],
