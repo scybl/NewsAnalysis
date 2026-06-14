@@ -11,3 +11,11 @@ cache/
 local_data/
 
 logs/
+
+# External reference repositories
+FinRobot/
+TradingAgents/
+
+*.md
+
+一些文件/

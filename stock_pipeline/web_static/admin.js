@@ -9,6 +9,8 @@ const adminUsersTable = document.querySelector("#adminUsersTable");
 const adminInvitesTable = document.querySelector("#adminInvitesTable");
 const adminVipCodesTable = document.querySelector("#adminVipCodesTable");
 const adminDemoAccountsTable = document.querySelector("#adminDemoAccountsTable");
+const adminTasksTable = document.querySelector("#adminTasksTable");
+const adminAuditTable = document.querySelector("#adminAuditTable");
 const adminUserCount = document.querySelector("#adminUserCount");
 const adminInviteCount = document.querySelector("#adminInviteCount");
 const adminVipCodeCount = document.querySelector("#adminVipCodeCount");
@@ -200,6 +202,8 @@ async function loadAdminOverview() {
     renderAdminInvites(invites);
     renderAdminVipCodes(vipCodes);
     renderAdminDemoAccounts(demoAccounts);
+    renderAdminAudit(payload.audit_logs || []);
+    await loadAdminTasks();
     if (adminUserCount) adminUserCount.textContent = String((payload.users || []).length);
     if (adminInviteCount) adminInviteCount.textContent = String(invites.filter((item) => item.status === "active").length);
     if (adminVipCodeCount) adminVipCodeCount.textContent = String(vipCodes.filter((item) => item.status === "active").length);
@@ -213,18 +217,28 @@ function renderAdminUsers(users) {
   const rows = users.map((user) => `
     <tr>
       <td>${escapeHtml(user.username || "")}</td>
-      <td>${escapeHtml(user.role || "")}</td>
+      <td>${escapeHtml(user.disabled ? "已禁用" : user.role || "")}</td>
       <td>${escapeHtml(String(user.usage_total || 0))}</td>
       <td>${escapeHtml(user.last_request_at || "-")}</td>
       <td>${escapeHtml(user.vip_until_text || "-")}</td>
       <td>${escapeHtml(apiKeySummary(user.api_keys || {}))}</td>
       <td>${escapeHtml(user.invite_code || "-")}</td>
+      <td>
+        <div class="table-actions">
+          <button type="button" data-user-action="grant_vip" data-username="${escapeHtml(user.username || "")}">发 VIP</button>
+          <button type="button" data-user-action="revoke_vip" data-username="${escapeHtml(user.username || "")}">撤 VIP</button>
+          <button type="button" data-user-action="${user.disabled ? "enable" : "disable"}" data-username="${escapeHtml(user.username || "")}">${user.disabled ? "启用" : "禁用"}</button>
+        </div>
+      </td>
     </tr>
   `).join("");
   adminUsersTable.innerHTML = `
-    <thead><tr><th>账号</th><th>角色</th><th>API 用量</th><th>最近请求</th><th>VIP 到期</th><th>用户 Key</th><th>邀请码</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="7">暂无注册用户</td></tr>`}</tbody>
+    <thead><tr><th>账号</th><th>角色</th><th>API 用量</th><th>最近请求</th><th>VIP 到期</th><th>用户 Key</th><th>邀请码</th><th>操作</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="8">暂无注册用户</td></tr>`}</tbody>
   `;
+  adminUsersTable.querySelectorAll("[data-user-action]").forEach((button) => {
+    button.addEventListener("click", () => runUserAction(button.dataset.username, button.dataset.userAction));
+  });
 }
 
 function renderAdminInvites(invites) {
@@ -267,11 +281,96 @@ function renderAdminDemoAccounts(accounts) {
       <td>${escapeHtml(formatDuration(account.window_seconds || 0))}</td>
       <td>${escapeHtml(formatDuration(account.resets_in_seconds || 0))}</td>
       <td>${escapeHtml(account.created_at || "-")}</td>
+      <td><button type="button" data-demo-reset="${escapeHtml(account.username || "")}">重置额度</button></td>
     </tr>
   `).join("");
   adminDemoAccountsTable.innerHTML = `
-    <thead><tr><th>账号</th><th>剩余额度</th><th>刷新周期</th><th>下次刷新</th><th>创建时间</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="5">暂无测试账号</td></tr>`}</tbody>
+    <thead><tr><th>账号</th><th>剩余额度</th><th>刷新周期</th><th>下次刷新</th><th>创建时间</th><th>操作</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6">暂无测试账号</td></tr>`}</tbody>
+  `;
+  adminDemoAccountsTable.querySelectorAll("[data-demo-reset]").forEach((button) => {
+    button.addEventListener("click", () => resetDemoBudget(button.dataset.demoReset));
+  });
+}
+
+async function runUserAction(username, action) {
+  if (!username || !action) return;
+  const payload = { username, action };
+  if (action === "grant_vip") {
+    const rawDays = window.prompt("发放 VIP 天数", "30");
+    if (!rawDays) return;
+    payload.days = Number(rawDays);
+  }
+  adminSummary.textContent = "正在更新用户权限...";
+  try {
+    const response = await fetch("/api/admin/user-access", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await readApiPayload(response, "更新用户权限失败");
+    await loadAdminOverview();
+  } catch (error) {
+    adminSummary.textContent = `更新用户权限失败：${error.message}`;
+  }
+}
+
+async function resetDemoBudget(username) {
+  if (!username) return;
+  adminSummary.textContent = "正在重置测试账号额度...";
+  try {
+    const response = await fetch("/api/admin/demo-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+    await readApiPayload(response, "重置测试账号额度失败");
+    await loadAdminOverview();
+  } catch (error) {
+    adminSummary.textContent = `重置测试账号额度失败：${error.message}`;
+  }
+}
+
+async function loadAdminTasks() {
+  if (!adminTasksTable) return;
+  try {
+    const response = await fetch("/api/admin/tasks");
+    const payload = await readApiPayload(response, "读取后台任务失败");
+    renderAdminTasks(payload.items || []);
+  } catch (error) {
+    adminTasksTable.innerHTML = `<tbody><tr><td>任务读取失败：${escapeHtml(error.message)}</td></tr></tbody>`;
+  }
+}
+
+function renderAdminTasks(tasks) {
+  const rows = tasks.map((task) => `
+    <tr>
+      <td>${escapeHtml(task.kind || "")}</td>
+      <td>${escapeHtml(task.title || "")}</td>
+      <td>${taskStatusLabel(task.status)}</td>
+      <td>${escapeHtml(task.updated_at || "-")}</td>
+      <td>${escapeHtml(task.error || task.result_summary?.rating_hint || "-")}</td>
+    </tr>
+  `).join("");
+  adminTasksTable.innerHTML = `
+    <thead><tr><th>类型</th><th>任务</th><th>状态</th><th>更新时间</th><th>摘要</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="5">暂无后台任务</td></tr>`}</tbody>
+  `;
+}
+
+function renderAdminAudit(logs) {
+  if (!adminAuditTable) return;
+  const rows = logs.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.time || "")}</td>
+      <td>${escapeHtml(item.actor || "")}</td>
+      <td>${escapeHtml(auditActionLabel(item.action))}</td>
+      <td>${escapeHtml(item.target || "")}</td>
+    </tr>
+  `).join("");
+  adminAuditTable.innerHTML = `
+    <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>目标</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="4">暂无审计日志</td></tr>`}</tbody>
   `;
 }
 
@@ -350,6 +449,26 @@ function spiderStatusLabel(status) {
   if (status === "succeeded") return "已完成";
   if (status === "failed") return "失败";
   return status || "-";
+}
+
+function taskStatusLabel(status) {
+  if (status === "queued") return "等待中";
+  if (status === "running") return "运行中";
+  if (status === "stopping") return "停止中";
+  if (status === "stopped") return "已停止";
+  if (status === "succeeded") return "成功";
+  if (status === "failed") return "失败";
+  return status || "-";
+}
+
+function auditActionLabel(action) {
+  return ({
+    grant_vip: "发放 VIP",
+    revoke_vip: "撤销 VIP",
+    disable_user: "禁用用户",
+    enable_user: "启用用户",
+    reset_demo_budget: "重置测试额度",
+  })[action] || action || "-";
 }
 
 function formatDuration(seconds) {

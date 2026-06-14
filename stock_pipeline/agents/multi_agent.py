@@ -6,12 +6,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, Field, ValidationError
+
 from ..analysis_frameworks import get_analysis_framework
 from ..collector import StockDataCollector
 from ..deepseek_client import DeepSeekClient, DeepSeekError
 from ..dossier import build_dossier
 from ..pattern_learning import build_similarity_learning
 from ..stock_storage import (
+    LOCAL_DATA_DIR,
     build_local_stock_payload,
     current_dir,
     stock_exists,
@@ -54,6 +58,44 @@ MODE_CONFIG: dict[str, dict[str, Any]] = {
         "secondary_datasets": ["repurchase", "pledge_stat", "top10_holders", "fina_audit"],
         "agents": ["cheapness_agent", "dividend_sustainability_agent", "cashflow_coverage_agent", "balance_sheet_agent", "governance_agent", "risk_auditor"],
         "max_fetch_rounds": 2,
+    },
+}
+
+
+AGENT_TEMPLATES: dict[str, dict[str, Any]] = {
+    "native": {"label": "项目原生专题组"},
+    "tradingagents": {
+        "label": "TradingAgents 风格投研交易团队",
+        "agents": [
+            "market_analyst",
+            "news_analyst",
+            "fundamental_analyst",
+            "sentiment_analyst",
+            "bull_researcher",
+            "bear_researcher",
+            "research_manager",
+            "trader",
+            "aggressive_risk_analyst",
+            "neutral_risk_analyst",
+            "conservative_risk_analyst",
+            "portfolio_manager",
+        ],
+        "debate_agents": ["bull_researcher", "bear_researcher"],
+        "risk_agents": ["aggressive_risk_analyst", "neutral_risk_analyst", "conservative_risk_analyst"],
+    },
+    "finrobot": {
+        "label": "FinRobot 风格投研报告团队",
+        "agents": [
+            "company_overview_agent",
+            "investment_update_agent",
+            "valuation_overview_agent",
+            "risk_section_agent",
+            "competitor_analysis_agent",
+            "news_summary_agent",
+            "major_takeaways_agent",
+        ],
+        "debate_agents": ["investment_update_agent", "risk_section_agent"],
+        "risk_agents": ["risk_section_agent"],
     },
 }
 
@@ -105,10 +147,72 @@ AGENT_SPECS: dict[str, dict[str, Any]] = {
     "balance_sheet_agent": {"role": "资产负债分析员", "focus": "专注负债率、流动性、货币资金、应收、存货和偿债风险。", "slice_keys": ["balance_sheet_safety", "financial_quality"]},
     "governance_agent": {"role": "治理风险分析员", "focus": "专注质押、股东结构、回购、审计意见和治理风险。", "slice_keys": ["shareholder_structure", "dividend_and_return", "risk_flags"]},
     "risk_auditor": {"role": "风险审计员", "focus": "只负责找漏洞、反证、数据缺口和证伪条件，不负责寻找机会。", "slice_keys": ["risk_flags", "data_quality", "valuation", "financial_quality", "market_context"]},
+    "market_analyst": {"role": "市场分析师", "focus": "对应 TradingAgents Market Analyst，先看价格趋势、成交活跃度、市场状态和交易时机，只给市场层面的证据。", "slice_keys": ["speculation_triggers", "oversold_state", "market_context", "capital_flow"]},
+    "news_analyst": {"role": "新闻分析师", "focus": "对应 TradingAgents News Analyst，梳理公告、事件、行业新闻和催化强弱，区分已验证资料与外部假设。", "slice_keys": ["catalysts", "industry_cycle", "speculation_triggers", "risk_flags"]},
+    "fundamental_analyst": {"role": "基本面分析师", "focus": "参考 TradingAgents 的基本面分析角色，整合利润表、资产负债、现金流、行业位置和经营质量。", "slice_keys": ["value_basis", "financial_quality", "balance_sheet_safety", "business_quality", "industry_cycle"]},
+    "technical_analyst": {"role": "技术面分析师", "focus": "参考 TradingAgents 的技术分析角色，专注趋势、均线、量价、回撤和交易时机，不替代基本面结论。", "slice_keys": ["speculation_triggers", "oversold_state", "market_context"]},
+    "sentiment_analyst": {"role": "情绪与消息分析师", "focus": "参考 TradingAgents 的情绪分析角色，评估公告、资金流、涨跌停、行业催化和市场风险偏好。", "slice_keys": ["catalysts", "capital_flow", "speculation_triggers", "industry_cycle", "market_context"]},
+    "bull_researcher": {"role": "多头研究员", "focus": "参考 TradingAgents 的 Bull Researcher，只构建最强正向 thesis，并明确该 thesis 成立所需证据。", "slice_keys": ["value_basis", "valuation", "catalysts", "business_quality", "dividend_and_return"]},
+    "bear_researcher": {"role": "空头研究员", "focus": "参考 TradingAgents 的 Bear Researcher，只构建最强反向 thesis，主动寻找价值陷阱、财务雷和情绪过热。", "slice_keys": ["risk_flags", "data_quality", "financial_quality", "balance_sheet_safety", "valuation"]},
+    "research_manager": {"role": "研究经理", "focus": "对应 TradingAgents Research Manager，裁决多空辩论，明确哪一边证据更硬、哪些假设还没有被验证。", "slice_keys": ["value_basis", "valuation", "risk_flags", "decision_helper", "data_quality"]},
+    "trader": {"role": "交易员", "focus": "对应 TradingAgents Trader，将研究结论转成观察、试错、等待或回避动作，并给出触发条件。", "slice_keys": ["speculation_triggers", "market_context", "valuation", "risk_flags", "decision_helper"]},
+    "aggressive_risk_analyst": {"role": "激进风控分析师", "focus": "对应 TradingAgents Aggressive Analyst，站在收益机会角度评估可承受风险和进攻条件。", "slice_keys": ["catalysts", "capital_flow", "valuation", "market_context"]},
+    "neutral_risk_analyst": {"role": "中性风控分析师", "focus": "对应 TradingAgents Neutral Analyst，平衡收益与风险，检查结论是否被单边叙事带偏。", "slice_keys": ["decision_helper", "data_quality", "risk_flags", "market_context"]},
+    "conservative_risk_analyst": {"role": "保守风控分析师", "focus": "对应 TradingAgents Conservative Analyst，优先找最大亏损来源、财务雷、流动性风险和证伪条件。", "slice_keys": ["risk_flags", "balance_sheet_safety", "data_quality", "financial_quality"]},
+    "portfolio_manager": {"role": "组合经理", "focus": "对应 TradingAgents Portfolio Manager，整合研究经理、交易员和三类风控意见，输出最终仓位倾向和置信度折扣。", "slice_keys": ["decision_helper", "valuation", "risk_flags", "market_context", "data_quality"]},
+    "risk_manager": {"role": "风险经理", "focus": "参考 TradingAgents 的风险管理团队，负责仓位风险、证伪条件、数据缺口和最终结论的置信度折扣。", "slice_keys": ["risk_flags", "data_quality", "market_context", "valuation", "financial_quality"]},
+    "trade_decision_agent": {"role": "交易决策官", "focus": "参考 TradingAgents 的 Trader，综合基本面、技术面、多空辩论和风控意见，输出观察/试错/回避的研究动作。", "slice_keys": ["valuation", "speculation_triggers", "risk_flags", "market_context", "decision_helper"]},
+    "company_overview_agent": {"role": "公司概览 Agent", "focus": "对应 FinRobot Equity company overview，提炼业务、行业位置、收入来源和核心跟踪变量。", "slice_keys": ["business_quality", "industry_cycle", "value_basis"]},
+    "investment_update_agent": {"role": "投资更新 Agent", "focus": "对应 FinRobot investment overview，评估近期事件对原投资 thesis 的强化、削弱或破坏。", "slice_keys": ["catalysts", "value_basis", "financial_quality", "decision_helper"]},
+    "valuation_overview_agent": {"role": "估值概览 Agent", "focus": "对应 FinRobot valuation overview，做横向行业估值、纵向历史估值和安全边际判断。", "slice_keys": ["valuation", "financial_quality", "dividend_and_return", "profit_and_cashflow_stability"]},
+    "risk_section_agent": {"role": "风险章节 Agent", "focus": "对应 FinRobot risks section，集中输出投资报告中的核心风险、触发条件和需要删除/保留的假设。", "slice_keys": ["risk_flags", "balance_sheet_safety", "data_quality", "shareholder_structure"]},
+    "competitor_analysis_agent": {"role": "竞争分析 Agent", "focus": "对应 FinRobot competitor analysis，在资料允许范围内评估行业位置、竞争格局和相对优势。", "slice_keys": ["business_quality", "industry_cycle", "market_context"]},
+    "news_summary_agent": {"role": "新闻摘要 Agent", "focus": "对应 FinRobot news summary，压缩公告和新闻为影响投资 thesis 的事件摘要。", "slice_keys": ["catalysts", "speculation_triggers", "risk_flags"]},
+    "major_takeaways_agent": {"role": "核心结论 Agent", "focus": "对应 FinRobot major takeaways，整合前序章节为简洁、可执行、可证伪的投研结论。", "slice_keys": ["decision_helper", "valuation", "risk_flags", "data_quality"]},
+    "data_cot_agent": {"role": "Data-CoT 数据链分析师", "focus": "参考 FinRobot 的 Data-CoT Agent，先审计资料完整性、数据口径、关键缺失和可用证据范围。", "slice_keys": ["data_quality", "market_context", "financial_quality", "valuation"]},
+    "concept_cot_agent": {"role": "Concept-CoT 概念链分析师", "focus": "参考 FinRobot 的 Concept-CoT Agent，从商业模式、行业位置、催化和风险中提炼投资概念。", "slice_keys": ["business_quality", "industry_cycle", "catalysts", "value_basis"]},
+    "valuation_cot_agent": {"role": "Valuation-CoT 估值链分析师", "focus": "参考 FinRobot 的估值分析流程，评估估值分位、安全边际、盈利质量和股东回报。", "slice_keys": ["valuation", "financial_quality", "dividend_and_return", "profit_and_cashflow_stability"]},
+    "risk_cot_agent": {"role": "Risk-CoT 风险链分析师", "focus": "参考 FinRobot 的风险审查流程，集中审计财务、治理、行业周期和数据不足导致的结论不可靠。", "slice_keys": ["risk_flags", "balance_sheet_safety", "data_quality", "shareholder_structure"]},
+    "thesis_cot_agent": {"role": "Thesis-CoT 投资论点分析师", "focus": "参考 FinRobot 的 Thesis-CoT Agent，综合前序证据形成可证伪的投资 thesis 和跟踪路径。", "slice_keys": ["value_basis", "valuation", "business_quality", "risk_flags", "decision_helper"]},
 }
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+class EvidenceClaim(BaseModel):
+    claim: str = ""
+    data_path: str = ""
+    strength: str = "medium"
+
+
+class AgentVerdict(BaseModel):
+    agent: str
+    mode: str
+    rating_hint: str
+    confidence: float = Field(default=0.5, ge=0, le=1)
+    scores: dict[str, Any] = Field(default_factory=dict)
+    key_findings: list[EvidenceClaim] = Field(default_factory=list)
+    counter_evidence: list[EvidenceClaim] = Field(default_factory=list)
+    reasoning_summary: str = ""
+    watchlist: list[str] = Field(default_factory=list)
+    invalidating_signals: list[str] = Field(default_factory=list)
+    data_requests: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CriticFinding(BaseModel):
+    agent: str = ""
+    issue: str
+    severity: str = "medium"
+    evidence_path: str = ""
+    required_fix: str = ""
+
+
+class CriticReview(BaseModel):
+    findings: list[CriticFinding] = Field(default_factory=list)
+    overall_risk: str = "medium"
+    should_revise: bool = True
+    summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -119,6 +223,25 @@ class MultiAgentOptions:
     years: int | None = None
     full_history: bool = True
     max_parallel_agents: int = 8
+    template: str = "native"
+
+
+def _mode_for_template(analysis_type: str, template: str = "native") -> dict[str, Any]:
+    mode = dict(MODE_CONFIG[analysis_type])
+    template_key = (template or "native").strip().lower()
+    template_config = AGENT_TEMPLATES.get(template_key) or AGENT_TEMPLATES["native"]
+    if template_key != "native":
+        mode["agents"] = list(template_config["agents"])
+        mode["template"] = template_key
+        mode["template_label"] = template_config["label"]
+        mode["debate_agents"] = list(template_config.get("debate_agents", []))
+        mode["risk_agents"] = list(template_config.get("risk_agents", []))
+    else:
+        mode["template"] = "native"
+        mode["template_label"] = AGENT_TEMPLATES["native"]["label"]
+        mode["debate_agents"] = []
+        mode["risk_agents"] = []
+    return mode
 
 
 class MultiAgentRunner:
@@ -135,7 +258,7 @@ class MultiAgentRunner:
     def run(self, code: str, options: MultiAgentOptions | None = None) -> dict[str, Any]:
         opts = options or MultiAgentOptions()
         framework = get_analysis_framework(opts.analysis_type)
-        mode = MODE_CONFIG[framework.key]
+        mode = _mode_for_template(framework.key, opts.template)
         self._progress("start", f"进入 {mode['label']} 模式，准备分析 {code}。")
 
         if self.client and not stock_exists(code):
@@ -189,9 +312,13 @@ class MultiAgentRunner:
 
         analysis_dossier = read_json(base_dir / f"{framework.key}_dossier.json") if (base_dir / f"{framework.key}_dossier.json").exists() else {}
         learning_context = self._build_learning_context(full_data, framework.key, run_dir)
+        memory_context = _load_decision_memory(data_profile["ts_code"], base_dir)
+        write_json(run_dir / "decision_memory_context.json", memory_context)
         if learning_context:
             analysis_dossier = {**analysis_dossier, "learning_context": learning_context}
-        agent_results = _run_specialists(
+        if memory_context.get("entries"):
+            analysis_dossier = {**analysis_dossier, "decision_memory": memory_context}
+        agent_results = _run_staged_specialists(
             framework.key,
             mode,
             dossier,
@@ -212,7 +339,7 @@ class MultiAgentRunner:
         agent_data_requests = _collect_agent_data_requests(agent_results)
         confidence_trace = _confidence_trace(agent_results, debate, framework.key)
         conversation = _agent_conversation(framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, learning_context, agent_results, debate, confidence_trace)
-        final_report = _final_report(code, framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, learning_context, agent_results, debate, confidence_trace, agent_data_requests)
+        final_report = _final_report(code, framework.key, mode, data_profile, broker_result, fetch_result, hypotheses, learning_context, agent_results, debate, confidence_trace, agent_data_requests, memory_context)
 
         write_json(run_dir / "debate_council.json", debate)
         write_json(run_dir / "confidence_trace.json", confidence_trace)
@@ -220,6 +347,7 @@ class MultiAgentRunner:
         write_json(run_dir / "agent_conversation.json", conversation)
         (run_dir / "final_report.md").write_text(final_report, encoding="utf-8")
         (base_dir / f"multi_agent_{framework.key}.md").write_text(final_report, encoding="utf-8")
+        _store_decision_memory(base_dir, data_profile["ts_code"], framework.key, mode, run_id, confidence_trace, debate)
         self._progress("done", f"多 Agent 分析完成，最终提示：{confidence_trace['final_rating']}，置信度 {confidence_trace['final_confidence']}。")
 
         return {
@@ -236,6 +364,7 @@ class MultiAgentRunner:
             "confidence": confidence_trace["final_confidence"],
             "agent_conversation": conversation,
             "learning_context": learning_context,
+            "decision_memory": memory_context,
             "data_requests": broker_result,
             "agent_data_requests": agent_data_requests,
             "fetch_result": fetch_result,
@@ -353,6 +482,232 @@ class MultiAgentRunner:
         return result
 
 
+class LangGraphMultiAgentRunner(MultiAgentRunner):
+    def run(self, code: str, options: MultiAgentOptions | None = None) -> dict[str, Any]:
+        opts = options or MultiAgentOptions()
+        graph = StateGraph(dict)
+        graph.add_node("prepare", self._prepare_graph_state)
+        graph.add_node("initial_agents", self._initial_agents_node)
+        graph.add_node("critic_review", self._critic_review_node)
+        graph.add_node("revised_agents", self._revised_agents_node)
+        graph.add_node("finalize", self._finalize_graph_state)
+        graph.add_edge(START, "prepare")
+        graph.add_edge("prepare", "initial_agents")
+        graph.add_edge("initial_agents", "critic_review")
+        graph.add_edge("critic_review", "revised_agents")
+        graph.add_edge("revised_agents", "finalize")
+        graph.add_edge("finalize", END)
+        compiled = graph.compile()
+        return compiled.invoke({"code": code, "opts": opts})
+
+    def _prepare_graph_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        code = _text(state["code"])
+        opts: MultiAgentOptions = state["opts"]
+        framework = get_analysis_framework(opts.analysis_type)
+        mode = _mode_for_template(framework.key, opts.template)
+        self._progress("langgraph_prepare", f"LangGraph 引擎进入 {mode['label']} 模式，准备分析 {code}。")
+
+        if self.client and not stock_exists(code):
+            self._progress("tushare_sync", "本地没有数据，开始通过 Tushare 同步基础资料包。")
+            sync_stock_data(self.client, code, years=opts.years, full_history=opts.full_history)
+            self._progress("tushare_sync", "基础资料包同步完成。")
+        if not stock_exists(code):
+            raise FileNotFoundError(f"本地还没有 {code} 的数据，请先更新本地数据。")
+
+        base_dir = current_dir(code)
+        run_id = f"{timestamp()}_{framework.key}_langgraph"
+        run_dir = ensure_dir(base_dir / "agent_runs" / run_id)
+        write_json(run_dir / "run_manifest.json", {**_run_manifest(code, framework.key, mode, run_id, opts), "engine": "langgraph"})
+
+        full_data = read_json(base_dir / "full_data.json")
+        dossier = read_json(base_dir / "dossier.json")
+        data_profile = _data_profile(full_data, mode)
+        write_json(run_dir / "data_profile.json", data_profile)
+        write_json(run_dir / "mode_context.json", _mode_context(framework.key, mode, dossier))
+        self._progress(
+            "data_profile",
+            f"已读取本地资料包，关键缺失 {len(data_profile.get('missing_required', []))} 个，次要缺失 {len(data_profile.get('missing_secondary', []))} 个。",
+            {"missing_required": data_profile.get("missing_required", []), "missing_secondary": data_profile.get("missing_secondary", [])},
+        )
+
+        data_requests = _build_data_requests(framework.key, mode, full_data)
+        broker_result = _broker_data_requests(data_requests, full_data)
+        write_json(run_dir / "data_requests.json", broker_result)
+
+        fetch_result = {"enabled": bool(opts.allow_dynamic_fetch and self.client), "fetch_results": [], "fetch_errors": [], "rebuilt": False}
+        if opts.allow_dynamic_fetch and self.client and broker_result["approved_requests"]:
+            fetch_result = self._fetch_and_rebuild(code, broker_result["approved_requests"], run_dir, opts)
+            if fetch_result.get("rebuilt"):
+                full_data = read_json(base_dir / "full_data.json")
+                dossier = read_json(base_dir / "dossier.json")
+                data_profile = _data_profile(full_data, mode)
+                write_json(run_dir / "data_profile.json", data_profile)
+        else:
+            self._progress("tushare_fetch", "没有需要执行的动态补数，继续使用当前资料包。")
+        write_json(run_dir / "tushare_fetch_results.json", fetch_result)
+
+        hypotheses = _hypotheses(framework.key, mode)
+        write_json(run_dir / "hypotheses.json", hypotheses)
+        analysis_dossier = read_json(base_dir / f"{framework.key}_dossier.json") if (base_dir / f"{framework.key}_dossier.json").exists() else {}
+        learning_context = self._build_learning_context(full_data, framework.key, run_dir)
+        memory_context = _load_decision_memory(data_profile["ts_code"], base_dir)
+        write_json(run_dir / "decision_memory_context.json", memory_context)
+        if learning_context:
+            analysis_dossier = {**analysis_dossier, "learning_context": learning_context}
+        if memory_context.get("entries"):
+            analysis_dossier = {**analysis_dossier, "decision_memory": memory_context}
+        return {
+            **state,
+            "engine": "langgraph",
+            "framework": framework,
+            "mode": mode,
+            "base_dir": base_dir,
+            "run_id": run_id,
+            "run_dir": run_dir,
+            "full_data": full_data,
+            "dossier": dossier,
+            "data_profile": data_profile,
+            "broker_result": broker_result,
+            "fetch_result": fetch_result,
+            "hypotheses": hypotheses,
+            "analysis_dossier": analysis_dossier,
+            "learning_context": learning_context,
+            "memory_context": memory_context,
+        }
+
+    def _initial_agents_node(self, state: dict[str, Any]) -> dict[str, Any]:
+        framework = state["framework"]
+        opts: MultiAgentOptions = state["opts"]
+        self._progress("initial_agents", "开始第一轮专题 agent 分析。")
+        agent_results = _run_staged_specialists(
+            framework.key,
+            state["mode"],
+            state["dossier"],
+            state["analysis_dossier"],
+            state["full_data"],
+            state["broker_result"],
+            state["fetch_result"],
+            self.llm_client if opts.use_llm_agents else None,
+            self.progress_callback,
+            opts.max_parallel_agents,
+        )
+        agent_results = _validate_agent_results(agent_results)
+        agents_dir = ensure_dir(state["run_dir"] / "agents" / "initial")
+        for result in agent_results:
+            write_json(agents_dir / f"{result['agent']}.json", result)
+        return {**state, "initial_agent_results": agent_results, "agent_results": agent_results}
+
+    def _critic_review_node(self, state: dict[str, Any]) -> dict[str, Any]:
+        self._progress("critic_review", "开始反方审计：检查证据链、数据缺口和评分一致性。")
+        review = _critic_review(
+            self.llm_client,
+            state["framework"].key,
+            state["mode"],
+            state["dossier"],
+            state["analysis_dossier"],
+            state["data_profile"],
+            state["broker_result"],
+            state["fetch_result"],
+            state["initial_agent_results"],
+        )
+        write_json(state["run_dir"] / "critic_review.json", review)
+        self._progress("critic_review", f"反方审计完成，发现 {len(review.get('findings', []))} 个问题。", {"overall_risk": review.get("overall_risk")})
+        return {**state, "critic_review": review}
+
+    def _revised_agents_node(self, state: dict[str, Any]) -> dict[str, Any]:
+        review = state.get("critic_review") or {}
+        if not review.get("should_revise", True):
+            return state
+        framework = state["framework"]
+        opts: MultiAgentOptions = state["opts"]
+        self._progress("revised_agents", "将反方审计意见写入上下文，开始第二轮修正分析。")
+        revised_dossier = {**state["analysis_dossier"], "critic_context": review}
+        revised_results = _run_staged_specialists(
+            framework.key,
+            state["mode"],
+            state["dossier"],
+            revised_dossier,
+            state["full_data"],
+            state["broker_result"],
+            state["fetch_result"],
+            self.llm_client if opts.use_llm_agents else None,
+            self.progress_callback,
+            opts.max_parallel_agents,
+        )
+        revised_results = _validate_agent_results(_merge_revisions(revised_results, review))
+        agents_dir = ensure_dir(state["run_dir"] / "agents" / "revised")
+        for result in revised_results:
+            write_json(agents_dir / f"{result['agent']}.json", result)
+        return {**state, "analysis_dossier": revised_dossier, "agent_results": revised_results}
+
+    def _finalize_graph_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        framework = state["framework"]
+        agent_results = state["agent_results"]
+        debate = _debate(agent_results, state["analysis_dossier"].get("decision_helper", {}))
+        agent_data_requests = _collect_agent_data_requests(agent_results)
+        confidence_trace = _confidence_trace(agent_results, debate, framework.key)
+        conversation = _agent_conversation(
+            framework.key,
+            state["mode"],
+            state["data_profile"],
+            state["broker_result"],
+            state["fetch_result"],
+            state["hypotheses"],
+            state["learning_context"],
+            agent_results,
+            debate,
+            confidence_trace,
+        )
+        final_report = _final_report(
+            state["code"],
+            framework.key,
+            state["mode"],
+            state["data_profile"],
+            state["broker_result"],
+            state["fetch_result"],
+            state["hypotheses"],
+            state["learning_context"],
+            agent_results,
+            debate,
+            confidence_trace,
+            agent_data_requests,
+            state.get("memory_context", {}),
+        )
+        write_json(state["run_dir"] / "debate_council.json", debate)
+        write_json(state["run_dir"] / "confidence_trace.json", confidence_trace)
+        write_json(state["run_dir"] / "agent_data_requests.json", agent_data_requests)
+        write_json(state["run_dir"] / "agent_conversation.json", conversation)
+        (state["run_dir"] / "final_report.md").write_text(final_report, encoding="utf-8")
+        (state["base_dir"] / f"multi_agent_{framework.key}.md").write_text(final_report, encoding="utf-8")
+        _store_decision_memory(state["base_dir"], state["data_profile"]["ts_code"], framework.key, state["mode"], state["run_id"], confidence_trace, debate)
+        self._progress("done", f"LangGraph 多 Agent 分析完成，最终提示：{confidence_trace['final_rating']}，置信度 {confidence_trace['final_confidence']}。")
+        return {
+            "ok": True,
+            "engine": "langgraph",
+            "template": state["mode"].get("template", "native"),
+            "template_label": state["mode"].get("template_label", ""),
+            "ts_code": state["data_profile"]["ts_code"],
+            "analysis_type": framework.key,
+            "analysis_label": framework.label,
+            "run_id": state["run_id"],
+            "run_dir": str(state["run_dir"]),
+            "final_report_path": str(state["run_dir"] / "final_report.md"),
+            "latest_report_path": str(state["base_dir"] / f"multi_agent_{framework.key}.md"),
+            "answer": final_report,
+            "rating_hint": confidence_trace["final_rating"],
+            "confidence": confidence_trace["final_confidence"],
+            "agent_conversation": conversation,
+            "learning_context": state["learning_context"],
+            "decision_memory": state.get("memory_context", {}),
+            "critic_review": state.get("critic_review", {}),
+            "initial_agent_results": state.get("initial_agent_results", []),
+            "data_requests": state["broker_result"],
+            "agent_data_requests": agent_data_requests,
+            "fetch_result": state["fetch_result"],
+            "agent_runs": list_agent_runs(state["code"], framework.key),
+        }
+
+
 def list_agent_runs(code: str, analysis_type: str | None = None) -> list[dict[str, str]]:
     root = current_dir(code) / "agent_runs"
     if not root.exists():
@@ -372,6 +727,9 @@ def list_agent_runs(code: str, analysis_type: str | None = None) -> list[dict[st
                 "run_id": path.name,
                 "analysis_type": run_type,
                 "analysis_label": MODE_CONFIG.get(run_type, {}).get("label", run_type),
+                "engine": manifest.get("engine", "legacy"),
+                "template": manifest.get("template", "native"),
+                "template_label": manifest.get("template_label", ""),
                 "created_at": manifest.get("created_at", path.name[:15]),
                 "run_dir": str(path),
                 "final_report_path": str(report_path),
@@ -423,12 +781,103 @@ def _run_manifest(code: str, analysis_type: str, mode: dict[str, Any], run_id: s
         "analysis_label": mode["label"],
         "created_at": timestamp(),
         "time_horizon": mode["time_horizon"],
+        "template": mode.get("template", opts.template),
+        "template_label": mode.get("template_label", ""),
         "agents": mode["agents"],
         "allow_dynamic_fetch": opts.allow_dynamic_fetch,
         "use_llm_agents": opts.use_llm_agents,
         "max_parallel_agents": opts.max_parallel_agents,
         "max_fetch_rounds": mode["max_fetch_rounds"],
     }
+
+
+def _load_decision_memory(ts_code: str, base_dir: Path, same_limit: int = 5, cross_limit: int = 3) -> dict[str, Any]:
+    same_entries = _read_jsonl(base_dir / "decision_memory.jsonl")
+    global_entries = _read_jsonl(LOCAL_DATA_DIR / "agent_memory" / "global_decisions.jsonl")
+    same = [item for item in reversed(same_entries) if item.get("ts_code") == ts_code][:same_limit]
+    cross = [item for item in reversed(global_entries) if item.get("ts_code") != ts_code][:cross_limit]
+    entries = same + cross
+    lessons = []
+    for item in entries:
+        lessons.append(
+            {
+                "scope": "same_stock" if item.get("ts_code") == ts_code else "cross_stock",
+                "ts_code": item.get("ts_code"),
+                "analysis_type": item.get("analysis_type"),
+                "rating_hint": item.get("rating_hint"),
+                "confidence": item.get("confidence"),
+                "summary": item.get("summary"),
+                "created_at": item.get("created_at"),
+            }
+        )
+    return {
+        "enabled": True,
+        "same_stock_count": len(same),
+        "cross_stock_count": len(cross),
+        "entries": lessons,
+        "instruction": "参考过去同股和跨股票结论，但不要机械复用；若新证据推翻旧判断，应明确说明调整原因。",
+    }
+
+
+def _store_decision_memory(
+    base_dir: Path,
+    ts_code: str,
+    analysis_type: str,
+    mode: dict[str, Any],
+    run_id: str,
+    confidence_trace: dict[str, Any],
+    debate: dict[str, Any],
+) -> None:
+    entry = {
+        "created_at": timestamp(),
+        "ts_code": ts_code,
+        "analysis_type": analysis_type,
+        "template": mode.get("template", "native"),
+        "template_label": mode.get("template_label", ""),
+        "run_id": run_id,
+        "rating_hint": confidence_trace.get("final_rating"),
+        "confidence": confidence_trace.get("final_confidence"),
+        "directional_score": confidence_trace.get("directional_score"),
+        "vote_summary": confidence_trace.get("vote_summary", {}),
+        "summary": _decision_memory_summary(debate, confidence_trace),
+        "status": "pending_outcome_review",
+    }
+    _append_jsonl(base_dir / "decision_memory.jsonl", entry)
+    _append_jsonl(LOCAL_DATA_DIR / "agent_memory" / "global_decisions.jsonl", entry)
+
+
+def _decision_memory_summary(debate: dict[str, Any], confidence_trace: dict[str, Any]) -> str:
+    agreements = [_text(item) for item in (debate.get("agreements") or [])[:2]]
+    conflicts = [_text(item) for item in (debate.get("conflicts") or [])[:2]]
+    parts = [f"最终提示：{_text(confidence_trace.get('final_rating'))}，置信度 {confidence_trace.get('final_confidence')}。"]
+    if agreements:
+        parts.append("主要共识：" + "；".join(agreements))
+    if conflicts:
+        parts.append("主要分歧：" + "；".join(conflicts))
+    return "".join(parts)
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+            if isinstance(item, dict):
+                rows.append(item)
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
+def _append_jsonl(path: Path, item: dict[str, Any]) -> None:
+    ensure_dir(path.parent)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(item, ensure_ascii=False, default=str) + "\n")
 
 
 def _data_profile(full_data: dict[str, Any], mode: dict[str, Any]) -> dict[str, Any]:
@@ -535,6 +984,102 @@ def _hypotheses(analysis_type: str, mode: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_staged_specialists(
+    analysis_type: str,
+    mode: dict[str, Any],
+    dossier: dict[str, Any],
+    analysis_dossier: dict[str, Any],
+    full_data: dict[str, Any],
+    broker_result: dict[str, Any],
+    fetch_result: dict[str, Any],
+    llm_client: DeepSeekClient | None = None,
+    progress_callback: ProgressCallback | None = None,
+    max_parallel_agents: int = 8,
+) -> list[dict[str, Any]]:
+    stages = [(stage, agents) for stage, agents in _template_execution_stages(mode) if agents]
+    if len(stages) <= 1:
+        return _run_specialists(
+            analysis_type,
+            mode,
+            dossier,
+            analysis_dossier,
+            full_data,
+            broker_result,
+            fetch_result,
+            llm_client,
+            progress_callback,
+            max_parallel_agents,
+        )
+
+    all_results: list[dict[str, Any]] = []
+    staged_dossier = dict(analysis_dossier)
+    for stage_name, agents in stages:
+        _emit_progress(
+            progress_callback,
+            f"agent_stage_{stage_name}",
+            f"开始阶段：{_stage_label(stage_name)}，运行 {len(agents)} 个 agent。",
+            {"stage": stage_name, "agents": agents},
+        )
+        stage_mode = {**mode, "agents": agents}
+        stage_results = _run_specialists(
+            analysis_type,
+            stage_mode,
+            dossier,
+            {**staged_dossier, "prior_agent_results": all_results, "current_stage": stage_name},
+            full_data,
+            broker_result,
+            fetch_result,
+            llm_client,
+            progress_callback,
+            min(max_parallel_agents, max(1, len(agents))),
+        )
+        for result in stage_results:
+            result["stage"] = stage_name
+        all_results.extend(stage_results)
+        staged_dossier["prior_agent_results"] = all_results
+        _emit_progress(
+            progress_callback,
+            f"agent_stage_{stage_name}_done",
+            f"{_stage_label(stage_name)}完成，累计 {len(all_results)} 个 agent 结果。",
+            {"stage": stage_name, "completed": len(stage_results)},
+        )
+    return all_results
+
+
+def _template_execution_stages(mode: dict[str, Any]) -> list[tuple[str, list[str]]]:
+    template = mode.get("template")
+    agents = list(mode.get("agents") or [])
+    if template == "tradingagents":
+        return [
+            ("analysts", [agent for agent in agents if agent in {"market_analyst", "news_analyst", "fundamental_analyst", "sentiment_analyst"}]),
+            ("bull_bear_debate", [agent for agent in agents if agent in {"bull_researcher", "bear_researcher"}]),
+            ("research_decision", [agent for agent in agents if agent in {"research_manager", "trader"}]),
+            ("risk_debate", [agent for agent in agents if agent in {"aggressive_risk_analyst", "neutral_risk_analyst", "conservative_risk_analyst"}]),
+            ("portfolio_decision", [agent for agent in agents if agent in {"portfolio_manager"}]),
+        ]
+    if template == "finrobot":
+        return [
+            ("company_context", [agent for agent in agents if agent in {"company_overview_agent", "news_summary_agent"}]),
+            ("research_sections", [agent for agent in agents if agent in {"investment_update_agent", "valuation_overview_agent", "competitor_analysis_agent"}]),
+            ("risk_and_takeaways", [agent for agent in agents if agent in {"risk_section_agent", "major_takeaways_agent"}]),
+        ]
+    return [("single_pass", agents)]
+
+
+def _stage_label(stage: str) -> str:
+    return {
+        "analysts": "资料分析师阶段",
+        "bull_bear_debate": "多空辩论阶段",
+        "research_decision": "研究经理与交易员阶段",
+        "risk_debate": "风控辩论阶段",
+        "portfolio_decision": "组合经理裁决阶段",
+        "company_context": "公司与新闻背景阶段",
+        "research_sections": "研报章节阶段",
+        "risk_and_takeaways": "风险与核心结论阶段",
+        "single_pass": "专题并行阶段",
+    }.get(stage, stage)
+
+
 def _run_specialists(
     analysis_type: str,
     mode: dict[str, Any],
@@ -602,6 +1147,177 @@ def _run_specialists(
     return [item for item in ordered if item is not None]
 
 
+def _validate_agent_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    validated: list[dict[str, Any]] = []
+    for result in results:
+        try:
+            item = AgentVerdict.model_validate(result).model_dump()
+            item.update({key: value for key, value in result.items() if key not in item})
+            validated.append(item)
+        except ValidationError as exc:
+            fallback = dict(result)
+            fallback["schema_error"] = str(exc)
+            fallback["confidence"] = _clamp_float(_num(fallback.get("confidence")) or 0.4)
+            fallback.setdefault("counter_evidence", []).append(
+                {"claim": "agent 输出结构未完全通过校验，结论置信度需要折扣。", "data_path": "agent.schema", "strength": "high"}
+            )
+            validated.append(fallback)
+    return validated
+
+
+def _critic_review(
+    llm_client: DeepSeekClient | None,
+    analysis_type: str,
+    mode: dict[str, Any],
+    dossier: dict[str, Any],
+    analysis_dossier: dict[str, Any],
+    data_profile: dict[str, Any],
+    broker_result: dict[str, Any],
+    fetch_result: dict[str, Any],
+    agent_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    fallback = _fallback_critic_review(data_profile, broker_result, fetch_result, agent_results)
+    if not llm_client:
+        return fallback
+    context = {
+        "mode": analysis_type,
+        "mode_label": mode.get("label"),
+        "company": dossier.get("company", {}),
+        "data_profile": data_profile,
+        "decision_helper": analysis_dossier.get("decision_helper", {}),
+        "risk_flags": analysis_dossier.get("risk_flags", []),
+        "data_requests": broker_result,
+        "fetch_result": fetch_result,
+        "agent_results": agent_results,
+    }
+    system_prompt = """你是 A 股投研多 Agent 系统的反方审计员。
+
+你的任务不是重新写报告，而是找出第一轮 agent 结论中的证据缺口、逻辑跳跃、数据口径错误、过度自信和互相矛盾。
+只输出 JSON，不输出 Markdown。"""
+    user_prompt = f"""请审计这些 agent 输出，并返回 JSON 对象：
+
+字段：
+- findings: 数组，每项包含 agent/issue/severity/evidence_path/required_fix
+- overall_risk: low/medium/high
+- should_revise: 布尔值，是否需要第二轮修正
+- summary: 一句话中文总结
+
+上下文：
+{json.dumps(context, ensure_ascii=False)}
+"""
+    try:
+        answer = llm_client.chat(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            response_format={"type": "json_object"},
+            max_tokens=3072,
+        )
+        parsed = _parse_json_object(answer)
+        review = CriticReview.model_validate(parsed).model_dump()
+        if not review["findings"]:
+            return {**fallback, "summary": review.get("summary") or fallback["summary"], "overall_risk": review.get("overall_risk") or fallback["overall_risk"]}
+        return review
+    except (DeepSeekError, RuntimeError, json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
+        return {**fallback, "llm_error": str(exc)}
+
+
+def _fallback_critic_review(
+    data_profile: dict[str, Any],
+    broker_result: dict[str, Any],
+    fetch_result: dict[str, Any],
+    agent_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    findings: list[dict[str, Any]] = []
+    for dataset in data_profile.get("missing_required", []):
+        findings.append(
+            {
+                "agent": "data_quality",
+                "issue": f"关键数据集 {dataset} 缺失，相关结论需要降权。",
+                "severity": "high",
+                "evidence_path": f"full_data.datasets.{dataset}",
+                "required_fix": "补充数据或在最终报告中明确标记为数据缺口。",
+            }
+        )
+    if broker_result.get("approved_requests") and not fetch_result.get("rebuilt"):
+        findings.append(
+            {
+                "agent": "data_broker",
+                "issue": "存在已批准的数据请求但资料包未重建，说明补数未执行或无权限。",
+                "severity": "medium",
+                "evidence_path": "data_requests.approved_requests",
+                "required_fix": "最终结论需要体现补数失败对置信度的影响。",
+            }
+        )
+    for result in agent_results:
+        if float(result.get("confidence") or 0) > 0.82 and len(result.get("counter_evidence") or []) == 0:
+            findings.append(
+                {
+                    "agent": _text(result.get("agent")),
+                    "issue": "高置信度结论缺少反证列表，可能过度自信。",
+                    "severity": "medium",
+                    "evidence_path": "agent.counter_evidence",
+                    "required_fix": "补充反证或下调置信度。",
+                }
+            )
+        if result.get("llm_error") or result.get("schema_error"):
+            findings.append(
+                {
+                    "agent": _text(result.get("agent")),
+                    "issue": "agent 运行或结构化输出异常，已回退到规则结果。",
+                    "severity": "medium",
+                    "evidence_path": "agent.llm_error",
+                    "required_fix": "在二轮修正中降低该 agent 权重。",
+                }
+            )
+    severity_order = {"low": 1, "medium": 2, "high": 3}
+    max_severity = max((severity_order.get(item["severity"], 2) for item in findings), default=1)
+    overall = "high" if max_severity >= 3 else "medium" if max_severity == 2 else "low"
+    return CriticReview(
+        findings=[CriticFinding.model_validate(item) for item in findings],
+        overall_risk=overall,
+        should_revise=bool(findings),
+        summary=f"规则审计发现 {len(findings)} 个需要修正或降权的问题。",
+    ).model_dump()
+
+
+def _merge_revisions(agent_results: list[dict[str, Any]], review: dict[str, Any]) -> list[dict[str, Any]]:
+    findings = review.get("findings") or []
+    by_agent: dict[str, list[dict[str, Any]]] = {}
+    global_findings: list[dict[str, Any]] = []
+    for finding in findings:
+        agent = _text(finding.get("agent")) if isinstance(finding, dict) else ""
+        if agent in {"", "data_quality", "data_broker", "system"}:
+            global_findings.append(finding)
+        else:
+            by_agent.setdefault(agent, []).append(finding)
+    revised = []
+    for result in agent_results:
+        agent = _text(result.get("agent"))
+        related = by_agent.get(agent, []) + global_findings
+        item = dict(result)
+        if related:
+            penalty = min(0.18, 0.04 * len(related))
+            item["confidence"] = _clamp_float((_num(item.get("confidence")) or 0.5) - penalty)
+            item["critic_findings"] = related
+            item["revision_notes"] = [
+                f"反方审计：{_text(finding.get('issue'))} 修正要求：{_text(finding.get('required_fix'))}"
+                for finding in related
+                if isinstance(finding, dict)
+            ]
+            counter = list(item.get("counter_evidence") or [])
+            counter.extend(
+                {
+                    "claim": _text(finding.get("issue")),
+                    "data_path": _text(finding.get("evidence_path")),
+                    "strength": _text(finding.get("severity") or "medium"),
+                }
+                for finding in related
+                if isinstance(finding, dict)
+            )
+            item["counter_evidence"] = counter
+        revised.append(item)
+    return revised
+
+
 def _agent_result(
     agent: str,
     analysis_type: str,
@@ -619,6 +1335,11 @@ def _agent_result(
     if fetch_result.get("rebuilt"):
         confidence = _clamp_float(confidence + 0.06)
     rating = decision.get("rating_hint") or _rating_from_scores(scores)
+    defensive_agents = {"bear_researcher", "risk_manager", "risk_cot_agent", "conservative_risk_analyst", "risk_section_agent"}
+    if agent in defensive_agents and _rating_direction(rating)["score"] > 0:
+        rating = "谨慎观察"
+    if agent == "bull_researcher" and _rating_direction(rating)["score"] < 0 and not high_risks:
+        rating = "积极观察"
     findings = _findings_for_agent(agent, analysis_type, scores, data_profile, broker_result, fetch_result)
     counter = _counter_for_agent(agent, missing_required, risk_flags, broker_result)
     return {
@@ -668,6 +1389,9 @@ def _llm_agent_result(
         "quantitative_checks": _quantitative_checks(dossier, analysis_dossier),
         "analysis_slice": _agent_analysis_slice(analysis_dossier, spec.get("slice_keys", [])),
         "learning_context": _limit_nested_records(analysis_dossier.get("learning_context", {}), 12),
+        "prior_agent_results": _limit_nested_records(analysis_dossier.get("prior_agent_results", []), 20),
+        "current_stage": analysis_dossier.get("current_stage", ""),
+        "critic_context": _limit_nested_records(analysis_dossier.get("critic_context", {}), 30),
         "raw_dossier_slice": _agent_raw_slice(dossier, agent, analysis_type),
     }
     system_prompt = f"""你是 A 股投研多 Agent 系统中的「{spec['role']}」。
@@ -1006,6 +1730,10 @@ def _agent_analysis_slice(analysis_dossier: dict[str, Any], keys: list[str]) -> 
         }
         if analysis_dossier.get("learning_context"):
             selected["learning_context"] = analysis_dossier.get("learning_context", {})
+        if analysis_dossier.get("decision_memory"):
+            selected["decision_memory"] = analysis_dossier.get("decision_memory", {})
+        if analysis_dossier.get("prior_agent_results"):
+            selected["prior_agent_results"] = analysis_dossier.get("prior_agent_results", [])
         return _limit_nested_records(selected)
     selected = {key: analysis_dossier.get(key) for key in keys if key in analysis_dossier}
     selected["decision_helper"] = analysis_dossier.get("decision_helper", {})
@@ -1013,6 +1741,10 @@ def _agent_analysis_slice(analysis_dossier: dict[str, Any], keys: list[str]) -> 
     selected["data_quality"] = analysis_dossier.get("data_quality", {})
     if analysis_dossier.get("learning_context"):
         selected["learning_context"] = analysis_dossier.get("learning_context", {})
+    if analysis_dossier.get("decision_memory"):
+        selected["decision_memory"] = analysis_dossier.get("decision_memory", {})
+    if analysis_dossier.get("prior_agent_results"):
+        selected["prior_agent_results"] = analysis_dossier.get("prior_agent_results", [])
     return _limit_nested_records(selected)
 
 
@@ -1103,6 +1835,23 @@ def _rating_direction(rating_hint: str) -> dict[str, Any]:
 def _agent_vote_weight(agent: str) -> float:
     return {
         "risk_auditor": 1.35,
+        "risk_manager": 1.45,
+        "trade_decision_agent": 1.35,
+        "research_manager": 1.35,
+        "portfolio_manager": 1.45,
+        "trader": 1.25,
+        "conservative_risk_analyst": 1.35,
+        "neutral_risk_analyst": 1.15,
+        "aggressive_risk_analyst": 1.05,
+        "bear_researcher": 1.2,
+        "bull_researcher": 1.15,
+        "thesis_cot_agent": 1.35,
+        "risk_cot_agent": 1.35,
+        "data_cot_agent": 1.2,
+        "major_takeaways_agent": 1.35,
+        "risk_section_agent": 1.3,
+        "valuation_overview_agent": 1.15,
+        "investment_update_agent": 1.15,
         "technical_timing_agent": 1.2,
         "moneyflow_agent": 1.1,
         "industry_cycle_agent": 1.1,
@@ -1351,11 +2100,13 @@ def _final_report(
     debate: dict[str, Any],
     confidence_trace: dict[str, Any],
     agent_data_requests: list[dict[str, Any]] | None = None,
+    decision_memory: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         f"# 多 Agent 分析报告：{code}",
         "",
         f"- 分析模式：{mode['label']}（{analysis_type}）",
+        f"- Agent 模板：{mode.get('template_label') or mode.get('template') or 'native'}",
         f"- 时间尺度：{mode['time_horizon']}",
         f"- 最终置信度：{confidence_trace['final_confidence']}",
         f"- 最终提示：{confidence_trace['final_rating']}",
@@ -1390,12 +2141,22 @@ def _final_report(
         )
     if learning_context:
         lines.extend(_learning_report_lines(learning_context))
+    if decision_memory and decision_memory.get("entries"):
+        lines.extend(["", "## 过往决策记忆"])
+        lines.append(
+            f"- 已纳入同股票历史 {decision_memory.get('same_stock_count', 0)} 条，跨股票经验 {decision_memory.get('cross_stock_count', 0)} 条。"
+        )
+        for item in decision_memory.get("entries", [])[:5]:
+            scope = "同股" if item.get("scope") == "same_stock" else "跨股"
+            lines.append(f"- {scope} {_text(item.get('ts_code'))}：{_text(item.get('rating_hint'))} / 置信度 {item.get('confidence')}；{_text(item.get('summary'))}")
     lines.extend(["", "## Agent 观点"])
     for result in agent_results:
         source = "LLM 专家" if result.get("source") == "llm_agent" else "规则回退"
         lines.append(f"### {_text(result.get('agent'))}")
         lines.append(f"- 来源：{source}")
         lines.append(f"- 评级提示：{_text(result.get('rating_hint'))}")
+        if result.get("stage"):
+            lines.append(f"- 执行阶段：{_stage_label(_text(result.get('stage')))}")
         lines.append(f"- 方向判断：{_text(result.get('rating_direction', {}).get('label') if isinstance(result.get('rating_direction'), dict) else '')}")
         lines.append(f"- 置信度：{result.get('confidence')}")
         lines.append(f"- 推理摘要：{_text(result.get('reasoning_summary'))}")
@@ -1403,6 +2164,8 @@ def _final_report(
             lines.append(f"- 证据：{_text(finding.get('claim') if isinstance(finding, dict) else finding)}（{_text(finding.get('strength') if isinstance(finding, dict) else 'medium')}）")
         for counter in result.get("counter_evidence", [])[:2]:
             lines.append(f"- 反证：{_text(counter.get('claim') if isinstance(counter, dict) else counter)}（{_text(counter.get('strength') if isinstance(counter, dict) else 'medium')}）")
+        for note in result.get("revision_notes", [])[:2]:
+            lines.append(f"- 修正记录：{_text(note)}")
         lines.append("")
     lines.extend(["## 观点会议"])
     lines.extend(f"- 共识：{_text(item)}" for item in debate.get("agreements", []) or ["暂无明确共识"])

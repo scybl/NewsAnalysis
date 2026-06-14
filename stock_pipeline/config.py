@@ -39,6 +39,8 @@ class Settings:
     analysis_history_review_limit: int = 3
     web_key_encryption_secret: str = ""
     stock_analysis_reuse_ttl_seconds: int = 1800
+    stock_agent_engine: str = "legacy"
+    stock_agent_template: str = "native"
     mysql_host: str = "localhost"
     mysql_port: int = 3306
     mysql_user: str = "root"
@@ -71,6 +73,8 @@ def get_settings(require_deepseek: bool = False) -> Settings:
         analysis_history_review_limit=int(os.getenv("STOCK_ANALYSIS_HISTORY_REVIEW_LIMIT", "3")),
         web_key_encryption_secret=os.getenv("STOCK_WEB_KEY_ENCRYPTION_SECRET", ""),
         stock_analysis_reuse_ttl_seconds=int(os.getenv("STOCK_ANALYSIS_REUSE_TTL_SECONDS", "1800")),
+        stock_agent_engine=os.getenv("STOCK_AGENT_ENGINE", "legacy").strip().lower() or "legacy",
+        stock_agent_template=os.getenv("STOCK_AGENT_TEMPLATE", "native").strip().lower() or "native",
         mysql_host=os.getenv("MYSQL_HOST", "localhost"),
         mysql_port=int(os.getenv("MYSQL_PORT", "3306")),
         mysql_user=os.getenv("MYSQL_USER", "root"),

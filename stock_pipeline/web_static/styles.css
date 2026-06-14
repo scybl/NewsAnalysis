@@ -1813,6 +1813,24 @@ body:has(.admin-shell) {
   font-size: 12px;
 }
 
+.table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.table-actions button,
+.admin-table-wrap td > button {
+  height: 30px;
+  border-radius: 7px;
+  padding: 0 9px;
+  background: #f8fafc;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
 .spider-layout {
   display: grid;
   grid-template-columns: minmax(330px, 0.42fr) minmax(0, 0.58fr);
