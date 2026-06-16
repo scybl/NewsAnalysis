@@ -100,6 +100,8 @@ def ensure_schema(mysql: Mysql) -> None:
     indexes = {row[2] for row in mysql.queryall("SHOW INDEX FROM news")}
     if "uk_news_seq" not in indexes:
         mysql.execute("ALTER TABLE news ADD UNIQUE KEY uk_news_seq (seq)")
+    if "uk_news_url" not in indexes:
+        mysql.execute("ALTER TABLE news ADD UNIQUE KEY uk_news_url (url)")
     if "idx_news_time" not in indexes:
         mysql.execute("ALTER TABLE news ADD KEY idx_news_time (time)")
     if "idx_news_type_time" not in indexes:
@@ -138,6 +140,7 @@ def initialize_database(config: NewsDatabaseConfig) -> None:
                   created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   PRIMARY KEY (id),
                   UNIQUE KEY uk_news_seq (seq),
+                  UNIQUE KEY uk_news_url (url),
                   KEY idx_news_time (time),
                   KEY idx_news_type_time (type(32), time)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -154,19 +157,25 @@ def _quote_identifier(value: str) -> str:
 
 
 def is_existing(mysql: Mysql, info: dict[str, Any]) -> bool:
-    if info.get("seq"):
-        data = mysql.query("SELECT COUNT(*) FROM news WHERE seq = %s", (info.get("seq"),))
+    return is_existing_identity(mysql, seq=info.get("seq"), url=info.get("url"), title=info.get("title"))
+
+
+def is_existing_identity(mysql: Mysql, seq: str | None = None, url: str | None = None, title: str | None = None) -> bool:
+    if seq:
+        data = mysql.query("SELECT COUNT(*) FROM news WHERE seq = %s", (seq,))
         return bool(data and data[0])
-    if info.get("url"):
-        data = mysql.query("SELECT COUNT(*) FROM news WHERE url = %s", (info.get("url"),))
+    if url:
+        data = mysql.query("SELECT COUNT(*) FROM news WHERE url = %s", (url,))
         return bool(data and data[0])
-    data = mysql.query("SELECT COUNT(*) FROM news WHERE title = %s", (info.get("title"),))
-    return bool(data and data[0])
+    if title:
+        data = mysql.query("SELECT COUNT(*) FROM news WHERE title = %s", (title,))
+        return bool(data and data[0])
+    return False
 
 
 def insert_article(mysql: Mysql, info: dict[str, Any]) -> int:
     sql = """
-        INSERT INTO news (seq, url, type, title, content, time, source, summary)
+        INSERT IGNORE INTO news (seq, url, type, title, content, time, source, summary)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
     """
     return mysql.insert(

@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import pymongo
 from urllib.parse import quote_plus
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../../.env'))
 
 def main():
     print("="*60)
@@ -25,8 +25,8 @@ def main():
 
         mongo_host = os.getenv('MONGO_HOST', '127.0.0.1')
         mongo_port = int(os.getenv('MONGO_PORT', '27017'))
-        mongo_db = os.getenv('MONGO_DB', 'news')
-        mongo_collection = os.getenv('MONGO_COLLECTION', 'articles')
+        mongo_db = os.getenv('MONGODB_DATABASE') or os.getenv('MONGO_DB', 'news')
+        mongo_collection = os.getenv('MONGODB_COLLECTION') or os.getenv('MONGO_COLLECTION', 'articles')
         mongo_user = os.getenv('MONGO_USER', '')
         mongo_password = os.getenv('MONGO_PASSWORD', '')
         mongo_authsource = os.getenv('MONGO_AUTHSOURCE', 'admin')

@@ -6,6 +6,10 @@ import time
 import urllib.parse
 from typing import Any
 
+from .config import PROJECT_ROOT, load_dotenv
+
+
+load_dotenv(PROJECT_ROOT / ".env")
 
 INDUSTRY_NEWS_TERMS: dict[str, list[str]] = {
     "农业综合": ["能繁母猪", "生猪价格", "猪肉价格", "养殖成本", "猪周期", "饲料价格"],

@@ -7,6 +7,13 @@ from typing import Any
 import bs4
 
 
+def extract_seq_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = re.search(r"[cm](\d+)", url)
+    return match.group(1) if match else None
+
+
 class Article:
     def __init__(self, kind: str, text: bytes, encoding: str | None, url: str | None = None):
         self._soup = bs4.BeautifulSoup(text, "lxml", from_encoding=encoding)
@@ -83,11 +90,9 @@ class Article:
             return str(seq)
 
         for value in (self.url, self._canonical_url()):
-            if not value:
-                continue
-            match = re.search(r"[cm](\d+)", value)
-            if match:
-                return match.group(1)
+            seq = extract_seq_from_url(value)
+            if seq:
+                return seq
         return None
 
     def get_time(self) -> str:
@@ -166,4 +171,3 @@ class Article:
 
     def get_info_dict(self) -> dict[str, Any]:
         return self.to_dict()
-

@@ -14,7 +14,7 @@ from urllib.parse import quote_plus
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../../../.env'))
 
 def main():
     print("="*60)

@@ -11,7 +11,7 @@
         }
       } catch {}
     </script>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=admin-unified-20260616-v1" />
   </head>
   <body>
     <main class="admin-page admin-shell">
@@ -31,6 +31,10 @@
           <a class="active" href="/admin-spider.html">
             <span class="admin-nav-icon">S</span>
             <span>爬虫控制</span>
+          </a>
+          <a href="/admin-news.html">
+            <span class="admin-nav-icon">N</span>
+            <span>新闻数据</span>
           </a>
         </nav>
         <div class="admin-sidebar-footer">
@@ -62,13 +66,18 @@
           <div class="spider-layout">
             <section class="admin-card spider-config-card">
               <div class="admin-card-head">
-                <h4>抓取参数</h4>
-                <span>建议先 dry-run 验证</span>
+                <h4>任务配置</h4>
+                <span>MongoDB</span>
               </div>
               <div class="spider-form">
                 <label class="field-wide">
+                  <span>数据源</span>
+                  <div id="spiderSourcesSelect" class="spider-source-grid"></div>
+                  <small id="spiderSourceHint" class="spider-source-hint">同花顺</small>
+                </label>
+                <label class="field-wide">
                   <span>分类</span>
-                  <select id="spiderTypesSelect" multiple size="9"></select>
+                  <div id="spiderTypesSelect" class="spider-type-grid"></div>
                 </label>
                 <label>
                   <span>页数</span>
@@ -76,34 +85,32 @@
                 </label>
                 <label>
                   <span>线程</span>
-                  <input id="spiderThreads" type="number" min="1" max="4" value="1" />
+                  <input id="spiderThreads" type="number" min="1" max="4" value="2" />
                 </label>
                 <label>
                   <span>文章间隔</span>
-                  <input id="spiderArticleSleep" value="0,0" />
+                  <input id="spiderArticleSleep" value="3,5" />
                 </label>
                 <label>
                   <span>分页间隔</span>
-                  <input id="spiderPageSleep" value="0,0" />
+                  <input id="spiderPageSleep" value="5,10" />
                 </label>
                 <label class="check-row field-wide">
-                  <input id="spiderDryRun" type="checkbox" checked />
-                  <span>只测试，不写入 MongoDB</span>
-                </label>
-                <label class="check-row field-wide">
-                  <input id="spiderNewOnly" type="checkbox" />
+                  <input id="spiderNewOnly" type="checkbox" checked />
                   <span>只抓新增</span>
                 </label>
               </div>
             </section>
             <section class="admin-card spider-state-card">
               <div class="admin-card-head">
-                <h4>运行状态</h4>
-                <span>当前任务快照</span>
+                <h4>任务快照</h4>
+                <span>全部爬虫</span>
               </div>
+              <div id="spiderSourceTasks" class="spider-source-tasks"></div>
               <div class="spider-state-grid">
                 <div><span>状态</span><strong id="spiderStateText">-</strong></div>
                 <div><span>模式</span><strong id="spiderModeText">-</strong></div>
+                <div><span>来源</span><strong id="spiderSourceText">-</strong></div>
                 <div><span>分类</span><strong id="spiderTypeText">-</strong></div>
                 <div><span>页数</span><strong id="spiderPagesText">-</strong></div>
               </div>
@@ -119,6 +126,6 @@
         </section>
       </section>
     </main>
-    <script src="/admin.js?v=admin-pages-20260612"></script>
+    <script src="/admin.js?v=admin-unified-20260616-v1"></script>
   </body>
 </html>

@@ -3,6 +3,7 @@
 .env.example
 .venv/
 .pip-cache/
+node_modules/
 __pycache__/
 *.pyc
 reports/
@@ -16,6 +17,8 @@ logs/
 FinRobot/
 TradingAgents/
 
-*.md
+个人思考.md
 
 一些文件/
+
+docs/

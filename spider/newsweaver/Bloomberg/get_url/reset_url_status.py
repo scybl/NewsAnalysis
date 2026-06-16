@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 
 # 加载环境变量
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../../../.env'))
 
 def main():
     """主函数"""
@@ -39,8 +39,8 @@ def main():
         mongo_password = os.getenv('MONGO_PASSWORD', '')
         mongo_authsource = os.getenv('MONGO_AUTHSOURCE', 'admin')
         
-        database_name = os.getenv('MONGODB_DATABASE') or os.getenv('URL_QUEUE_DATABASE', 'bloomberg_url_queue')
-        collection_name = os.getenv('MONGODB_COLLECTION') or os.getenv('URL_QUEUE_COLLECTION', 'urls')
+        database_name = os.getenv('URL_QUEUE_DATABASE') or os.getenv('URL_DATABASE') or 'bloomberg_url_queue'
+        collection_name = os.getenv('URL_QUEUE_COLLECTION') or os.getenv('URL_COLLECTION') or 'urls'
         
         print(f"[INFO] 目标数据库: {database_name}.{collection_name}")
 

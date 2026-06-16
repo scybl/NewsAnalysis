@@ -69,7 +69,7 @@ class Page(object):
         if types.get(kind):
             self.url = self.build_url(kind, pn)
             self.__analize_page()
-            self.articles = self.__get_all_article()
+            self.articles = None
         else:
             raise ValueError("该分类不存在: " + str(kind))
 
@@ -101,12 +101,18 @@ class Page(object):
             links.append(url)
         return links
 
+    def get_article_links(self):
+        return self.__get_article_links()
+
+    def fetch_article(self, link):
+        response = self.fetcher.get(link)
+        return article.Article(self.type, response.content, response.encoding, url=response.url)
+
     def __get_all_article(self):
         articles = []
         for link in self.__get_article_links():
             try:
-                response = self.fetcher.get(link)
-                articles.append(article.Article(self.type, response.content, response.encoding, url=response.url))
+                articles.append(self.fetch_article(link))
             except (IndexError, KeyError, ValueError, TypeError, requests.RequestException) as exc:
                 logging.warning("parse article failed kind=%s url=%s error=%s", self.type, link, exc)
             finally:
@@ -114,4 +120,6 @@ class Page(object):
         return articles
 
     def get_articles(self):
+        if self.articles is None:
+            self.articles = self.__get_all_article()
         return self.articles

@@ -9,6 +9,15 @@ import re
 import bs4
 
 
+def extract_seq_from_url(url):
+    if not url:
+        return None
+    match = re.search(r"[cm](\d+)", url)
+    if match:
+        return match.group(1)
+    return None
+
+
 class Article(object):
     def __init__(self, kind, text, encoding, url=None):
         self.__soup = bs4.BeautifulSoup(text, "lxml", from_encoding=encoding)
@@ -86,11 +95,9 @@ class Article(object):
             return str(seq)
 
         for value in (self.url, self.__canonical_url()):
-            if not value:
-                continue
-            match = re.search(r"[cm](\d+)", value)
-            if match:
-                return match.group(1)
+            seq = extract_seq_from_url(value)
+            if seq:
+                return seq
         return None
 
     def get_time(self):

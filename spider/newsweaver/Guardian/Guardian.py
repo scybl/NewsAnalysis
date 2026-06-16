@@ -19,8 +19,14 @@ import logging
 from urllib.parse import quote_plus
 import sys
 
-# 加载环境变量
-load_dotenv()
+# 加载项目根目录环境变量
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../../.env'))
+
+SPIDER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+if SPIDER_ROOT not in sys.path:
+    sys.path.insert(0, SPIDER_ROOT)
+
+from news_schema import dedupe_filter, ensure_news_indexes, normalize_news_document
 
 class GuardianCrawler:
     def __init__(self, api_key: str = None, data_file: str = None, base_url: str = None):
@@ -155,8 +161,8 @@ class GuardianCrawler:
             # MongoDB配置（从环境变量读取）
             mongo_host = os.getenv('MONGO_HOST', '127.0.0.1')
             mongo_port = int(os.getenv('MONGO_PORT', '27017'))
-            mongo_db = os.getenv('MONGO_DB', 'news')
-            mongo_collection = os.getenv('MONGO_COLLECTION', 'articles')
+            mongo_db = os.getenv('MONGODB_DATABASE') or os.getenv('MONGO_DB', 'news')
+            mongo_collection = os.getenv('MONGODB_COLLECTION') or os.getenv('MONGO_COLLECTION', 'articles')
             mongo_user = os.getenv('MONGO_USER', '')
             mongo_password = os.getenv('MONGO_PASSWORD', '')
             mongo_authsource = os.getenv('MONGO_AUTHSOURCE', 'admin')
@@ -194,6 +200,7 @@ class GuardianCrawler:
             self.logger.info(f"[DEBUG] 设置数据库和集合...")
             self.db_articles = self.mongodb_client[mongo_db]
             self.collection_articles = self.db_articles[mongo_collection]
+            ensure_news_indexes(self.collection_articles, pymongo)
             
             self.logger.info(f"[OK] 数据库: {self.db_articles.name}")
             self.logger.info(f"[OK] 集合: {self.collection_articles.name}")
@@ -321,17 +328,24 @@ class GuardianCrawler:
             return False
         
         try:
+            article_data = normalize_news_document(
+                article_data,
+                publisher_default="The Guardian",
+                source_name="guardian",
+            )
             # 添加MongoDB元数据
             article_data['mongodb_meta'] = {
                 'inserted_at': datetime.now().isoformat() + 'Z',
                 'version': '1.0',
                 'source': 'guardian_api'
             }
-            
-            # 使用upsert避免重复（通过URL判断）
+            created_at = article_data.pop('created_at', datetime.utcnow())
+            query = dedupe_filter(article_data) or {'url': article_data['url']}
+
+            # 使用共享指纹upsert，避免跨来源重复
             result = self.collection_articles.update_one(
-                {'url': article_data['url']},
-                {'$set': article_data},
+                query,
+                {'$set': article_data, '$setOnInsert': {'created_at': created_at}},
                 upsert=True
             )
             
@@ -425,7 +439,7 @@ class GuardianCrawler:
                 }
             }
             
-            return result
+            return normalize_news_document(result, publisher_default="The Guardian", source_name="guardian")
             
         except Exception as e:
             print(f"格式化文章失败 {article_data.get('id', 'unknown')}: {e}")

@@ -49,7 +49,13 @@ import logging
 import signal
 import sys
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../../../.env'))
+
+SPIDER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
+if SPIDER_ROOT not in sys.path:
+    sys.path.insert(0, SPIDER_ROOT)
+
+from news_schema import canonicalize_url
 
 # 设置日志
 # 日志将在初始化时配置到logs目录
@@ -287,9 +293,9 @@ class BloombergURLFetcher:
             mongo_password = os.getenv('MONGO_PASSWORD', '')
             mongo_authsource = os.getenv('MONGO_AUTHSOURCE', 'admin')
             
-            # 兼容两种命名方式：优先使用MONGODB_DATABASE，其次URL_QUEUE_DATABASE
-            database_name = os.getenv('MONGODB_DATABASE') or os.getenv('URL_QUEUE_DATABASE', 'bloomberg_url_queue')
-            collection_name = os.getenv('MONGODB_COLLECTION') or os.getenv('URL_QUEUE_COLLECTION', 'urls')
+            # URL 队列必须和文章集合分开；优先使用 URL_QUEUE_*，避免被 MONGODB_* 覆盖到 news.articles。
+            database_name = os.getenv('URL_QUEUE_DATABASE') or os.getenv('URL_DATABASE') or 'bloomberg_url_queue'
+            collection_name = os.getenv('URL_QUEUE_COLLECTION') or os.getenv('URL_COLLECTION') or 'urls'
             
             print(f"[INFO] MongoDB地址: {mongo_host}:{mongo_port}")
             print(f"[INFO] 目标数据库: {database_name}")
@@ -322,6 +328,10 @@ class BloombergURLFetcher:
             self.collection = self.db[collection_name]
             
             self.collection.create_index("url", unique=True)
+            try:
+                self.collection.create_index("canonical_url", unique=True, sparse=True)
+            except Exception:
+                self.collection.create_index("canonical_url", sparse=True)
             self.collection.create_index("fetched_at")
             
             print(f"[INFO] 数据库: {database_name}")
@@ -1154,7 +1164,8 @@ class BloombergURLFetcher:
             self.rename_log_file_with_warning()
         
         # 4. 各自查重各塞各的（跟各自的全量历史比）
-        mongodb_new_urls = [url for url in urls if url not in mongodb_all_urls]
+        mongodb_all_canonical_urls = {canonicalize_url(url) for url in mongodb_all_urls}
+        mongodb_new_urls = [url for url in urls if url not in mongodb_all_urls and canonicalize_url(url) not in mongodb_all_canonical_urls]
         local_new_urls = [url for url in urls if url not in local_all_urls]
         
         # 统计：至少在一个地方是新的URL
@@ -1176,6 +1187,7 @@ class BloombergURLFetcher:
             for url in mongodb_new_urls:
                 url_docs.append({
                     'url': url,
+                    'canonical_url': canonicalize_url(url),
                     'fetched_at': datetime.now().isoformat() + 'Z',
                     'status': 'pending',
                     'version': '1.0'

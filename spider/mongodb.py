@@ -3,8 +3,9 @@
 
 "MongoDB storage for crawled news"
 
-import datetime
 import urllib.parse
+
+from news_schema import dedupe_filter, ensure_news_indexes, normalize_news_document
 
 
 class MongoNewsStore(object):
@@ -47,28 +48,16 @@ class MongoNewsStore(object):
             self.client = None
 
     def ensure_schema(self):
-        self.collection.create_index(
-            [("seq", self.pymongo.ASCENDING)],
-            unique=True,
-            sparse=True,
-            name="uk_news_seq",
-        )
-        self.collection.create_index(
-            [("url", self.pymongo.ASCENDING)],
-            unique=True,
-            sparse=True,
-            name="uk_news_url",
-        )
-        self.collection.create_index([("title", self.pymongo.ASCENDING)], sparse=True, name="idx_news_title")
-        self.collection.create_index([("time", self.pymongo.DESCENDING)], name="idx_news_time")
-        self.collection.create_index([("type", self.pymongo.ASCENDING), ("time", self.pymongo.DESCENDING)], name="idx_news_type_time")
-        self.collection.create_index([("publisher", self.pymongo.ASCENDING), ("time", self.pymongo.DESCENDING)], name="idx_news_publisher_time")
+        ensure_news_indexes(self.collection, self.pymongo)
 
     def is_exist(self, info):
         query = self._identity_query(info)
         if not query:
             return False
         return self.collection.count_documents(query, limit=1) > 0
+
+    def is_existing_identity(self, seq=None, url=None, title=None):
+        return self.is_exist({"seq": seq, "url": url, "title": title})
 
     def insert(self, info):
         document = self._normalize_document(info)
@@ -79,32 +68,7 @@ class MongoNewsStore(object):
             return False
 
     def _identity_query(self, info):
-        clauses = []
-        if info.get("seq"):
-            clauses.append({"seq": info.get("seq")})
-        if info.get("url"):
-            clauses.append({"url": info.get("url")})
-        if info.get("title"):
-            clauses.append({"title": info.get("title")})
-        if len(clauses) == 1:
-            return clauses[0]
-        if clauses:
-            return {"$or": clauses}
-        return None
+        return dedupe_filter(self._normalize_document(info))
 
     def _normalize_document(self, info):
-        now = datetime.datetime.utcnow()
-        document = {
-            "publisher": info.get("publisher") or "10jqka",
-            "type": info.get("type"),
-            "seq": info.get("seq"),
-            "url": info.get("url"),
-            "title": info.get("title"),
-            "content": info.get("content"),
-            "time": info.get("time"),
-            "source": info.get("source"),
-            "summary": info.get("summary"),
-            "created_at": now,
-            "updated_at": now,
-        }
-        return {key: value for key, value in document.items() if value is not None}
+        return normalize_news_document(info, publisher_default="10jqka", source_name="10jqka")

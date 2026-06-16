@@ -14,7 +14,7 @@ from urllib.parse import quote_plus
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../../../.env'))
 
 def main():
     print("="*60)
@@ -30,8 +30,8 @@ def main():
         mongo_password = os.getenv('MONGO_PASSWORD', '')
         mongo_authsource = os.getenv('MONGO_AUTHSOURCE', 'admin')
         
-        database_name = os.getenv('MONGODB_DATABASE') or os.getenv('URL_QUEUE_DATABASE', 'bloomberg_url_queue')
-        collection_name = os.getenv('MONGODB_COLLECTION') or os.getenv('URL_QUEUE_COLLECTION', 'urls')
+        database_name = os.getenv('URL_QUEUE_DATABASE') or os.getenv('URL_DATABASE') or 'bloomberg_url_queue'
+        collection_name = os.getenv('URL_QUEUE_COLLECTION') or os.getenv('URL_COLLECTION') or 'urls'
 
         # 连接MongoDB
         if mongo_user and mongo_password:

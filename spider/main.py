@@ -10,6 +10,7 @@ import threading
 import time
 
 from config import config
+from article import extract_seq_from_url
 from mongodb import MongoNewsStore
 from page import Fetcher, Page, types as available_types
 
@@ -46,10 +47,14 @@ def setup_logging(log_file):
     log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
+    handlers = [logging.FileHandler(log_file, encoding="utf-8")]
+    if os.getenv("SPIDER_NO_CONSOLE_LOG") != "1":
+        handlers.insert(0, logging.StreamHandler())
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s",
-        handlers=[logging.StreamHandler(), logging.FileHandler(log_file, encoding="utf-8")],
+        handlers=handlers,
+        force=True,
     )
 
 
@@ -72,19 +77,55 @@ def is_exist(store, info):
     return store.is_exist(info)
 
 
+def is_existing_identity(store, seq=None, url=None, title=None):
+    return store.is_existing_identity(seq=seq, url=url, title=title)
+
+
 def insert(store, info):
     return store.insert(info)
 
 
-def spider(kind, args, semaphore):
+class CrawlClaimRegistry:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._claimed = set()
+
+    def _keys(self, seq=None, url=None):
+        keys = []
+        if seq:
+            keys.append(("seq", str(seq)))
+        if url:
+            keys.append(("url", url))
+        return keys
+
+    def claim(self, seq=None, url=None):
+        keys = self._keys(seq=seq, url=url)
+        if not keys:
+            return True
+        with self._lock:
+            if any(key in self._claimed for key in keys):
+                return False
+            self._claimed.update(keys)
+            return True
+
+    def release(self, seq=None, url=None):
+        with self._lock:
+            for key in self._keys(seq=seq, url=url):
+                self._claimed.discard(key)
+
+
+def spider(kind, args, semaphore, claim_registry):
     with semaphore:
         store = None if args.dry_run else MongoNewsStore(config)
         fetcher = Fetcher()
         pn = 1
         stale_count = 0
         existing_count = 0
+        links_seen = 0
         inserted = 0
         skipped = 0
+        existing_prefetch = 0
+        fetched = 0
         parsed = 0
         page_failures = 0
 
@@ -96,7 +137,7 @@ def spider(kind, args, semaphore):
 
                 try:
                     page = Page(kind, pn, fetcher=fetcher, article_sleep=args.article_sleep)
-                    articles = page.get_articles()
+                    article_links = page.get_article_links()
                     page_failures = 0
                 except Exception as exc:
                     page_failures += 1
@@ -107,13 +148,44 @@ def spider(kind, args, semaphore):
                     time.sleep(random.uniform(*args.page_sleep))
                     continue
 
-                if not articles:
+                if not article_links:
                     logging.info("%s finish: no articles at page %s", kind, pn)
                     break
 
-                for article in articles:
-                    info = article.get_info_dict()
-                    parsed += 1
+                links_seen += len(article_links)
+                for link in article_links:
+                    seq = extract_seq_from_url(link)
+                    if not claim_registry.claim(seq=seq, url=link):
+                        skipped += 1
+                        logging.info("skip in-run duplicate link kind=%s page=%s seq=%s url=%s", kind, pn, seq, link)
+                        continue
+
+                    if not args.dry_run and is_existing_identity(store, seq=seq, url=link):
+                        skipped += 1
+                        existing_count += 1
+                        existing_prefetch += 1
+                        logging.info("skip existing link kind=%s page=%s seq=%s url=%s", kind, pn, seq, link)
+                        if args.new_only and existing_count >= args.existing_stop_count:
+                            logging.info(
+                                "%s finish: %s continuous existing links in new-only mode",
+                                kind,
+                                existing_count,
+                            )
+                            return
+                        continue
+
+                    try:
+                        article = page.fetch_article(link)
+                        fetched += 1
+                        info = article.get_info_dict()
+                        parsed += 1
+                    except Exception as exc:
+                        claim_registry.release(seq=seq, url=link)
+                        skipped += 1
+                        logging.warning("parse article failed kind=%s page=%s seq=%s url=%s error=%s", kind, pn, seq, link, exc)
+                        continue
+                    finally:
+                        time.sleep(random.uniform(*args.article_sleep))
 
                     if info.get("time") < args.since:
                         stale_count += 1
@@ -149,10 +221,31 @@ def spider(kind, args, semaphore):
                         existing_count += 1
                         logging.info("skip duplicate kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
 
-                logging.info("%s page=%s parsed=%s inserted=%s skipped=%s", kind, pn, parsed, inserted, skipped)
+                logging.info(
+                    "%s page=%s links=%s fetched=%s parsed=%s inserted=%s skipped=%s existing_prefetch=%s",
+                    kind,
+                    pn,
+                    len(article_links),
+                    fetched,
+                    parsed,
+                    inserted,
+                    skipped,
+                    existing_prefetch,
+                )
                 pn += 1
                 time.sleep(random.uniform(*args.page_sleep))
         finally:
+            logging.info(
+                "%s summary links=%s fetched=%s parsed=%s inserted=%s skipped=%s existing_prefetch=%s saved_article_requests=%s",
+                kind,
+                links_seen,
+                fetched,
+                parsed,
+                inserted,
+                skipped,
+                existing_prefetch,
+                existing_prefetch,
+            )
             if store:
                 store.close()
 
@@ -168,13 +261,14 @@ def main():
         store.close()
 
     semaphore = threading.BoundedSemaphore(max(1, args.threads))
+    claim_registry = CrawlClaimRegistry()
     thread_list = []
     thread_errors = []
     thread_errors_lock = threading.Lock()
 
     def run_spider(kind):
         try:
-            spider(kind, args, semaphore)
+            spider(kind, args, semaphore, claim_registry)
         except Exception as exc:
             logging.exception("%s failed: %s", kind, exc)
             with thread_errors_lock:

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>新闻数据 - 价值投机分析</title>
+    <script>
+      try {
+        if (localStorage.getItem("stockTheme") === "dark") {
+          document.documentElement.classList.add("theme-dark");
+        }
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=admin-unified-20260616-v1" />
+  </head>
+  <body>
+    <main class="admin-page admin-shell">
+      <aside class="admin-sidebar">
+        <a class="admin-brand" href="/">
+          <span class="admin-brand-mark">VA</span>
+          <span>
+            <strong>价值投机分析</strong>
+            <small>Admin Console</small>
+          </span>
+        </a>
+        <nav class="admin-nav" aria-label="后台导航">
+          <a href="/admin-accounts.html">
+            <span class="admin-nav-icon">A</span>
+            <span>账户管理</span>
+          </a>
+          <a href="/admin-spider.html">
+            <span class="admin-nav-icon">S</span>
+            <span>爬虫控制</span>
+          </a>
+          <a class="active" href="/admin-news.html">
+            <span class="admin-nav-icon">N</span>
+            <span>新闻数据</span>
+          </a>
+        </nav>
+        <div class="admin-sidebar-footer">
+          <a class="admin-footer-link" href="/">
+            <span class="admin-nav-icon">H</span>
+            <span>返回分析</span>
+          </a>
+          <div class="admin-footer-actions">
+            <button id="themeToggleBtn" type="button">深色模式</button>
+            <button id="logoutBtn" type="button">退出登录</button>
+          </div>
+        </div>
+      </aside>
+
+      <section class="admin-workspace">
+        <header class="admin-page-head">
+          <div>
+            <span class="admin-kicker">NEWS LIBRARY</span>
+            <h1>新闻数据</h1>
+            <p id="newsMeta">读取 MongoDB 新闻库。</p>
+          </div>
+          <div class="admin-actions">
+            <button id="newsExportBtn" type="button">导出当前页</button>
+            <button id="newsRefreshBtn" class="primary-action" type="button">刷新</button>
+          </div>
+        </header>
+
+        <section class="admin-panel news-panel">
+          <div id="newsStats" class="admin-kpis news-kpis"></div>
+          <div id="newsDistribution" class="news-distribution"></div>
+
+          <section class="admin-card news-browser-card">
+            <div class="admin-card-head">
+              <h4>新闻列表</h4>
+              <span>筛选与分页</span>
+            </div>
+            <div class="news-filter-grid">
+              <label class="news-search-field">
+                <span>搜索</span>
+                <input id="newsSearchInput" type="search" placeholder="标题、正文、来源" />
+              </label>
+              <label>
+                <span>来源</span>
+                <select id="newsPublisherSelect"></select>
+              </label>
+              <label>
+                <span>分类</span>
+                <select id="newsTypeSelect"></select>
+              </label>
+              <label>
+                <span>时间</span>
+                <select id="newsDaysSelect">
+                  <option value="1">最近 1 天</option>
+                  <option value="7">最近 7 天</option>
+                  <option value="30" selected>最近 30 天</option>
+                  <option value="90">最近 90 天</option>
+                  <option value="0">全部</option>
+                </select>
+              </label>
+              <label>
+                <span>每页</span>
+                <select id="newsPageSizeSelect">
+                  <option value="20" selected>20</option>
+                  <option value="40">40</option>
+                  <option value="80">80</option>
+                </select>
+              </label>
+              <button id="newsResetBtn" type="button">重置筛选</button>
+            </div>
+
+            <div id="newsList" class="news-list"></div>
+
+            <div class="news-pager">
+              <button id="newsPrevBtn" type="button">上一页</button>
+              <span id="newsPageInfo">第 1 页</span>
+              <button id="newsNextBtn" type="button">下一页</button>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/admin.js?v=admin-unified-20260616-v1"></script>
+    <script src="/admin-news.js?v=admin-unified-20260616-v1"></script>
+  </body>
+</html>

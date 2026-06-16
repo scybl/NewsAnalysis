@@ -18,9 +18,16 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 import re
 import hashlib
+import sys
 
-# 加载环境变量
-load_dotenv()
+# 加载项目根目录环境变量
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../../../.env'))
+
+SPIDER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
+if SPIDER_ROOT not in sys.path:
+    sys.path.insert(0, SPIDER_ROOT)
+
+from news_schema import dedupe_filter, ensure_news_indexes, normalize_news_document
 
 # 导入pychrome用于CDP获取Cookie
 try:
@@ -116,6 +123,7 @@ class UltimateCrawler:
             )
             self.db_articles = self.mongodb_client[article_db]
             self.collection_articles = self.db_articles[article_coll]
+            ensure_news_indexes(self.collection_articles, pymongo)
             
             # URL队列数据库（统一使用URL_QUEUE_开头的变量名，与get_url一致）
             url_db = os.getenv('URL_QUEUE_DATABASE') or os.getenv('URL_DATABASE', 'bloomberg_url_queue')
@@ -510,7 +518,7 @@ class UltimateCrawler:
             
             print(f"  [OK] 解析成功: {title[:50]}...")
             print(f"  作者: {author}, 标签: {len(tags)}, 段落: {len(document_content)}")
-            return article
+            return normalize_news_document(article, publisher_default="Bloomberg", source_name="bloomberg")
             
         except Exception as e:
             print(f"  [ERROR] 解析失败: {e}")
@@ -581,6 +589,11 @@ class UltimateCrawler:
             return False
         
         try:
+            article_data = normalize_news_document(
+                article_data,
+                publisher_default="Bloomberg",
+                source_name="bloomberg",
+            )
             print(f"\n[STEP 4] 保存文章到MongoDB...")
             print(f"  [DEBUG] 数据库: {self.collection_articles.database.name}")
             print(f"  [DEBUG] 集合: {self.collection_articles.name}")
@@ -595,11 +608,14 @@ class UltimateCrawler:
             print(f"    - tags: {len(article_data.get('tags', []))} 个")
             print(f"    - document.content: {len(article_data.get('document', {}).get('content', []))} 段")
             
-            # 使用upsert避免重复（通过URL判断）
+            created_at = article_data.pop('created_at', datetime.utcnow())
+            query = dedupe_filter(article_data) or {'url': article_data['url']}
+
+            # 使用共享指纹upsert，避免跨来源重复
             print(f"  [DEBUG] 执行MongoDB update_one操作...")
             result = self.collection_articles.update_one(
-                {'url': article_data['url']},
-                {'$set': article_data},
+                query,
+                {'$set': article_data, '$setOnInsert': {'created_at': created_at}},
                 upsert=True
             )
             

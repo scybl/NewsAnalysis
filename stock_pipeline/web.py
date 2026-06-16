@@ -28,6 +28,7 @@ from .config import PROJECT_ROOT, get_settings
 from .deepseek_client import DeepSeekClient, DeepSeekError
 from .dossier import build_dossier
 from .field_labels import build_table_datasets
+from .news_library import query_news_library
 from .news_search import search_related_news
 from .stock_search import StockSearchIndex
 from .stock_storage import analysis_dossier_path, analysis_output_path, analysis_review_context, build_local_stock_payload, current_dir, list_analysis_results, read_analysis_result, stock_exists, stock_status, sync_stock_data
@@ -37,6 +38,12 @@ from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_js
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 SPIDER_TYPES = ("财经要闻", "宏观经济", "产经新闻", "国际财经", "金融市场", "公司新闻", "区域经济", "财经评论", "财经人物")
+SPIDER_SOURCES = (
+    {"id": "ths", "name": "同花顺", "description": "中文财经新闻分类抓取"},
+    {"id": "guardian", "name": "Guardian", "description": "Guardian Content API 文章抓取"},
+    {"id": "bloomberg_urls", "name": "Bloomberg URL", "description": "抓取 Bloomberg URL 队列"},
+    {"id": "bloomberg_articles", "name": "Bloomberg 正文", "description": "读取 URL 队列并抓正文，需要 Chrome 登录态"},
+)
 BILLABLE_API_PATHS = {
     "/api/refresh",
     "/api/sync-stock-data",
@@ -433,12 +440,17 @@ class StockWebApp:
                         return
                     query = parse_qs(parsed.query)
                     lines = max(20, min(500, int(query.get("lines", ["120"])[0] or 120)))
-                    self._json({"ok": True, **app.spider_controller.logs(lines=lines)})
+                    self._json({"ok": True, **app.spider_controller.logs(lines=lines, source=query.get("source", [""])[0])})
                     return
                 if parsed.path == "/api/admin/tasks":
                     if not self._require_admin():
                         return
                     self._json({"ok": True, "items": app.task_registry.list_tasks()})
+                    return
+                if parsed.path == "/api/admin/news-library":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **query_news_library(parse_qs(parsed.query))})
                     return
                 if parsed.path == "/api/user/api-keys":
                     session = self._current_session()
@@ -493,7 +505,7 @@ class StockWebApp:
                 if parsed.path == "/api/admin/spider/stop":
                     if not self._require_admin():
                         return
-                    self._json({"ok": True, **app.spider_controller.stop()})
+                    self._json({"ok": True, **app.spider_controller.stop(self._read_json())})
                     return
                 if not self._require_auth(parsed.path):
                     return
@@ -1266,26 +1278,178 @@ class SpiderController:
         self.logs_dir = project_root / "logs"
         self.task_registry = task_registry
         self.lock = threading.Lock()
-        self.process: subprocess.Popen | None = None
-        self.current: dict | None = None
+        self.processes: dict[str, subprocess.Popen] = {}
+        self.currents: dict[str, dict] = {}
 
     def start(self, payload: dict) -> dict:
         with self.lock:
             self._refresh_locked()
-            if self.process and self.process.poll() is None:
-                raise RuntimeError("已有爬虫任务正在运行。")
 
-            selected_types = self._parse_types(payload.get("types"))
+            source = self._parse_source(payload.get("source"))
+            process = self.processes.get(source)
+            if process and process.poll() is None:
+                raise RuntimeError(f"{self._source_label(source)}爬虫已经在运行。")
+            selected_types = self._parse_types(payload.get("types")) if source == "ths" else []
             max_pages = self._bounded_int(payload.get("max_pages"), default=1, minimum=1, maximum=50, field="max_pages")
-            threads = self._bounded_int(payload.get("threads"), default=1, minimum=1, maximum=4, field="threads")
-            dry_run = payload.get("dry_run", True) is not False
+            threads = self._bounded_int(payload.get("threads"), default=2, minimum=1, maximum=4, field="threads")
             new_only = bool(payload.get("new_only", False))
-            article_sleep = self._sleep_range(payload.get("article_sleep"), default="0,0" if dry_run else "3,8", field="article_sleep")
-            page_sleep = self._sleep_range(payload.get("page_sleep"), default="0,0" if dry_run else "10,30", field="page_sleep")
+            article_sleep = self._sleep_range(payload.get("article_sleep"), default="3,5", field="article_sleep")
+            page_sleep = self._sleep_range(payload.get("page_sleep"), default="5,10", field="page_sleep")
 
             job_id = timestamp() + "_" + uuid.uuid4().hex[:8]
-            log_file = self.logs_dir / f"admin-spider-{job_id}.log"
+            log_file = self.logs_dir / f"admin-spider-{source}-{job_id}.log"
             ensure_dir(log_file.parent)
+            env = dict(os.environ)
+            env["SPIDER_NO_CONSOLE_LOG"] = "1"
+            cmd, cwd, source_label = self._build_command(
+                source=source,
+                selected_types=selected_types,
+                max_pages=max_pages,
+                threads=threads,
+                new_only=new_only,
+                article_sleep=article_sleep,
+                page_sleep=page_sleep,
+                log_file=log_file,
+                env=env,
+            )
+
+            with log_file.open("a", encoding="utf-8") as output:
+                output.write("admin spider command: " + " ".join(cmd) + "\n")
+                output.flush()
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=str(cwd),
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
+            self.processes[source] = process
+            self.currents[source] = {
+                "job_id": job_id,
+                "status": "running",
+                "pid": process.pid,
+                "started_at": timestamp(),
+                "finished_at": "",
+                "returncode": None,
+                "source": source,
+                "source_label": source_label,
+                "types": selected_types,
+                "max_pages": max_pages,
+                "threads": threads,
+                "new_only": new_only,
+                "log_file": str(log_file),
+                "error": "",
+            }
+            if self.task_registry:
+                self.task_registry.create_task(
+                    job_id,
+                    "spider",
+                    f"{source_label}爬虫",
+                    metadata={"source": source, "types": selected_types, "max_pages": max_pages, "new_only": new_only},
+                )
+                self.task_registry.update_task(job_id, status="running")
+                self.task_registry.add_event(job_id, "running", "爬虫进程已启动。", {"pid": process.pid, "log_file": str(log_file)})
+            return self.status_locked()
+
+    def stop(self, payload: dict | None = None) -> dict:
+        with self.lock:
+            self._refresh_locked()
+            source = self._parse_source((payload or {}).get("source"))
+            process = self.processes.get(source)
+            current = self.currents.get(source)
+            if not process or process.poll() is not None:
+                return self.status_locked()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            current = dict(current or {})
+            current["status"] = "stopping"
+            self.currents[source] = current
+            if self.task_registry and current.get("job_id"):
+                self.task_registry.update_task(current["job_id"], status="stopping")
+                self.task_registry.add_event(current["job_id"], "stopping", "已发送停止信号。")
+            return self.status_locked()
+
+    def status(self) -> dict:
+        with self.lock:
+            self._refresh_locked()
+            return self.status_locked()
+
+    def logs(self, lines: int = 120, source: str | None = None) -> dict:
+        with self.lock:
+            self._refresh_locked()
+            current = self._selected_current_locked(source)
+            log_file = current.get("log_file") or ""
+        if not log_file or not Path(log_file).exists():
+            return {"source": current.get("source", ""), "log_file": log_file, "content": ""}
+        return {
+            "source": current.get("source", ""),
+            "log_file": log_file,
+            "content": "\n".join(Path(log_file).read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]),
+        }
+
+    def status_locked(self) -> dict:
+        spiders = self._spider_snapshots_locked()
+        selected = self._selected_current_locked(None)
+        return {
+            "spider": selected,
+            "spiders": spiders,
+            "spider_list": [spiders[item["id"]] for item in SPIDER_SOURCES],
+            "available_types": list(SPIDER_TYPES),
+            "available_sources": list(SPIDER_SOURCES),
+        }
+
+    def _spider_snapshots_locked(self) -> dict[str, dict]:
+        snapshots = {}
+        for item in SPIDER_SOURCES:
+            source = item["id"]
+            current = dict(self.currents.get(source) or {})
+            if not current:
+                current = {
+                    "job_id": "",
+                    "status": "idle",
+                    "pid": None,
+                    "started_at": "",
+                    "finished_at": "",
+                    "returncode": None,
+                    "source": source,
+                    "source_label": item["name"],
+                    "types": [],
+                    "max_pages": None,
+                    "threads": None,
+                    "new_only": False,
+                    "log_file": "",
+                    "error": "",
+                }
+            snapshots[source] = current
+        return snapshots
+
+    def _selected_current_locked(self, source: str | None) -> dict:
+        if source:
+            return self._spider_snapshots_locked().get(self._parse_source(source), {})
+        running = [item for item in self.currents.values() if item.get("status") in {"running", "stopping"}]
+        if running:
+            return sorted(running, key=lambda item: item.get("started_at") or "", reverse=True)[0]
+        if self.currents:
+            return sorted(self.currents.values(), key=lambda item: item.get("started_at") or "", reverse=True)[0]
+        return {"status": "idle", "pid": None, "log_file": "", "source": "", "source_label": ""}
+
+    def _build_command(
+        self,
+        source: str,
+        selected_types: list[str],
+        max_pages: int,
+        threads: int,
+        new_only: bool,
+        article_sleep: str,
+        page_sleep: str,
+        log_file: Path,
+        env: dict,
+    ) -> tuple[list[str], Path, str]:
+        if source == "ths":
             cmd = [
                 sys.executable,
                 "main.py",
@@ -1304,102 +1468,50 @@ class SpiderController:
                 "--log-file",
                 str(log_file),
             ]
-            if dry_run:
-                cmd.append("--dry-run")
             if new_only:
                 cmd.extend(["--new-only", "--existing-stop-count", "10"])
+            return cmd, self.spider_dir, "同花顺"
 
-            with log_file.open("a", encoding="utf-8") as output:
-                output.write("admin spider command: " + " ".join(cmd) + "\n")
-                output.flush()
-                self.process = subprocess.Popen(
-                    cmd,
-                    cwd=str(self.spider_dir),
-                    stdout=output,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    start_new_session=True,
-                )
-            self.current = {
-                "job_id": job_id,
-                "status": "running",
-                "pid": self.process.pid,
-                "started_at": timestamp(),
-                "finished_at": "",
-                "returncode": None,
-                "types": selected_types,
-                "max_pages": max_pages,
-                "threads": threads,
-                "dry_run": dry_run,
-                "new_only": new_only,
-                "log_file": str(log_file),
-                "error": "",
-            }
-            if self.task_registry:
-                self.task_registry.create_task(
-                    job_id,
-                    "spider",
-                    "同花顺新闻爬虫",
-                    metadata={"types": selected_types, "max_pages": max_pages, "dry_run": dry_run, "new_only": new_only},
-                )
-                self.task_registry.update_task(job_id, status="running")
-                self.task_registry.add_event(job_id, "running", "爬虫进程已启动。", {"pid": self.process.pid, "log_file": str(log_file)})
-            return self.status_locked()
+        if source == "guardian":
+            env["GUARDIAN_START_PAGE"] = "1"
+            env["GUARDIAN_END_PAGE"] = str(max_pages)
+            return [sys.executable, "Guardian.py"], self.spider_dir / "newsweaver" / "Guardian", "Guardian"
 
-    def stop(self) -> dict:
-        with self.lock:
-            self._refresh_locked()
-            if not self.process or self.process.poll() is not None:
-                return self.status_locked()
-            try:
-                os.killpg(self.process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            self.current = dict(self.current or {})
-            self.current["status"] = "stopping"
-            if self.task_registry and self.current.get("job_id"):
-                self.task_registry.update_task(self.current["job_id"], status="stopping")
-                self.task_registry.add_event(self.current["job_id"], "stopping", "已发送停止信号。")
-            return self.status_locked()
+        if source == "bloomberg_urls":
+            return [sys.executable, "bloomberg_url_fetcher.py"], self.spider_dir / "newsweaver" / "Bloomberg" / "get_url", "Bloomberg URL"
 
-    def status(self) -> dict:
-        with self.lock:
-            self._refresh_locked()
-            return self.status_locked()
+        if source == "bloomberg_articles":
+            env["BATCH_SIZE"] = str(max_pages)
+            low, high = [part.strip() for part in article_sleep.split(",", 1)]
+            env["ARTICLE_DELAY_MIN"] = low
+            env["ARTICLE_DELAY_MAX"] = high
+            return [sys.executable, "ultimate_crawler.py"], self.spider_dir / "newsweaver" / "Bloomberg" / "final_article", "Bloomberg 正文"
 
-    def logs(self, lines: int = 120) -> dict:
-        with self.lock:
-            self._refresh_locked()
-            current = self.current or {}
-            log_file = current.get("log_file") or ""
-        if not log_file or not Path(log_file).exists():
-            return {"log_file": log_file, "content": ""}
-        return {"log_file": log_file, "content": "\n".join(Path(log_file).read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])}
-
-    def status_locked(self) -> dict:
-        return {"spider": self.current or {"status": "idle", "pid": None, "log_file": ""}, "available_types": list(SPIDER_TYPES)}
+        raise ValueError("未知爬虫数据源。")
 
     def _refresh_locked(self) -> None:
-        if not self.process or not self.current:
-            return
-        returncode = self.process.poll()
-        if returncode is None:
-            return
-        self.current["returncode"] = returncode
-        self.current["finished_at"] = self.current.get("finished_at") or timestamp()
-        if self.current.get("status") == "stopping":
-            self.current["status"] = "stopped"
-        else:
-            self.current["status"] = "succeeded" if returncode == 0 else "failed"
-        if returncode != 0:
-            self.current["error"] = self._failure_summary(Path(self.current.get("log_file") or ""))
-            self._append_process_summary(Path(self.current.get("log_file") or ""), returncode, self.current["error"])
-        if self.task_registry and self.current.get("job_id"):
-            final_status = self.current["status"]
-            error = "" if returncode == 0 else self.current.get("error") or f"returncode={returncode}"
-            self.task_registry.update_task(self.current["job_id"], status=final_status, error=error)
-            self.task_registry.add_event(self.current["job_id"], final_status, f"爬虫进程结束，returncode={returncode}。")
-        self.process = None
+        for source, process in list(self.processes.items()):
+            current = self.currents.get(source)
+            if not current:
+                continue
+            returncode = process.poll()
+            if returncode is None:
+                continue
+            current["returncode"] = returncode
+            current["finished_at"] = current.get("finished_at") or timestamp()
+            if current.get("status") == "stopping":
+                current["status"] = "stopped"
+            else:
+                current["status"] = "succeeded" if returncode == 0 else "failed"
+            if returncode != 0:
+                current["error"] = self._failure_summary(Path(current.get("log_file") or ""))
+                self._append_process_summary(Path(current.get("log_file") or ""), returncode, current["error"])
+            if self.task_registry and current.get("job_id"):
+                final_status = current["status"]
+                error = "" if returncode == 0 else current.get("error") or f"returncode={returncode}"
+                self.task_registry.update_task(current["job_id"], status=final_status, error=error)
+                self.task_registry.add_event(current["job_id"], final_status, f"爬虫进程结束，returncode={returncode}。")
+            self.processes.pop(source, None)
 
     def _failure_summary(self, log_file: Path) -> str:
         if not log_file.exists():
@@ -1445,6 +1557,19 @@ class SpiderController:
         if unknown:
             raise ValueError("未知爬虫分类：" + ",".join(unknown))
         return selected
+
+    def _parse_source(self, raw_value) -> str:
+        source = str(raw_value or "ths").strip()
+        allowed = {item["id"] for item in SPIDER_SOURCES}
+        if source not in allowed:
+            raise ValueError("未知爬虫数据源：" + source)
+        return source
+
+    def _source_label(self, source: str) -> str:
+        for item in SPIDER_SOURCES:
+            if item["id"] == source:
+                return item["name"]
+        return source
 
     def _bounded_int(self, value, default: int, minimum: int, maximum: int, field: str) -> int:
         try:

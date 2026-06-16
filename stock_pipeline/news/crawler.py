@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .categories import CATEGORIES
-from .storage import Mysql, NewsDatabaseConfig, ensure_schema, initialize_database, insert_article, is_existing
+from .article import extract_seq_from_url
+from .storage import Mysql, NewsDatabaseConfig, ensure_schema, initialize_database, insert_article, is_existing, is_existing_identity
 
 
 DEFAULT_SINCE = "2019-01-01 00:00:00"
@@ -59,10 +60,11 @@ def crawl_news(db_config: NewsDatabaseConfig, options: CrawlOptions) -> dict[str
             ensure_schema(mysql)
 
     semaphore = threading.BoundedSemaphore(max(1, options.threads))
+    claim_registry = CrawlClaimRegistry()
     stats: dict[str, dict[str, int]] = {}
     thread_list = []
     for kind in selected_types:
-        thread = threading.Thread(target=_crawl_category, args=(kind, db_config, options, semaphore, stats), name=kind)
+        thread = threading.Thread(target=_crawl_category, args=(kind, db_config, options, semaphore, claim_registry, stats), name=kind)
         thread_list.append(thread)
         thread.start()
 
@@ -72,7 +74,36 @@ def crawl_news(db_config: NewsDatabaseConfig, options: CrawlOptions) -> dict[str
     return {"finished_at": datetime.datetime.now().isoformat(sep=" ", timespec="seconds"), "categories": stats}
 
 
-def _crawl_category(kind: str, db_config: NewsDatabaseConfig, options: CrawlOptions, semaphore: threading.BoundedSemaphore, stats: dict[str, dict[str, int]]) -> None:
+class CrawlClaimRegistry:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._claimed = set()
+
+    def _keys(self, seq: str | None = None, url: str | None = None) -> list[tuple[str, str]]:
+        keys = []
+        if seq:
+            keys.append(("seq", str(seq)))
+        if url:
+            keys.append(("url", url))
+        return keys
+
+    def claim(self, seq: str | None = None, url: str | None = None) -> bool:
+        keys = self._keys(seq=seq, url=url)
+        if not keys:
+            return True
+        with self._lock:
+            if any(key in self._claimed for key in keys):
+                return False
+            self._claimed.update(keys)
+            return True
+
+    def release(self, seq: str | None = None, url: str | None = None) -> None:
+        with self._lock:
+            for key in self._keys(seq=seq, url=url):
+                self._claimed.discard(key)
+
+
+def _crawl_category(kind: str, db_config: NewsDatabaseConfig, options: CrawlOptions, semaphore: threading.BoundedSemaphore, claim_registry: CrawlClaimRegistry, stats: dict[str, dict[str, int]]) -> None:
     from .page import Fetcher, Page
 
     with semaphore:
@@ -82,7 +113,7 @@ def _crawl_category(kind: str, db_config: NewsDatabaseConfig, options: CrawlOpti
         stale_count = 0
         existing_count = 0
         page_failures = 0
-        category_stats = {"parsed": 0, "inserted": 0, "skipped": 0}
+        category_stats = {"links": 0, "fetched": 0, "parsed": 0, "inserted": 0, "skipped": 0, "existing_prefetch": 0}
         stats[kind] = category_stats
 
         try:
@@ -93,7 +124,7 @@ def _crawl_category(kind: str, db_config: NewsDatabaseConfig, options: CrawlOpti
 
                 try:
                     page = Page(kind, pn, fetcher=fetcher, article_sleep=options.article_sleep)
-                    articles = page.get_articles()
+                    article_links = page.get_article_links()
                     page_failures = 0
                 except Exception as exc:
                     page_failures += 1
@@ -104,12 +135,40 @@ def _crawl_category(kind: str, db_config: NewsDatabaseConfig, options: CrawlOpti
                     time.sleep(random.uniform(*options.page_sleep))
                     continue
 
-                if not articles:
+                if not article_links:
                     logging.info("%s finish: no articles at page %s", kind, pn)
                     break
 
-                for article in articles:
-                    info = article.to_dict()
+                category_stats["links"] += len(article_links)
+                for link in article_links:
+                    seq = extract_seq_from_url(link)
+                    if not claim_registry.claim(seq=seq, url=link):
+                        category_stats["skipped"] += 1
+                        logging.info("skip in-run duplicate link kind=%s page=%s seq=%s url=%s", kind, pn, seq, link)
+                        continue
+
+                    if mysql and is_existing_identity(mysql, seq=seq, url=link):
+                        category_stats["skipped"] += 1
+                        category_stats["existing_prefetch"] += 1
+                        existing_count += 1
+                        logging.info("skip existing link kind=%s page=%s seq=%s url=%s", kind, pn, seq, link)
+                        if options.new_only and existing_count >= options.existing_stop_count:
+                            logging.info("%s finish: %s continuous existing links in new-only mode", kind, existing_count)
+                            return
+                        continue
+
+                    try:
+                        article = page.fetch_article(link)
+                        category_stats["fetched"] += 1
+                        info = article.to_dict()
+                    except Exception as exc:
+                        claim_registry.release(seq=seq, url=link)
+                        category_stats["skipped"] += 1
+                        logging.warning("parse article failed kind=%s page=%s seq=%s url=%s error=%s", kind, pn, seq, link, exc)
+                        continue
+                    finally:
+                        time.sleep(random.uniform(*options.article_sleep))
+
                     category_stats["parsed"] += 1
 
                     if info.get("time") < options.since:
@@ -133,15 +192,40 @@ def _crawl_category(kind: str, db_config: NewsDatabaseConfig, options: CrawlOpti
                             return
                         continue
 
-                    if mysql:
-                        insert_article(mysql, info)
-                    category_stats["inserted"] += 1
-                    existing_count = 0
-                    logging.info("insert kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
+                    inserted = insert_article(mysql, info) if mysql else 1
+                    if inserted:
+                        category_stats["inserted"] += 1
+                        existing_count = 0
+                        logging.info("insert kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
+                    else:
+                        category_stats["skipped"] += 1
+                        existing_count += 1
+                        logging.info("skip duplicate kind=%s page=%s seq=%s title=%s", kind, pn, info.get("seq"), info.get("title"))
 
-                logging.info("%s page=%s parsed=%s inserted=%s skipped=%s", kind, pn, category_stats["parsed"], category_stats["inserted"], category_stats["skipped"])
+                logging.info(
+                    "%s page=%s links=%s fetched=%s parsed=%s inserted=%s skipped=%s existing_prefetch=%s",
+                    kind,
+                    pn,
+                    category_stats["links"],
+                    category_stats["fetched"],
+                    category_stats["parsed"],
+                    category_stats["inserted"],
+                    category_stats["skipped"],
+                    category_stats["existing_prefetch"],
+                )
                 pn += 1
                 time.sleep(random.uniform(*options.page_sleep))
         finally:
+            logging.info(
+                "%s summary links=%s fetched=%s parsed=%s inserted=%s skipped=%s existing_prefetch=%s saved_article_requests=%s",
+                kind,
+                category_stats["links"],
+                category_stats["fetched"],
+                category_stats["parsed"],
+                category_stats["inserted"],
+                category_stats["skipped"],
+                category_stats["existing_prefetch"],
+                category_stats["existing_prefetch"],
+            )
             if mysql:
                 mysql.close()

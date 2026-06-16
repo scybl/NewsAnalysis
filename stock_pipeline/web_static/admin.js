@@ -18,15 +18,18 @@ const adminDemoCount = document.querySelector("#adminDemoCount");
 const spiderStatus = document.querySelector("#spiderStatus");
 const spiderStateText = document.querySelector("#spiderStateText");
 const spiderModeText = document.querySelector("#spiderModeText");
+const spiderSourceText = document.querySelector("#spiderSourceText");
 const spiderTypeText = document.querySelector("#spiderTypeText");
 const spiderPagesText = document.querySelector("#spiderPagesText");
 const spiderLogFile = document.querySelector("#spiderLogFile");
+const spiderSourcesSelect = document.querySelector("#spiderSourcesSelect");
+const spiderSourceHint = document.querySelector("#spiderSourceHint");
+const spiderSourceTasks = document.querySelector("#spiderSourceTasks");
 const spiderTypesSelect = document.querySelector("#spiderTypesSelect");
 const spiderMaxPages = document.querySelector("#spiderMaxPages");
 const spiderThreads = document.querySelector("#spiderThreads");
 const spiderArticleSleep = document.querySelector("#spiderArticleSleep");
 const spiderPageSleep = document.querySelector("#spiderPageSleep");
-const spiderDryRun = document.querySelector("#spiderDryRun");
 const spiderNewOnly = document.querySelector("#spiderNewOnly");
 const startSpiderBtn = document.querySelector("#startSpiderBtn");
 const stopSpiderBtn = document.querySelector("#stopSpiderBtn");
@@ -130,17 +133,18 @@ startSpiderBtn?.addEventListener("click", async () => {
   startSpiderBtn.disabled = true;
   let started = false;
   try {
-    const selectedTypes = [...spiderTypesSelect.selectedOptions].map((option) => option.value);
+    const selectedSource = spiderSourcesSelect?.querySelector("input[type='radio']:checked")?.value || "ths";
+    const selectedTypes = [...spiderTypesSelect.querySelectorAll("input[type='checkbox']:checked")].map((input) => input.value);
     const response = await fetch("/api/admin/spider/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        source: selectedSource,
         types: selectedTypes.length ? selectedTypes : ["财经要闻"],
         max_pages: Number(spiderMaxPages.value || 1),
-        threads: Number(spiderThreads.value || 1),
-        article_sleep: spiderArticleSleep.value || "0,0",
-        page_sleep: spiderPageSleep.value || "0,0",
-        dry_run: spiderDryRun.checked,
+        threads: Number(spiderThreads.value || 2),
+        article_sleep: spiderArticleSleep.value || "3,5",
+        page_sleep: spiderPageSleep.value || "5,10",
         new_only: spiderNewOnly.checked,
       }),
     });
@@ -158,7 +162,12 @@ startSpiderBtn?.addEventListener("click", async () => {
 stopSpiderBtn?.addEventListener("click", async () => {
   stopSpiderBtn.disabled = true;
   try {
-    const response = await fetch("/api/admin/spider/stop", { method: "POST" });
+    const selectedSource = getSelectedSpiderSource();
+    const response = await fetch("/api/admin/spider/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source: selectedSource }),
+    });
     await readApiPayload(response, "停止爬虫失败");
     await refreshSpiderConsole();
   } catch (error) {
@@ -384,7 +393,8 @@ async function refreshSpiderConsole() {
     const statusResponse = await fetch("/api/admin/spider/status");
     const statusPayload = await readApiPayload(statusResponse, "读取爬虫状态失败");
     renderSpiderStatus(statusPayload);
-    const logsResponse = await fetch("/api/admin/spider/logs?lines=160");
+    const logsSource = getSelectedSpiderSource();
+    const logsResponse = await fetch(`/api/admin/spider/logs?lines=160&source=${encodeURIComponent(logsSource)}`);
     const logsPayload = await readApiPayload(logsResponse, "读取爬虫日志失败");
     spiderLogs.textContent = logsPayload.content || statusPayload.spider?.error || "暂无日志";
     if (spiderLogFile) spiderLogFile.textContent = logsPayload.log_file ? basename(logsPayload.log_file) : "暂无日志文件";
@@ -395,28 +405,168 @@ async function refreshSpiderConsole() {
 
 function renderSpiderStatus(payload) {
   const spider = payload.spider || {};
+  renderSpiderSources(payload.available_sources || []);
   renderSpiderTypes(payload.available_types || []);
-  const status = spider.status || "idle";
+  renderSpiderTaskCards(payload.spider_list || []);
+  const selectedSource = getSelectedSpiderSource();
+  const selectedSpider = payload.spiders?.[selectedSource] || spider;
+  const status = selectedSpider.status || "idle";
   const running = status === "running" || status === "stopping";
   startSpiderBtn.disabled = running;
   stopSpiderBtn.disabled = !running;
-  const typeText = Array.isArray(spider.types) ? spider.types.join("、") : "-";
-  const dryRunText = spider.dry_run ? "dry-run" : "写入 MongoDB";
-  const pages = spider.max_pages ? `${spider.max_pages} 页` : "-";
-  const errorText = spider.error ? `；错误：${spider.error}` : "";
-  const returnText = Number.isInteger(spider.returncode) ? `；退出码：${spider.returncode}` : "";
-  spiderStatus.textContent = `状态：${spiderStatusLabel(status)}；分类：${typeText}；模式：${dryRunText}；页数：${pages}${returnText}${errorText}`;
+  const sourceText = selectedSpider.source_label || sourceLabel(selectedSpider.source) || "-";
+  const typeText = Array.isArray(selectedSpider.types) && selectedSpider.types.length ? selectedSpider.types.join("、") : "-";
+  const modeText = "写入 MongoDB";
+  const pages = selectedSpider.max_pages ? `${selectedSpider.max_pages} 页` : "-";
+  const errorText = selectedSpider.error ? `；错误：${selectedSpider.error}` : "";
+  const returnText = Number.isInteger(selectedSpider.returncode) ? `；退出码：${selectedSpider.returncode}` : "";
+  spiderStatus.textContent = `状态：${spiderStatusLabel(status)}；来源：${sourceText}；分类：${typeText}；模式：${modeText}；页数/批量：${pages}${returnText}${errorText}`;
   if (spiderStateText) spiderStateText.textContent = spiderStatusLabel(status);
-  if (spiderModeText) spiderModeText.textContent = dryRunText;
+  if (spiderModeText) spiderModeText.textContent = modeText;
+  if (spiderSourceText) spiderSourceText.textContent = sourceText;
   if (spiderTypeText) spiderTypeText.textContent = typeText;
   if (spiderPagesText) spiderPagesText.textContent = pages;
 }
 
-function renderSpiderTypes(types) {
-  if (!spiderTypesSelect || spiderTypesSelect.options.length || !types.length) return;
-  spiderTypesSelect.innerHTML = types
-    .map((type, index) => `<option value="${escapeHtml(type)}" ${index === 0 ? "selected" : ""}>${escapeHtml(type)}</option>`)
+function renderSpiderTaskCards(items) {
+  if (!spiderSourceTasks) return;
+  spiderSourceTasks.innerHTML = (items || [])
+    .map((item) => {
+      const running = item.status === "running" || item.status === "stopping";
+      const detail = item.source === "ths" && Array.isArray(item.types) && item.types.length ? item.types.join("、") : sourceHint(item.source);
+      return `
+        <button class="spider-task-card ${running ? "running" : ""}" type="button" data-spider-source="${escapeHtml(item.source || "")}">
+          <span>${escapeHtml(item.source_label || sourceLabel(item.source))}</span>
+          <strong>${escapeHtml(spiderStatusLabel(item.status || "idle"))}</strong>
+          <small>${escapeHtml(detail || "-")}</small>
+        </button>
+      `;
+    })
     .join("");
+  spiderSourceTasks.querySelectorAll("[data-spider-source]").forEach((button) => {
+    button.addEventListener("click", () => selectSpiderSource(button.dataset.spiderSource));
+  });
+  updateSelectedTaskCard();
+}
+
+function renderSpiderSources(sources) {
+  if (!spiderSourcesSelect || spiderSourcesSelect.children.length || !sources.length) return;
+  spiderSourcesSelect.innerHTML = sources
+    .map(
+      (source, index) => `
+        <label class="spider-source-option">
+          <input type="radio" name="spiderSource" value="${escapeHtml(source.id)}" ${index === 0 ? "checked" : ""} />
+          <span data-mark="${escapeHtml(sourceMark(source.id))}">
+            <strong>${escapeHtml(source.name || source.id)}</strong>
+            <small>${escapeHtml(source.description || "")}</small>
+          </span>
+        </label>
+      `
+    )
+    .join("");
+  spiderSourcesSelect.querySelectorAll("input[type='radio']").forEach((input) => {
+    input.addEventListener("change", updateSpiderSourceControls);
+  });
+  updateSpiderSourceControls();
+}
+
+function updateSpiderSourceControls() {
+  const source = getSelectedSpiderSource();
+  const isThs = source === "ths";
+  const isBloombergArticles = source === "bloomberg_articles";
+  const categoryField = spiderTypesSelect?.closest("label");
+  if (categoryField) categoryField.hidden = !isThs;
+  if (spiderThreads) spiderThreads.closest("label").hidden = !isThs;
+  if (spiderPageSleep) spiderPageSleep.closest("label").hidden = !isThs;
+  if (spiderNewOnly) spiderNewOnly.closest("label").hidden = !isThs;
+  if (spiderMaxPages) {
+    const label = spiderMaxPages.closest("label")?.querySelector("span");
+    if (label) label.textContent = isBloombergArticles ? "批量篇数" : "页数";
+    spiderMaxPages.max = isBloombergArticles ? "50" : "50";
+    if (source === "bloomberg_urls") spiderMaxPages.closest("label").hidden = true;
+    else spiderMaxPages.closest("label").hidden = false;
+  }
+  if (spiderArticleSleep) {
+    const label = spiderArticleSleep.closest("label")?.querySelector("span");
+    if (label) label.textContent = isBloombergArticles ? "文章延迟秒" : "文章间隔";
+    spiderArticleSleep.closest("label").hidden = source === "guardian" || source === "bloomberg_urls";
+  }
+  const hints = {
+    ths: "多分类 · 增量 · MongoDB",
+    guardian: "API · 页数范围 · MongoDB",
+    bloomberg_urls: "URL 队列 · 默认 25 条",
+    bloomberg_articles: "正文队列 · Chrome 登录态",
+  };
+  if (spiderSourceHint) spiderSourceHint.textContent = hints[source] || "";
+}
+
+function getSelectedSpiderSource() {
+  return spiderSourcesSelect?.querySelector("input[type='radio']:checked")?.value || "ths";
+}
+
+function selectSpiderSource(source) {
+  const radio = spiderSourcesSelect?.querySelector(`input[value="${cssEscape(source)}"]`);
+  if (!radio) return;
+  radio.checked = true;
+  updateSpiderSourceControls();
+  updateSelectedTaskCard();
+  refreshSpiderConsole();
+}
+
+function updateSelectedTaskCard() {
+  const source = getSelectedSpiderSource();
+  spiderSourceTasks?.querySelectorAll("[data-spider-source]").forEach((button) => {
+    button.classList.toggle("selected", button.dataset.spiderSource === source);
+  });
+}
+
+function renderSpiderTypes(types) {
+  if (!spiderTypesSelect || spiderTypesSelect.children.length || !types.length) return;
+  spiderTypesSelect.innerHTML = types
+    .map(
+      (type, index) => `
+        <label class="spider-type-option">
+          <input type="checkbox" value="${escapeHtml(type)}" ${index === 0 ? "checked" : ""} />
+          <span>${escapeHtml(type)}</span>
+        </label>
+      `
+    )
+    .join("");
+}
+
+function sourceLabel(source) {
+  const labels = {
+    ths: "同花顺",
+    guardian: "Guardian",
+    bloomberg_urls: "Bloomberg URL",
+    bloomberg_articles: "Bloomberg 正文",
+  };
+  return labels[source] || source || "";
+}
+
+function sourceHint(source) {
+  const hints = {
+    ths: "同花顺分类新闻",
+    guardian: "Guardian API",
+    bloomberg_urls: "URL 队列",
+    bloomberg_articles: "正文队列",
+  };
+  return hints[source] || "";
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(value || "");
+  return String(value || "").replace(/"/g, '\\"');
+}
+
+function sourceMark(source) {
+  const marks = {
+    ths: "TH",
+    guardian: "GD",
+    bloomberg_urls: "BU",
+    bloomberg_articles: "BA",
+  };
+  return marks[source] || "DS";
 }
 
 async function readApiPayload(response, fallbackMessage) {
