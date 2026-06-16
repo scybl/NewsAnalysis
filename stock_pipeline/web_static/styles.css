@@ -207,6 +207,8 @@ button:disabled {
 
 .results {
   display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
   gap: 8px;
   margin-top: 16px;
 }
@@ -275,12 +277,15 @@ button:disabled {
   line-height: 1.65;
   font-size: 14px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .agent-report {
   white-space: normal;
   color: #17202a;
+  touch-action: pan-y;
 }
 
 .report-hero {
@@ -2244,6 +2249,8 @@ html.theme-dark .spider-logs {
   margin-top: 0;
   overflow: auto;
   padding-right: 2px;
+  align-content: start;
+  grid-auto-rows: max-content;
 }
 
 .api-key-panel {
@@ -2310,11 +2317,18 @@ html.theme-dark .spider-logs {
 .api-key-panel p {
   margin: 0;
   line-height: 1.45;
+  max-height: 92px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .result {
   grid-template-columns: minmax(0, 1fr) auto;
   min-height: 74px;
+  height: auto;
+  align-items: start;
+  align-content: start;
   padding: 11px 12px;
   background: #ffffff;
 }
@@ -2669,6 +2683,12 @@ html.theme-dark .spider-logs {
 
 .agent-confidence b {
   color: #344054;
+  font-size: 12px;
+}
+
+.agent-confidence-meta {
+  margin-top: 5px;
+  color: #667085;
   font-size: 12px;
 }
 

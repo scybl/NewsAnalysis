@@ -103,7 +103,7 @@ def spider(kind, args, semaphore):
                     logging.exception("page failed kind=%s page=%s error=%s", kind, pn, exc)
                     if page_failures >= args.max_page_failures:
                         logging.error("%s finish: reached max page failures %s", kind, args.max_page_failures)
-                        break
+                        raise RuntimeError(f"{kind} reached max page failures {args.max_page_failures}")
                     time.sleep(random.uniform(*args.page_sleep))
                     continue
 

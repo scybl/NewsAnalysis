@@ -386,7 +386,7 @@ async function refreshSpiderConsole() {
     renderSpiderStatus(statusPayload);
     const logsResponse = await fetch("/api/admin/spider/logs?lines=160");
     const logsPayload = await readApiPayload(logsResponse, "读取爬虫日志失败");
-    spiderLogs.textContent = logsPayload.content || "暂无日志";
+    spiderLogs.textContent = logsPayload.content || statusPayload.spider?.error || "暂无日志";
     if (spiderLogFile) spiderLogFile.textContent = logsPayload.log_file ? basename(logsPayload.log_file) : "暂无日志文件";
   } catch (error) {
     spiderStatus.textContent = `爬虫状态读取失败：${error.message}`;
@@ -403,7 +403,9 @@ function renderSpiderStatus(payload) {
   const typeText = Array.isArray(spider.types) ? spider.types.join("、") : "-";
   const dryRunText = spider.dry_run ? "dry-run" : "写入 MongoDB";
   const pages = spider.max_pages ? `${spider.max_pages} 页` : "-";
-  spiderStatus.textContent = `状态：${spiderStatusLabel(status)}；分类：${typeText}；模式：${dryRunText}；页数：${pages}`;
+  const errorText = spider.error ? `；错误：${spider.error}` : "";
+  const returnText = Number.isInteger(spider.returncode) ? `；退出码：${spider.returncode}` : "";
+  spiderStatus.textContent = `状态：${spiderStatusLabel(status)}；分类：${typeText}；模式：${dryRunText}；页数：${pages}${returnText}${errorText}`;
   if (spiderStateText) spiderStateText.textContent = spiderStatusLabel(status);
   if (spiderModeText) spiderModeText.textContent = dryRunText;
   if (spiderTypeText) spiderTypeText.textContent = typeText;

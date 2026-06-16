@@ -28,6 +28,7 @@ from .config import PROJECT_ROOT, get_settings
 from .deepseek_client import DeepSeekClient, DeepSeekError
 from .dossier import build_dossier
 from .field_labels import build_table_datasets
+from .news_search import search_related_news
 from .stock_search import StockSearchIndex
 from .stock_storage import analysis_dossier_path, analysis_output_path, analysis_review_context, build_local_stock_payload, current_dir, list_analysis_results, read_analysis_result, stock_exists, stock_status, sync_stock_data
 from .tushare_client import TushareClient, TushareError
@@ -196,6 +197,7 @@ class StockWebApp:
                 "deepseek_configured": bool(self.settings.deepseek_api_key),
                 "stock_agent_engine": self.settings.stock_agent_engine,
                 "stock_agent_template": self.settings.stock_agent_template,
+                "stock_analysis_refresh_ttl_seconds": self.settings.stock_analysis_refresh_ttl_seconds,
             },
             "storage": {
                 "local_data_exists": (PROJECT_ROOT / "local_data").exists(),
@@ -236,6 +238,68 @@ class StockWebApp:
             payload["cache_age_seconds"] = age
             return payload
         return None
+
+    def _same_data_agent_result(self, ts_code: str, analysis_type: str) -> dict | None:
+        current_fingerprint = self._current_data_fingerprint(ts_code)
+        if not current_fingerprint:
+            return None
+        for item in list_agent_runs(ts_code, analysis_type):
+            run_dir = Path(item.get("run_dir") or "")
+            manifest_path = run_dir / "run_manifest.json"
+            if not manifest_path.exists():
+                continue
+            manifest = read_json(manifest_path)
+            if manifest.get("data_fingerprint") != current_fingerprint:
+                continue
+            payload = read_agent_run(ts_code, item.get("run_id") or "")
+            payload["cached_analysis"] = True
+            payload["cache_reason"] = "same_data_fingerprint"
+            payload["cache_age_seconds"] = int(time.time() - run_dir.stat().st_mtime)
+            return payload
+        return None
+
+    def _current_data_fingerprint(self, ts_code: str) -> str:
+        path = current_dir(ts_code) / "full_data.json"
+        if not path.exists():
+            return ""
+        full_data = read_json(path)
+        datasets = full_data.get("datasets", {})
+        payload = {
+            "ts_code": full_data.get("ts_code"),
+            "date_range": full_data.get("date_range", {}),
+            "dataset_rows": {name: len(rows) for name, rows in sorted(datasets.items())},
+            "latest_rows": {name: rows[:3] for name, rows in sorted(datasets.items()) if isinstance(rows, list) and rows},
+            "fetch_errors": full_data.get("fetch_errors", []),
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _stock_news_context(self, ts_code: str) -> dict:
+        if not stock_exists(ts_code):
+            raise FileNotFoundError(f"本地还没有 {ts_code} 的数据，请先更新本地数据。")
+        base_dir = current_dir(ts_code)
+        full_data = read_json(base_dir / "full_data.json")
+        dossier = read_json(base_dir / "dossier.json") if (base_dir / "dossier.json").exists() else {}
+        company = self._company_identity(dossier, full_data)
+        return {"ts_code": ts_code, **search_related_news(company, limit=20, days=60)}
+
+    def _company_identity(self, dossier: dict, full_data: dict) -> dict:
+        company = dossier.get("company", {})
+        stock_basic = company.get("stock_basic") or {}
+        stock_company = company.get("stock_company") or {}
+        industry_rows = dossier.get("industry", {}).get("sw_classification") or full_data.get("datasets", {}).get("index_member_all", [])
+        industry = ""
+        if industry_rows and isinstance(industry_rows, list):
+            first = industry_rows[0]
+            industry = str(first.get("industry_name") or first.get("index_name") or first.get("l2_name") or first.get("l1_name") or "")
+        ts_code = stock_basic.get("ts_code") or full_data.get("ts_code")
+        return {
+            "ts_code": ts_code,
+            "symbol": stock_basic.get("symbol") or str(ts_code or "").split(".")[0],
+            "name": stock_basic.get("name") or stock_company.get("name") or stock_company.get("com_name"),
+            "industry": stock_basic.get("industry") or industry,
+            "area": stock_basic.get("area") or stock_company.get("province"),
+        }
 
     def _parse_history_scope_value(self, value) -> tuple[int | None, bool]:
         if value in (None, "", "all", "full", "history"):
@@ -345,6 +409,14 @@ class StockWebApp:
                     return
                 if parsed.path == "/api/analysis-frameworks":
                     self._json({"ok": True, "items": list_analysis_frameworks()})
+                    return
+                if parsed.path == "/api/stock-news":
+                    query = parse_qs(parsed.query)
+                    try:
+                        ts_code = normalize_ts_code(query.get("ts_code", query.get("code", [""]))[0])
+                        self._json({"ok": True, **app._stock_news_context(ts_code)})
+                    except Exception as exc:  # noqa: BLE001 - readable UI error
+                        self._json({"ok": False, "error": str(exc)}, status=404)
                     return
                 if parsed.path == "/api/admin/overview":
                     if not self._require_admin():
@@ -536,10 +608,30 @@ class StockWebApp:
                         else:
                             self._json(cached)
                         return
-                    payload["_tushare_client"] = self._tushare_for_session()
-                    payload["_deepseek_client"] = self._deepseek_for_session()
                     if not self._consume_billable_budget("/api/multi-agent-analyze"):
                         return
+                    tushare_client = self._tushare_for_session()
+                    years, full_history = self._parse_history_scope(payload)
+                    refresh_ttl = max(0, int(app.settings.stock_analysis_refresh_ttl_seconds or 0))
+                    if stock_exists(ts_code) and refresh_ttl > 0:
+                        before_fingerprint = app._current_data_fingerprint(ts_code)
+                        status = stock_status(ts_code)
+                        age = status.get("age_seconds")
+                        if isinstance(age, int) and age > refresh_ttl:
+                            sync_stock_data(tushare_client, ts_code, years=years, full_history=full_history, max_age_seconds=refresh_ttl)
+                        after_fingerprint = app._current_data_fingerprint(ts_code)
+                        if before_fingerprint and after_fingerprint and before_fingerprint == after_fingerprint:
+                            same_data_cached = app._same_data_agent_result(ts_code, analysis_type)
+                            if same_data_cached:
+                                message = "数据刷新检查后未发现资料包变化，已复用同数据版本的历史多 Agent 分析。"
+                                self._record_billable_usage("/api/multi-agent-analyze")
+                                if payload.get("async"):
+                                    self._json(app._completed_multi_agent_job(same_data_cached, message))
+                                else:
+                                    self._json(same_data_cached)
+                                return
+                    payload["_tushare_client"] = tushare_client
+                    payload["_deepseek_client"] = self._deepseek_for_session()
                     if payload.get("async"):
                         result = app._start_multi_agent_job(payload)
                     else:
@@ -1219,14 +1311,15 @@ class SpiderController:
 
             with log_file.open("a", encoding="utf-8") as output:
                 output.write("admin spider command: " + " ".join(cmd) + "\n")
-            self.process = subprocess.Popen(
-                cmd,
-                cwd=str(self.spider_dir),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                start_new_session=True,
-            )
+                output.flush()
+                self.process = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.spider_dir),
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                )
             self.current = {
                 "job_id": job_id,
                 "status": "running",
@@ -1240,6 +1333,7 @@ class SpiderController:
                 "dry_run": dry_run,
                 "new_only": new_only,
                 "log_file": str(log_file),
+                "error": "",
             }
             if self.task_registry:
                 self.task_registry.create_task(
@@ -1297,11 +1391,47 @@ class SpiderController:
             self.current["status"] = "stopped"
         else:
             self.current["status"] = "succeeded" if returncode == 0 else "failed"
+        if returncode != 0:
+            self.current["error"] = self._failure_summary(Path(self.current.get("log_file") or ""))
+            self._append_process_summary(Path(self.current.get("log_file") or ""), returncode, self.current["error"])
         if self.task_registry and self.current.get("job_id"):
             final_status = self.current["status"]
-            self.task_registry.update_task(self.current["job_id"], status=final_status, error="" if returncode == 0 else f"returncode={returncode}")
+            error = "" if returncode == 0 else self.current.get("error") or f"returncode={returncode}"
+            self.task_registry.update_task(self.current["job_id"], status=final_status, error=error)
             self.task_registry.add_event(self.current["job_id"], final_status, f"爬虫进程结束，returncode={returncode}。")
         self.process = None
+
+    def _failure_summary(self, log_file: Path) -> str:
+        if not log_file.exists():
+            return "爬虫进程异常退出，但没有生成日志。"
+        lines = [line.strip() for line in log_file.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+        if not lines:
+            return "爬虫进程异常退出，但日志为空。"
+        important = [
+            line
+            for line in lines
+            if "Traceback" in line
+            or "Error" in line
+            or "ERROR" in line
+            or "Exception" in line
+            or "ModuleNotFoundError" in line
+            or "ImportError" in line
+            or "SystemExit" in line
+            or "failed" in line.lower()
+        ]
+        if important:
+            return important[-1][-500:]
+        return lines[-1][-500:]
+
+    def _append_process_summary(self, log_file: Path, returncode: int, error: str) -> None:
+        try:
+            ensure_dir(log_file.parent)
+            with log_file.open("a", encoding="utf-8") as output:
+                output.write(f"\nadmin spider finished: returncode={returncode}\n")
+                if error:
+                    output.write(f"admin spider error summary: {error}\n")
+        except OSError:
+            pass
 
     def _parse_types(self, raw_value) -> list[str]:
         if isinstance(raw_value, list):

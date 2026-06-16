@@ -308,9 +308,6 @@ async function pollMultiAgentJob(jobId, framework, token) {
   const fetched = payload.fetch_result?.fetch_results || [];
   const failed = payload.fetch_result?.fetch_errors || [];
   renderMultiAgentResult(payload, [
-    ["运行ID", payload.run_id],
-    ["运行目录", payload.run_dir],
-    ["最终报告", payload.final_report_path],
     ["动态数据请求", `${requests.length} 个`],
     ["Agent补充请求", `${(payload.agent_data_requests || []).length} 个`],
     ["补抓成功", `${fetched.length} 个`],
@@ -331,8 +328,6 @@ readAgentRunBtn.addEventListener("click", async () => {
     });
     const payload = await readApiPayload(response, "读取失败");
     renderMultiAgentResult(payload, [
-      ["运行ID", payload.run_id],
-      ["报告文件", payload.final_report_path],
       ["Agent补充请求", `${(payload.agent_data_requests || []).length} 个`],
     ]);
   } catch (error) {
@@ -568,7 +563,7 @@ async function saveUserApiKeys() {
     currentSession = { ...currentSession, ...payload };
     renderApiKeyPanel(currentSession);
   } catch (error) {
-    if (apiKeyStatus) apiKeyStatus.textContent = `保存失败：${error.message}`;
+    if (apiKeyStatus) apiKeyStatus.textContent = `保存失败：${formatApiKeyError(error.message)}`;
   } finally {
     saveUserApiKeysBtn.disabled = false;
   }
@@ -612,6 +607,19 @@ async function redeemVipCode() {
   } finally {
     redeemVipBtn.disabled = false;
   }
+}
+
+function formatApiKeyError(message) {
+  const raw = String(message || "");
+  const parts = [];
+  if (/Tushare key 验证失败|stock_basic|token不对|tushare/i.test(raw)) {
+    parts.push("Tushare API 验证失败，请检查 token 是否正确。");
+  }
+  if (/DeepSeek key 验证失败|Authentication Fails|authentication_error|api key|invalid/i.test(raw)) {
+    parts.push("DeepSeek API 验证失败，请检查 key 是否有效。");
+  }
+  if (parts.length) return [...new Set(parts)].join(" ");
+  return raw.length > 140 ? `${raw.slice(0, 140)}...` : raw;
 }
 
 function renderResults(items) {
@@ -949,7 +957,7 @@ function renderAgentProgress(job, framework) {
 
 function renderAgentDashboard(payload) {
   if (!agentDashboard || !agentCards) return;
-  const agentResults = payload.agent_results || payload.manifest?.agent_results || [];
+  const agentResults = normalizedAgentResults(payload);
   const trace = payload.confidence_trace || {};
   const debate = payload.debate || {};
   const finalRating = trace.final_rating || payload.rating_hint || debate.final_direction?.label || "-";
@@ -969,12 +977,20 @@ function renderAgentDashboard(payload) {
 
 function renderAgentResultCard(item) {
   const name = agentDisplayName(item.agent || item.agent_role || "agent");
-  const rating = item.rating_hint || item.rating_direction?.label || "-";
-  const confidence = item.confidence ?? "-";
-  const summary = item.reasoning_summary || firstFindingText(item.findings) || "暂无摘要。";
+  const rating = agentDisplayLabel(item);
+  const confidence = item.system_confidence ?? item.confidence ?? "-";
+  const opinionStrength = item.opinion_strength ?? item.confidence_components?.opinion_strength;
+  const evidenceConfidence = item.evidence_confidence ?? item.confidence_components?.evidence_confidence;
+  const findings = item.findings || item.key_findings || [];
+  const summary = item.reasoning_summary || item.summary || firstFindingText(findings) || "暂无观点摘要。";
+  const reason = firstFindingText(findings) || firstCounterText(item.counter_evidence) || "暂无明确原因。";
   const scoreItems = Object.entries(item.scores || {}).slice(0, 4);
+  const confidenceMeta = [
+    Number.isFinite(toNumber(opinionStrength)) ? `观点 ${formatConfidence(opinionStrength)}` : "",
+    Number.isFinite(toNumber(evidenceConfidence)) ? `证据 ${formatConfidence(evidenceConfidence)}` : "",
+  ].filter(Boolean).join(" · ");
   return `
-    <article class="agent-result-card ${ratingTone(rating)}">
+    <article class="agent-result-card ${agentCardTone(item, rating)}">
       <div class="agent-result-head">
         <div>
           <h4>${escapeHtml(name)}</h4>
@@ -982,15 +998,56 @@ function renderAgentResultCard(item) {
         </div>
         <strong>${escapeHtml(rating)}</strong>
       </div>
-      <p>${escapeHtml(summary)}</p>
+      <p><b>观点：</b>${escapeHtml(summary)}</p>
+      <p><b>原因：</b>${escapeHtml(reason)}</p>
       <div class="agent-confidence">
-        <span>置信度</span>
+        <span>系统置信度</span>
         <div><i style="width: ${confidencePercent(confidence)}%"></i></div>
-        <b>${escapeHtml(String(confidence))}</b>
+        <b>${escapeHtml(formatConfidence(confidence))}</b>
       </div>
+      ${confidenceMeta ? `<div class="agent-confidence-meta">${escapeHtml(confidenceMeta)}</div>` : ""}
       ${scoreItems.length ? `<div class="agent-score-list">${scoreItems.map(([key, value]) => `<span>${escapeHtml(scoreLabel(key))} ${escapeHtml(value)}/5</span>`).join("")}</div>` : ""}
     </article>
   `;
+}
+
+function agentDisplayLabel(item) {
+  if (item.agent === "moat_governance_agent") return item.domain_label || moatGovernanceLabel(item.scores || {});
+  const raw = item.rating_hint || item.rating_direction?.label || "-";
+  return String(raw).length > 18 ? `${String(raw).slice(0, 18)}...` : raw;
+}
+
+function agentCardTone(item, label) {
+  if (item.agent === "moat_governance_agent") return "is-neutral";
+  return ratingTone(label);
+}
+
+function moatGovernanceLabel(scores) {
+  const values = [scores.moat_strength, scores.technology_moat, scores.governance_quality]
+    .map(toNumber)
+    .filter(Number.isFinite);
+  if (!values.length) return "护城河待验证";
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+  if (avg >= 4) return "护城河较强";
+  if (avg >= 3) return "护城河中等";
+  return "护城河偏弱";
+}
+
+function normalizedAgentResults(payload) {
+  const direct = payload.agent_results || payload.manifest?.agent_results || [];
+  if (direct.length) return direct;
+  const conversation = payload.agent_conversation || [];
+  return conversation
+    .filter((item) => item?.type === "agent_statement" || item?.speaker)
+    .map((item) => ({
+      agent: item.speaker,
+      agent_role: item.role,
+      rating_hint: "-",
+      confidence: payload.confidence ?? "-",
+      reasoning_summary: item.message || "",
+      source: "conversation",
+    }))
+    .slice(0, 12);
 }
 
 function firstFindingText(findings) {
@@ -998,10 +1055,21 @@ function firstFindingText(findings) {
   return first?.claim || "";
 }
 
+function firstCounterText(items) {
+  const first = Array.isArray(items) ? items[0] : null;
+  return first?.claim || "";
+}
+
 function confidencePercent(value) {
   const number = toNumber(value);
   if (!Number.isFinite(number)) return 0;
   return Math.max(4, Math.min(100, number <= 1 ? number * 100 : number));
+}
+
+function formatConfidence(value) {
+  const number = toNumber(value);
+  if (!Number.isFinite(number)) return String(value ?? "-");
+  return number.toFixed(2);
 }
 
 function agentDisplayName(agent) {
@@ -1019,6 +1087,19 @@ function agentDisplayName(agent) {
     business_quality_agent: "商业质量 Agent",
     governance_agent: "治理 Agent",
     industry_cycle_agent: "行业周期 Agent",
+    market_analyst: "市场分析师",
+    news_analyst: "新闻分析师",
+    fundamental_analyst: "基本面分析师",
+    sentiment_analyst: "情绪分析师",
+    moat_governance_agent: "隐形护城河与治理分析师",
+    bull_researcher: "多头研究员",
+    bear_researcher: "空头研究员",
+    research_manager: "研究经理",
+    trader: "交易员",
+    aggressive_risk_analyst: "激进风控分析师",
+    neutral_risk_analyst: "中性风控分析师",
+    conservative_risk_analyst: "保守风控分析师",
+    portfolio_manager: "组合经理",
   };
   return labels[agent] || String(agent).replace(/_/g, " ");
 }

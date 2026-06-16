@@ -17,127 +17,10 @@ from pymongo.errors import DuplicateKeyError
 import urllib.parse
 import logging
 from urllib.parse import quote_plus
-import subprocess
-import signal
 import sys
 
 # 加载环境变量
 load_dotenv()
-
-class SSHTunnel:
-    """SSH隧道管理类"""
-    def __init__(self):
-        self.process = None
-        self.local_port = None
-        
-    def start_tunnel(self, ssh_host, ssh_port, ssh_user, ssh_key_path, 
-                        remote_host, remote_port, local_port=None, logger=None):
-        """启动SSH隧道 - 与fanli配置一致"""
-        try:
-            # 如果没有指定本地端口，使用默认端口
-            if local_port is None:
-                local_port = 27010
-            
-            self.local_port = local_port
-            
-            # 构建SSH命令
-            ssh_cmd = [
-                "ssh",
-                "-N", "-T",
-                "-o", "ExitOnForwardFailure=yes",
-                "-o", "ServerAliveInterval=5",
-                "-o", "ServerAliveCountMax=2",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-i", ssh_key_path,
-                "-p", str(ssh_port),
-                "-L", f"127.0.0.1:{local_port}:{remote_host}:{remote_port}",
-                f"{ssh_user}@{ssh_host}",
-            ]
-            
-            msg = f"启动SSH隧道: {ssh_host}:{ssh_port} -> 127.0.0.1:{local_port} -> {remote_host}:{remote_port}"
-            print(msg)
-            if logger:
-                logger.info(f"[DEBUG] {msg}")
-                logger.info(f"[DEBUG] SSH命令: {' '.join(ssh_cmd)}")
-            
-            # 启动SSH进程
-            self.process = subprocess.Popen(
-                ssh_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT
-            )
-            
-            # 等待隧道建立并重试检查端口
-            if logger:
-                logger.info(f"[DEBUG] 等待SSH隧道建立...")
-            
-            # 多次检查端口是否可访问
-            import socket
-            max_retries = 10
-            retry_interval = 0.5
-            
-            for attempt in range(max_retries):
-                time.sleep(retry_interval)
-                
-                # 检查SSH进程是否还在运行
-                poll_result = self.process.poll()
-                if poll_result is not None:
-                    # 进程已退出
-                    stdout, _ = self.process.communicate()
-                    error_msg = f"SSH隧道启动失败！进程已退出，退出码: {poll_result}"
-                    print(f"[ERROR] {error_msg}")
-                    if logger:
-                        logger.error(f"[ERROR] {error_msg}")
-                    if stdout:
-                        error_output = stdout.decode('utf-8', errors='ignore')
-                        if logger:
-                            logger.error(f"[ERROR] SSH输出:\n{error_output}")
-                    return False
-                
-                # 尝试连接端口
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
-                try:
-                    result = sock.connect_ex(('127.0.0.1', local_port))
-                    sock.close()
-                    if result == 0:
-                        success_msg = f"SSH隧道端口 127.0.0.1:{local_port} 可访问 (尝试 {attempt + 1}/{max_retries})"
-                        print(f"[OK] {success_msg}")
-                        if logger:
-                            logger.info(f"[OK] {success_msg}")
-                        return True
-                    else:
-                        if logger and attempt < max_retries - 1:
-                            logger.info(f"[DEBUG] 端口尝试 {attempt + 1}/{max_retries}: 错误码 {result}，继续等待...")
-                except Exception as e:
-                    if logger and attempt < max_retries - 1:
-                        logger.info(f"[DEBUG] 端口尝试 {attempt + 1}/{max_retries}: {e}，继续等待...")
-            
-            # 所有重试都失败
-            error_msg = f"SSH隧道端口 127.0.0.1:{local_port} 在{max_retries}次尝试后仍无法访问"
-            print(f"[ERROR] {error_msg}")
-            if logger:
-                logger.error(f"[ERROR] {error_msg}")
-            return False
-                
-        except Exception as e:
-            error_msg = f"启动SSH隧道时出错: {e}"
-            print(f"[ERROR] {error_msg}")
-            if logger:
-                logger.error(f"[ERROR] {error_msg}")
-            return False
-    
-    def stop_tunnel(self):
-        """停止SSH隧道"""
-        if self.process and self.process.poll() is None:
-            try:
-                self.process.terminate()
-                time.sleep(0.5)
-                if self.process.poll() is None:
-                    self.process.kill()
-                print("SSH隧道已关闭")
-            except Exception as e:
-                print(f"关闭SSH隧道时出错: {e}")
 
 class GuardianCrawler:
     def __init__(self, api_key: str = None, data_file: str = None, base_url: str = None):
@@ -160,9 +43,6 @@ class GuardianCrawler:
         
         # 初始化日志
         self.setup_logging()
-        
-        # 初始化SSH隧道
-        self.ssh_tunnel = SSHTunnel()
         
         # 初始化MongoDB连接
         self.mongodb_client = None
@@ -269,19 +149,9 @@ class GuardianCrawler:
             self.logger.error(f"复制日志文件失败: {e}")
 
     def init_mongodb_connection(self):
-        """初始化MongoDB连接 - 使用SSH隧道"""
+        """初始化MongoDB连接"""
         self.logger.info("[DEBUG] ===== 开始MongoDB连接初始化 =====")
         try:
-            # SSH配置（从环境变量读取）
-            ssh_host = os.getenv('SSH_HOST', '')
-            ssh_port = int(os.getenv('SSH_PORT', '7022'))
-            ssh_user = os.getenv('SSH_USER', 'tunnel')
-            ssh_key_path = os.getenv('SSH_KEY_PATH', '')
-            
-            # 远程MongoDB服务器信息（SSH隧道的目标）
-            remote_mongo_host = os.getenv('SSH_REMOTE_HOST', '127.0.0.1')
-            remote_mongo_port = int(os.getenv('SSH_REMOTE_PORT', '27017'))
-            
             # MongoDB配置（从环境变量读取）
             mongo_host = os.getenv('MONGO_HOST', '127.0.0.1')
             mongo_port = int(os.getenv('MONGO_PORT', '27017'))
@@ -291,44 +161,11 @@ class GuardianCrawler:
             mongo_password = os.getenv('MONGO_PASSWORD', '')
             mongo_authsource = os.getenv('MONGO_AUTHSOURCE', 'admin')
             
-            self.logger.info(f"[DEBUG] SSH配置: {ssh_user}@{ssh_host}:{ssh_port}")
-            self.logger.info(f"[DEBUG] SSH密钥: {ssh_key_path}")
-            self.logger.info(f"[DEBUG] 远程MongoDB: {remote_mongo_host}:{remote_mongo_port}")
-            self.logger.info(f"[DEBUG] 本地隧道端口: {mongo_port}")
+            self.logger.info(f"[DEBUG] MongoDB地址: {mongo_host}:{mongo_port}")
             self.logger.info(f"[DEBUG] 目标数据库: {mongo_db}")
             self.logger.info(f"[DEBUG] 目标集合: {mongo_collection}")
             self.logger.info(f"[DEBUG] MongoDB用户: {mongo_user}")
             self.logger.info(f"[DEBUG] MongoDB认证源: {mongo_authsource}")
-            
-            # 启动SSH隧道
-            self.logger.info(f"[DEBUG] 开始启动SSH隧道...")
-            tunnel_success = self.ssh_tunnel.start_tunnel(
-                ssh_host=ssh_host,
-                ssh_port=ssh_port,
-                ssh_user=ssh_user,
-                ssh_key_path=ssh_key_path,
-                remote_host=remote_mongo_host,
-                remote_port=remote_mongo_port,
-                local_port=mongo_port,
-                logger=self.logger
-            )
-            
-            if not tunnel_success:
-                self.logger.error("[ERROR] SSH隧道启动失败，无法连接MongoDB")
-                self.mongodb_client = None
-                self.db_articles = None
-                self.collection_articles = None
-                return
-            
-            self.logger.info(f"[DEBUG] SSH隧道启动成功，开始连接MongoDB...")
-            
-            # 再次检查SSH进程状态
-            if self.ssh_tunnel.process.poll() is not None:
-                self.logger.error(f"[ERROR] SSH隧道进程意外退出！")
-                self.mongodb_client = None
-                self.db_articles = None
-                self.collection_articles = None
-                return
             
             # 构建MongoDB连接字符串
             if mongo_user and mongo_password:
@@ -374,7 +211,6 @@ class GuardianCrawler:
             self.mongodb_client = None
             self.db_articles = None
             self.collection_articles = None
-            # 不在这里关闭SSH隧道，让程序继续运行
 
     def load_existing_articles(self) -> List[Dict]:
         """从本地文件加载现有文章"""
@@ -845,14 +681,11 @@ def main():
         crawler.logger.info("没有获取到新文章（没有更新或遇到重复）")
         print("- 没有获取到新文章（没有更新或遇到重复）")
     
-    # 关闭MongoDB连接和SSH隧道
+    # 关闭MongoDB连接
     if crawler.mongodb_client:
         crawler.mongodb_client.close()
         crawler.logger.info("MongoDB连接已关闭")
         print("MongoDB连接已关闭")
-    
-    # 关闭SSH隧道
-    crawler.ssh_tunnel.stop_tunnel()
     
     crawler.logger.info("=" * 60)
     crawler.logger.info("Guardian爬虫任务完成")
