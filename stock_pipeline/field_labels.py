@@ -41,6 +41,7 @@ DATASET_LABELS = {
     "sw_daily": "申万行业日行情",
     "anns_d": "公司公告",
     "tdx_intraday_minutes": "通达信分钟 K 线",
+    "pytdx_history_minutes": "pytdx 历史分钟价量",
     "ths_intraday_minutes": "同花顺分钟分时行情",
 }
 
@@ -94,6 +95,8 @@ FIELD_LABELS = {
     "datetime": "时间",
     "price": "价格",
     "amount": "成交额",
+    "amount_estimated": "成交额估算",
+    "ohlc_estimated": "OHLC估算",
     "avg_price": "均价",
     "volume": "成交量",
     "pre_close": "昨收",

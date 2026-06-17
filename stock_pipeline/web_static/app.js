@@ -748,7 +748,7 @@ async function syncSelectedThsMarketData() {
     const response = await fetch("/api/sync-ths-market-data", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ts_code: selected.ts_code }),
+      body: JSON.stringify({ ts_code: selected.ts_code, source: "pytdx_history" }),
     });
     const payload = await readApiPayload(response, "分钟行情更新失败");
     if (token !== syncToken) return;
@@ -762,10 +762,13 @@ async function syncSelectedThsMarketData() {
       : result.requested_pages && result.page_size
         ? `${result.requested_pages} 页 × ${result.page_size} 根/页`
         : result.requested_pages ?? "-";
-    const scopeText = result.history_supported === false
-      ? "当前接口仅更新最新交易日，不包含历史分钟分时。"
-      : `历史范围：${dateRange}；覆盖交易日：${result.succeeded_days ?? 0}；请求窗口：${pageText}`;
-    output.textContent = `分钟行情更新完成。\n数据源：${result.source || payload.market_result?.source || "-"}\n数据集：${result.dataset || "-"}\n股票：${result.ts_code || selected.ts_code} ${result.name || ""}\n最新交易日：${result.trade_date || "-"}\n${scopeText}\n本次分钟行数：${result.rows ?? 0}；本地累计：${result.stored_rows ?? result.rows ?? 0}\n新增：${result.inserted ?? 0}；更新：${result.updated ?? 0}\n${localText}\n\n现在可以点击“读取数据”查看分钟行情数据集。`;
+    const scopeText = result.source === "pytdx_history"
+      ? `历史范围：${dateRange}；本次成功交易日：${result.succeeded_days ?? 0}；已跳过已有交易日：${result.skipped_days ?? 0}；失败交易日：${result.failed_days ?? 0}`
+      : result.history_supported === false
+        ? "当前接口仅更新最新交易日，不包含历史分钟分时。"
+        : `历史范围：${dateRange}；覆盖交易日：${result.succeeded_days ?? 0}；请求窗口：${pageText}`;
+    const estimateText = result.amount_estimated || result.ohlc_estimated ? "\n说明：该历史源只返回分时价格和成交量；OHLC 和成交额为估算字段。" : "";
+    output.textContent = `分钟行情更新完成。\n数据源：${result.source || payload.market_result?.source || "-"}\n数据集：${result.dataset || "-"}\n股票：${result.ts_code || selected.ts_code} ${result.name || ""}\n最新交易日：${result.trade_date || "-"}\n${scopeText}\n本次分钟行数：${result.rows ?? 0}；本地累计：${result.stored_rows ?? result.rows ?? 0}\n新增：${result.inserted ?? 0}；更新：${result.updated ?? 0}${estimateText}\n${localText}\n\n现在可以点击“读取数据”查看分钟行情数据集。`;
   } catch (error) {
     if (token === syncToken) {
       output.textContent = `分钟行情更新失败：${error.message}`;

@@ -1046,7 +1046,7 @@ class StockWebApp:
                             collection=str(payload.get("collection") or "").strip() or None,
                         ),
                         sleep_range=(0, 0),
-                        source=str(payload.get("source") or "tdx"),
+                        source=str(payload.get("source") or os.getenv("MARKET_MINUTE_DEFAULT_SOURCE", "pytdx_history")),
                         pages=payload.get("pages") or os.getenv("MARKET_MINUTE_DEFAULT_PAGES", "all"),
                         page_size=int(payload.get("page_size") or 800),
                     )
@@ -1522,11 +1522,11 @@ class DailyMarketScheduler:
             try:
                 data = read_json(self.config_path)
                 data["time"] = self._validate_time(str(data.get("time") or "21:30"))
-                data["enabled"] = bool(data.get("enabled"))
+                data["enabled"] = data.get("enabled", True) is not False
                 return data
             except Exception:
                 pass
-        return {"enabled": False, "time": "21:30", "last_run_date": "", "last_run_at": "", "last_task_id": "", "last_result": {}}
+        return {"enabled": True, "time": "21:30", "last_run_date": "", "last_run_at": "", "last_task_id": "", "last_result": {}}
 
     def _write_config_locked(self) -> None:
         write_json(self.config_path, self.config)

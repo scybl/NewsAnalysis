@@ -73,7 +73,7 @@ def main() -> None:
     market_subparsers = market_parser.add_subparsers(dest="market_command", required=True)
     ths_minute_parser = market_subparsers.add_parser("ths-minute", help="抓取指定股票分钟行情到 MongoDB；默认使用通达信/mootdx")
     ths_minute_parser.add_argument("--codes", required=True, help="股票代码，逗号分隔，例如 000001,300033 或 000001.SZ,300033.SZ")
-    ths_minute_parser.add_argument("--source", choices=["tdx", "ths", "auto"], default="tdx", help="分钟行情源：tdx 为通达信历史分钟 K；ths 为同花顺最新日分时；auto 先 tdx 后 ths")
+    ths_minute_parser.add_argument("--source", choices=["tdx", "pytdx_history", "ths", "auto"], default="pytdx_history", help="分钟行情源：pytdx_history 为历史分时价量构造分钟 K；tdx 为近期真实分钟 K；ths 为同花顺最新日分时")
     ths_minute_parser.add_argument("--pages", default="all", help="tdx 分页数量；all 表示一直翻到数据源返回空页")
     ths_minute_parser.add_argument("--page-size", type=int, default=800, help="tdx 单页数量，最大 800")
     ths_minute_parser.add_argument("--mongo-db", default=None, help="MongoDB 数据库名，默认 MARKET_MINUTE_DATABASE 或 stock_market")

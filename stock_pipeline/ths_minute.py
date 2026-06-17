@@ -24,6 +24,7 @@ DEFAULT_DB = "stock_market"
 DEFAULT_COLLECTION = "tdx_intraday_minutes"
 DEFAULT_PAYLOAD_COLLECTION = "market_minute_payloads"
 TDX_DATASET = "tdx_intraday_minutes"
+PYTDX_HISTORY_DATASET = "pytdx_history_minutes"
 THS_DATASET = "ths_intraday_minutes"
 THS_TIME_URL_LATEST = "https://d.10jqka.com.cn/v6/time/{market_code}/last.js"
 DEFAULT_HEXIN_JS = PROJECT_ROOT / "out_repo" / "spider_reverse" / "2023_09" / "tonghuashun" / "tonghuashun.js"
@@ -133,9 +134,74 @@ def fetch_store_one_stock(
             return result
     if normalized_source == "tdx":
         return fetch_store_tdx_stock(ts_code, collection, pages=pages, page_size=page_size)
+    if normalized_source == "pytdx_history":
+        return fetch_store_pytdx_history_stock(ts_code, collection)
     if normalized_source != "ths":
         raise ValueError(f"未知分钟行情数据源：{source}")
     return fetch_store_ths_stock(ts_code, cfg, collection, payload_collection)
+
+
+def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, Any]:
+    trade_dates = _local_daily_trade_dates(ts_code)
+    if not trade_dates:
+        raise RuntimeError("本地资料包缺少 daily 交易日列表，请先更新每日行情。")
+    existing_dates = _existing_trade_dates(collection, ts_code, source="pytdx_history")
+    pending_dates = [date for date in trade_dates if date not in existing_dates]
+    chunk_size = max(1, int(os.getenv("PYTDX_HISTORY_BATCH_DAYS", "20")))
+    inserted = 0
+    updated = 0
+    rows_count = 0
+    succeeded_days = 0
+    failed_days = 0
+    failures: list[dict[str, str]] = []
+    for start in range(0, len(pending_dates), chunk_size):
+        chunk_dates = pending_dates[start : start + chunk_size]
+        try:
+            fetched = fetch_pytdx_history_minutes(ts_code, chunk_dates)
+        except Exception as exc:  # noqa: BLE001 - keep partial progress and continue
+            failed_days += len(chunk_dates)
+            failures.extend({"trade_date": date, "error": str(exc)} for date in chunk_dates)
+            time.sleep(float(os.getenv("PYTDX_HISTORY_RETRY_SLEEP_SECONDS", "3")))
+            continue
+        rows = fetched["rows"]
+        batch_inserted, batch_updated = upsert_minute_rows(collection, rows)
+        inserted += batch_inserted
+        updated += batch_updated
+        rows_count += len(rows)
+        succeeded_days += fetched["succeeded_days"]
+        failed_days += fetched["failed_days"]
+        failures.extend(fetched["failures"])
+    local_rows = _read_stock_rows(collection, ts_code, source="pytdx_history")
+    local = merge_local_dataset(ts_code, local_rows, {"source": "pytdx_history"}, dataset=PYTDX_HISTORY_DATASET)
+    all_dates = sorted({str(row.get("trade_date") or "") for row in local_rows if row.get("trade_date")})
+    return {
+        "ts_code": ts_code,
+        "name": "",
+        "source": "pytdx_history",
+        "dataset": PYTDX_HISTORY_DATASET,
+        "trade_date": all_dates[-1] if all_dates else "",
+        "scope": "historical_minute_time_data",
+        "history_supported": True,
+        "requested_days": len(trade_dates),
+        "skipped_days": len(existing_dates),
+        "pending_days": len(pending_dates),
+        "succeeded_days": succeeded_days,
+        "failed_days": failed_days,
+        "rows": rows_count,
+        "stored_rows": local.get("rows", len(local_rows)),
+        "inserted": inserted,
+        "updated": updated,
+        "payload_inserted": 0,
+        "local_merged": local["merged"],
+        "local_path": local["path"],
+        "date_range": {"start": all_dates[0] if all_dates else "", "end": all_dates[-1] if all_dates else ""},
+        "ohlc_estimated": True,
+        "amount_estimated": True,
+        "message": "pytdx 历史分时已按交易日补抓；OHLC 和成交额由分时价量估算。",
+        "ok": True,
+        "error": "",
+        "failures": failures[:20],
+    }
 
 
 def fetch_store_tdx_stock(ts_code: str, collection: Any, *, pages: int | str = 5, page_size: int = 800) -> dict[str, Any]:
@@ -232,6 +298,86 @@ def fetch_tdx_minute_bars(ts_code: str, *, pages: int = 5, page_size: int = 800,
     return {"rows": _dedupe_rows(rows), "pages_fetched": pages_fetched, "source_exhausted": source_exhausted}
 
 
+def fetch_pytdx_history_minutes(ts_code: str, trade_dates: list[str]) -> dict[str, Any]:
+    if not trade_dates:
+        return {"rows": [], "succeeded_days": 0, "failed_days": 0, "failures": []}
+    try:
+        from pytdx.hq import TdxHq_API  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("缺少 pytdx，请先安装 pytdx。") from exc
+
+    market = _tdx_market(normalize_ts_code(ts_code))
+    symbol = normalize_ts_code(ts_code).split(".", 1)[0]
+    servers = _pytdx_servers()
+    fetched_at = datetime.now(timezone.utc)
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    succeeded_days = 0
+    failed_days = 0
+    api = _connect_pytdx_api(TdxHq_API, servers)
+    if api is None:
+        raise RuntimeError("无法连接可用的 pytdx 行情服务器。")
+
+    try:
+        for index, trade_date in enumerate(trade_dates):
+            try:
+                data = api.get_history_minute_time_data(market, symbol, int(trade_date))
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    api.disconnect()
+                except Exception:
+                    pass
+                api = _connect_pytdx_api(TdxHq_API, servers)
+                if api is not None:
+                    try:
+                        data = api.get_history_minute_time_data(market, symbol, int(trade_date))
+                    except Exception as retry_exc:  # noqa: BLE001
+                        failed_days += 1
+                        failures.append({"trade_date": trade_date, "error": str(retry_exc or exc)})
+                        continue
+                else:
+                    failed_days += 1
+                    failures.append({"trade_date": trade_date, "error": str(exc)})
+                    continue
+            if not data:
+                failed_days += 1
+                failures.append({"trade_date": trade_date, "error": "empty"})
+                continue
+            rows.extend(_normalize_pytdx_history_rows(ts_code, trade_date, data, fetched_at))
+            succeeded_days += 1
+            if index < len(trade_dates) - 1:
+                time.sleep(float(os.getenv("PYTDX_HISTORY_DAY_SLEEP_SECONDS", "0.05")))
+    finally:
+        try:
+            api.disconnect()
+        except Exception:
+            pass
+
+    return {
+        "rows": _dedupe_rows(rows),
+        "succeeded_days": succeeded_days,
+        "failed_days": failed_days,
+        "failures": failures,
+    }
+
+
+def _connect_pytdx_api(api_cls: Any, servers: list[tuple[str, int]]) -> Any | None:
+    timeout = float(os.getenv("PYTDX_SOCKET_TIMEOUT_SECONDS", "8"))
+    for host, port in servers:
+        api = api_cls(heartbeat=True, auto_retry=True)
+        try:
+            if api.connect(host, port, time_out=timeout):
+                if getattr(api, "client", None) is not None:
+                    api.client.settimeout(timeout)
+                return api
+        except Exception:
+            try:
+                api.disconnect()
+            except Exception:
+                pass
+    return None
+
+
 def _parse_tdx_pages(pages: int | str) -> tuple[bool, int]:
     raw = str(pages or "").strip().lower()
     if raw in {"", "all", "max", "0", "-1"}:
@@ -239,6 +385,76 @@ def _parse_tdx_pages(pages: int | str) -> tuple[bool, int]:
         return True, max(1, min(5000, limit))
     parsed = int(raw)
     return False, max(1, min(5000, parsed))
+
+
+def _normalize_pytdx_history_rows(ts_code: str, trade_date: str, records: list[dict[str, Any]], fetched_at: datetime) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    normalized = normalize_ts_code(ts_code)
+    for index, record in enumerate(records):
+        minute = _pytdx_minute_from_index(index)
+        price = _float(record.get("price"))
+        volume = _float(record.get("vol"))
+        if price is None:
+            continue
+        if volume is None or _near_zero(volume):
+            volume = 0.0
+        amount = round(price * volume * 100, 4)
+        rows.append(
+            {
+                "source": "pytdx_history",
+                "dataset": PYTDX_HISTORY_DATASET,
+                "ts_code": normalized,
+                "symbol": normalized[:6],
+                "trade_date": trade_date,
+                "minute": minute,
+                "datetime": _minute_datetime(trade_date, minute),
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "price": price,
+                "volume": volume,
+                "vol": volume,
+                "amount": amount,
+                "amount_estimated": True,
+                "ohlc_estimated": True,
+                "fetched_at": fetched_at,
+            }
+        )
+    return rows
+
+
+def _pytdx_minute_from_index(index: int) -> str:
+    minutes: list[str] = []
+    for hour, start, end in ((9, 31, 60), (10, 0, 60), (11, 0, 31), (13, 1, 60), (14, 0, 60), (15, 0, 1)):
+        for minute in range(start, end):
+            minutes.append(f"{hour:02d}{minute:02d}")
+    if index < len(minutes):
+        return minutes[index]
+    return f"X{index:03d}"
+
+
+def _tdx_market(ts_code: str) -> int:
+    return 1 if ts_code.endswith(".SH") else 0
+
+
+def _pytdx_servers() -> list[tuple[str, int]]:
+    raw = os.getenv("PYTDX_SERVERS", "")
+    if raw:
+        servers = []
+        for item in raw.split(","):
+            host, _, port = item.strip().partition(":")
+            if host:
+                servers.append((host, int(port or 7709)))
+        if servers:
+            return servers
+    return [
+        ("115.238.90.165", 7709),
+        ("119.147.212.81", 7709),
+        ("101.227.73.20", 7709),
+        ("14.215.128.18", 7709),
+        ("47.103.48.45", 7709),
+    ]
 
 
 def _ensure_mootdx_importable() -> None:
@@ -408,6 +624,27 @@ def normalize_minute_rows(ts_code: str, payload: dict[str, Any]) -> list[dict[st
 
 
 def upsert_minute_rows(collection: Any, rows: list[dict[str, Any]]) -> tuple[int, int]:
+    try:
+        from pymongo import UpdateOne  # type: ignore
+    except ImportError:
+        UpdateOne = None
+    if UpdateOne and len(rows) > 100:
+        inserted = 0
+        updated = 0
+        for start in range(0, len(rows), 1000):
+            batch = rows[start : start + 1000]
+            operations = [
+                UpdateOne(
+                    {"source": row.get("source", ""), "ts_code": row["ts_code"], "trade_date": row["trade_date"], "minute": row["minute"]},
+                    {"$set": row},
+                    upsert=True,
+                )
+                for row in batch
+            ]
+            result = collection.bulk_write(operations, ordered=False)
+            inserted += int(result.upserted_count or 0)
+            updated += int(result.modified_count or 0)
+        return inserted, updated
     inserted = 0
     updated = 0
     for row in rows:
@@ -457,12 +694,20 @@ def merge_local_dataset(ts_code: str, rows: list[dict[str, Any]], payload: dict[
     serializable_rows = _merge_rows(full_data.get("datasets", {}).get(dataset, []), [_local_row(row) for row in rows])
     datasets = full_data.setdefault("datasets", {})
     datasets[dataset] = serializable_rows
-    source_key = "tdx" if dataset == TDX_DATASET else "10jqka"
+    if dataset == TDX_DATASET:
+        source_key = "tdx"
+        note = "通达信历史分钟 K，补充 Tushare 分钟权限缺口。"
+    elif dataset == PYTDX_HISTORY_DATASET:
+        source_key = "pytdx_history"
+        note = "pytdx 历史分时价量构造的分钟 K；OHLC 和成交额为估算。"
+    else:
+        source_key = "10jqka"
+        note = "同花顺日内分钟分时行情，补充 Tushare 分钟权限缺口。"
     full_data.setdefault("external_sources", {})[source_key] = {
         "datasets": [dataset],
         "updated_at": timestamp(),
         "trade_date": payload.get("date", ""),
-        "note": "通达信历史分钟 K，补充 Tushare 分钟权限缺口。" if dataset == TDX_DATASET else "同花顺日内分钟分时行情，补充 Tushare 分钟权限缺口。",
+        "note": note,
     }
     write_json(full_path, full_data)
     raw_dir = ensure_dir(current_dir / "raw")
@@ -500,6 +745,19 @@ def _time_url(ts_code: str) -> str:
 def _read_stock_rows(collection: Any, ts_code: str, *, source: str) -> list[dict[str, Any]]:
     rows = list(collection.find({"source": source, "ts_code": ts_code}, {"_id": 0}).sort([("trade_date", 1), ("minute", 1)]))
     return rows
+
+
+def _existing_trade_dates(collection: Any, ts_code: str, *, source: str) -> set[str]:
+    return {str(item) for item in collection.distinct("trade_date", {"source": source, "ts_code": ts_code}) if item}
+
+
+def _local_daily_trade_dates(ts_code: str) -> list[str]:
+    full_path = PROJECT_ROOT / "local_data" / normalize_ts_code(ts_code) / "current" / "full_data.json"
+    if not full_path.exists():
+        return []
+    data = read_json(full_path)
+    rows = data.get("datasets", {}).get("daily", [])
+    return sorted({str(row.get("trade_date") or "") for row in rows if row.get("trade_date")})
 
 
 def _merge_rows(existing_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -548,6 +806,10 @@ def _normalize_source(source: str) -> str:
         "mootdx": "tdx",
         "tongdaxin": "tdx",
         "通达信": "tdx",
+        "pytdx": "pytdx_history",
+        "pytdx-history": "pytdx_history",
+        "history": "pytdx_history",
+        "历史分时": "pytdx_history",
         "10jqka": "ths",
         "tonghuashun": "ths",
         "同花顺": "ths",

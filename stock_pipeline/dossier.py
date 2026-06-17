@@ -18,7 +18,7 @@ def build_dossier(full_data: dict[str, Any]) -> dict[str, Any]:
     industry = datasets.get("index_member_all", [])
     announcements = _filter_announcements(sorted_records(datasets.get("anns_d", []), ("ann_date",)))
     intraday_minutes = sorted_records(
-        datasets.get("tdx_intraday_minutes", []) or datasets.get("ths_intraday_minutes", []),
+        datasets.get("tdx_intraday_minutes", []) or datasets.get("pytdx_history_minutes", []) or datasets.get("ths_intraday_minutes", []),
         ("datetime", "minute", "trade_date"),
     )
 
