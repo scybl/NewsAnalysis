@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import sys
+from datetime import datetime
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,18 +32,34 @@ from .field_labels import build_table_datasets
 from .news_library import query_news_library
 from .news_search import search_related_news
 from .stock_search import StockSearchIndex
-from .stock_storage import analysis_dossier_path, analysis_output_path, analysis_review_context, build_local_stock_payload, current_dir, list_analysis_results, read_analysis_result, stock_exists, stock_status, sync_stock_data
+from .stock_storage import (
+    analysis_dossier_path,
+    analysis_output_path,
+    analysis_review_context,
+    build_local_stock_payload,
+    current_dir,
+    list_analysis_results,
+    list_local_stock_codes,
+    read_analysis_result,
+    stock_exists,
+    stock_status,
+    sync_daily_market_for_existing_stocks,
+    sync_stock_data,
+)
+from .ths_minute import build_config as build_ths_minute_config
+from .ths_minute import fetch_and_store_minutes
 from .tushare_client import TushareClient, TushareError
-from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_json
+from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, today_yyyymmdd, write_json
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 SPIDER_TYPES = ("财经要闻", "宏观经济", "产经新闻", "国际财经", "金融市场", "公司新闻", "区域经济", "财经评论", "财经人物")
 SPIDER_SOURCES = (
     {"id": "ths", "name": "同花顺", "description": "中文财经新闻分类抓取"},
+    {"id": "ths_market", "name": "分钟行情", "description": "指定股票分钟行情补抓，默认通达信历史分钟 K，写入 MongoDB 和本地资料包"},
     {"id": "guardian", "name": "Guardian", "description": "Guardian Content API 文章抓取"},
-    {"id": "bloomberg_urls", "name": "Bloomberg URL", "description": "抓取 Bloomberg URL 队列"},
-    {"id": "bloomberg_articles", "name": "Bloomberg 正文", "description": "读取 URL 队列并抓正文，需要 Chrome 登录态"},
+    {"id": "bloomberg_urls", "name": "Bloomberg URL", "description": "抓取 Bloomberg URL 队列", "disabled": True, "disabled_reason": "暂时关闭，等待后续稳定性优化"},
+    {"id": "bloomberg_articles", "name": "Bloomberg 正文", "description": "读取 URL 队列并抓正文，需要 Chrome 登录态", "disabled": True, "disabled_reason": "暂时关闭，等待后续稳定性优化"},
 )
 BILLABLE_API_PATHS = {
     "/api/refresh",
@@ -51,6 +68,7 @@ BILLABLE_API_PATHS = {
     "/api/multi-agent-analyze",
 }
 USER_KEY_NAMES = {"tushare", "deepseek"}
+SYSTEM_KEY_NAMES = {"deepseek"}
 
 
 class StockWebApp:
@@ -58,7 +76,11 @@ class StockWebApp:
         self.host = host
         self.port = port
         self.settings = get_settings(require_deepseek=False)
-        self.tushare = TushareClient(self.settings.tushare_token, self.settings.tushare_base_url)
+        self.tushare = TushareClient(
+            self.settings.tushare_token,
+            self.settings.tushare_base_url,
+            pause=self.settings.tushare_pause_seconds,
+        )
         self.index = StockSearchIndex(self.tushare, PROJECT_ROOT / "cache" / "stocks.json")
         self.sessions: dict[str, dict] = {}
         self.active_session_by_user: dict[str, str] = {}
@@ -71,6 +93,7 @@ class StockWebApp:
         self.invite_codes = {code.strip() for code in self.settings.web_invite_codes.split(",") if code.strip()}
         self.user_store.seed_invites(self.invite_codes, ttl_seconds=self.settings.web_invite_ttl_seconds, created_by="env")
         self.task_registry = TaskRegistry()
+        self.daily_market_scheduler = DailyMarketScheduler(self, PROJECT_ROOT / "local_data" / "daily_market_scheduler.json", self.task_registry)
         self.spider_controller = SpiderController(PROJECT_ROOT, self.task_registry)
         self.multi_agent_jobs: dict[str, dict] = {}
         self.multi_agent_jobs_lock = threading.Lock()
@@ -201,7 +224,7 @@ class StockWebApp:
             "web": {"host": self.host, "port": self.port},
             "config": {
                 "tushare_configured": bool(self.settings.tushare_token),
-                "deepseek_configured": bool(self.settings.deepseek_api_key),
+                "deepseek_configured": self.user_store.system_api_key_state().get("deepseek", {}).get("configured", False),
                 "stock_agent_engine": self.settings.stock_agent_engine,
                 "stock_agent_template": self.settings.stock_agent_template,
                 "stock_analysis_refresh_ttl_seconds": self.settings.stock_analysis_refresh_ttl_seconds,
@@ -241,6 +264,8 @@ class StockWebApp:
             if age > ttl:
                 continue
             payload = read_agent_run(ts_code, item.get("run_id") or "")
+            if self._agent_result_has_runtime_error(payload):
+                continue
             payload["cached_analysis"] = True
             payload["cache_age_seconds"] = age
             return payload
@@ -259,11 +284,22 @@ class StockWebApp:
             if manifest.get("data_fingerprint") != current_fingerprint:
                 continue
             payload = read_agent_run(ts_code, item.get("run_id") or "")
+            if self._agent_result_has_runtime_error(payload):
+                continue
             payload["cached_analysis"] = True
             payload["cache_reason"] = "same_data_fingerprint"
             payload["cache_age_seconds"] = int(time.time() - run_dir.stat().st_mtime)
             return payload
         return None
+
+    def _agent_result_has_runtime_error(self, payload: dict) -> bool:
+        if payload.get("error"):
+            return True
+        for item in payload.get("agent_results") or []:
+            if isinstance(item, dict) and (item.get("llm_error") or item.get("schema_error")):
+                return True
+        review = payload.get("critic_review") or {}
+        return bool(isinstance(review, dict) and review.get("llm_error"))
 
     def _current_data_fingerprint(self, ts_code: str) -> str:
         path = current_dir(ts_code) / "full_data.json"
@@ -435,6 +471,11 @@ class StockWebApp:
                         return
                     self._json({"ok": True, **app.spider_controller.status()})
                     return
+                if parsed.path == "/api/admin/daily-market-scheduler":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **app.daily_market_scheduler.status()})
+                    return
                 if parsed.path == "/api/admin/spider/logs":
                     if not self._require_admin():
                         return
@@ -487,6 +528,11 @@ class StockWebApp:
                         return
                     self._handle_admin_vip_code()
                     return
+                if parsed.path == "/api/admin/system-api-key":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_system_api_key()
+                    return
                 if parsed.path == "/api/admin/user-access":
                     if not self._require_admin():
                         return
@@ -506,6 +552,11 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._json({"ok": True, **app.spider_controller.stop(self._read_json())})
+                    return
+                if parsed.path == "/api/admin/daily-market-scheduler":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_daily_market_scheduler()
                     return
                 if not self._require_auth(parsed.path):
                     return
@@ -541,6 +592,9 @@ class StockWebApp:
                     return
                 if parsed.path == "/api/sync-stock-data":
                     self._handle_sync_stock_data()
+                    return
+                if parsed.path == "/api/sync-ths-market-data":
+                    self._handle_sync_ths_market_data()
                     return
                 if parsed.path == "/api/stock-status":
                     self._handle_stock_status()
@@ -613,6 +667,8 @@ class StockWebApp:
                     payload = self._read_json()
                     ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
                     analysis_type = str(payload.get("analysis_type") or "value_speculation")
+                    deepseek_client = self._deepseek_for_session(require=True)
+                    self._ensure_deepseek_ready(deepseek_client)
                     cached = app._recent_agent_result(ts_code, analysis_type)
                     if cached:
                         if payload.get("async"):
@@ -643,7 +699,7 @@ class StockWebApp:
                                     self._json(same_data_cached)
                                 return
                     payload["_tushare_client"] = tushare_client
-                    payload["_deepseek_client"] = self._deepseek_for_session()
+                    payload["_deepseek_client"] = deepseek_client
                     if payload.get("async"):
                         result = app._start_multi_agent_job(payload)
                     else:
@@ -652,6 +708,8 @@ class StockWebApp:
                     self._json(result)
                 except PermissionError as exc:
                     self._json({"ok": False, "error": str(exc)}, status=403)
+                except DeepSeekError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=502)
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=500)
 
@@ -721,6 +779,25 @@ class StockWebApp:
                     for _ in range(count)
                 ]
                 self._json({"ok": True, "items": items})
+
+            def _handle_admin_system_api_key(self) -> None:
+                payload = self._read_json()
+                action = str(payload.get("action") or "save").strip()
+                session = self._current_session() or {}
+                try:
+                    if action == "delete":
+                        state = app.user_store.delete_system_api_keys(["deepseek"], session.get("username") or "admin")
+                        self._json({"ok": True, "system_api_keys": state})
+                        return
+                    token = str(payload.get("deepseek_api") or payload.get("deepseek") or "").strip()
+                    validation = self._validate_deepseek_key(token)
+                    if validation["errors"]:
+                        self._json({"ok": False, "error": "；".join(validation["errors"]), "validation": validation}, status=400)
+                        return
+                    state = app.user_store.save_system_api_keys({"deepseek": token}, session.get("username") or "admin")
+                    self._json({"ok": True, "validation": validation, "system_api_keys": state})
+                except (ValueError, PermissionError, RuntimeError) as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
 
             def _handle_admin_user_access(self) -> None:
                 payload = self._read_json()
@@ -817,6 +894,22 @@ class StockWebApp:
                 except RuntimeError as exc:
                     self._json({"ok": False, "error": str(exc)}, status=409)
 
+            def _handle_admin_daily_market_scheduler(self) -> None:
+                payload = self._read_json()
+                action = str(payload.get("action") or "save").strip()
+                try:
+                    if action == "run_now":
+                        self._json({"ok": True, **app.daily_market_scheduler.run_now()})
+                        return
+                    if action == "save":
+                        enabled = bool(payload.get("enabled"))
+                        schedule_time = str(payload.get("time") or "21:30").strip()
+                        self._json({"ok": True, **app.daily_market_scheduler.configure(enabled=enabled, schedule_time=schedule_time)})
+                        return
+                    self._json({"ok": False, "error": "未知每日行情调度操作。"}, status=400)
+                except (ValueError, RuntimeError) as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+
             def _handle_analyze(self) -> None:
                 try:
                     payload = self._read_json()
@@ -824,14 +917,14 @@ class StockWebApp:
                     framework = get_analysis_framework(str(payload.get("analysis_type") or "value_speculation"))
                     years, full_history = self._parse_history_scope(payload)
                     question = str(payload.get("question") or framework.question)
+                    deepseek_client = self._deepseek_for_session(require=True)
+                    self._ensure_deepseek_ready(deepseek_client)
                     cached = app._recent_analysis_result(ts_code, framework.key)
                     if cached:
                         self._json(cached)
                         return
                     tushare_client = self._tushare_for_session()
-                    deepseek_client = self._deepseek_for_session()
-                    billable = bool(deepseek_client) or not stock_exists(ts_code)
-                    if billable and not self._consume_billable_budget("/api/analyze"):
+                    if not self._consume_billable_budget("/api/analyze"):
                         return
                     if not stock_exists(ts_code):
                         sync_stock_data(tushare_client, ts_code, years=years, full_history=full_history)
@@ -846,20 +939,18 @@ class StockWebApp:
 
                     answer = ""
                     session_path = ""
-                    if deepseek_client:
-                        analyst = StockAnalyst(deepseek_client)
-                        session = session_path_for(ts_code, PROJECT_ROOT / "sessions", framework.key)
-                        answer = analyst.framework_analysis(
-                            analysis_dossier,
-                            session,
-                            framework,
-                            question=question,
-                            historical_context=historical_context,
-                        )
-                        analysis_output_path(ts_code, framework.key).write_text(answer, encoding="utf-8")
-                        session_path = str(session)
-                    if billable:
-                        self._record_billable_usage("/api/analyze")
+                    analyst = StockAnalyst(deepseek_client)
+                    session = session_path_for(ts_code, PROJECT_ROOT / "sessions", framework.key)
+                    answer = analyst.framework_analysis(
+                        analysis_dossier,
+                        session,
+                        framework,
+                        question=question,
+                        historical_context=historical_context,
+                    )
+                    analysis_output_path(ts_code, framework.key).write_text(answer, encoding="utf-8")
+                    session_path = str(session)
+                    self._record_billable_usage("/api/analyze")
 
                     self._json(
                         {
@@ -885,6 +976,8 @@ class StockWebApp:
                     )
                 except PermissionError as exc:
                     self._json({"ok": False, "error": str(exc)}, status=403)
+                except DeepSeekError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=502)
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=500)
 
@@ -937,6 +1030,28 @@ class StockWebApp:
                     if not result.get("cache_hit"):
                         self._record_billable_usage("/api/sync-stock-data")
                     self._json(result)
+                except PermissionError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=403)
+                except Exception as exc:  # noqa: BLE001 - return readable UI error
+                    self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_sync_ths_market_data(self) -> None:
+                try:
+                    payload = self._read_json()
+                    ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
+                    result = fetch_and_store_minutes(
+                        [ts_code],
+                        config=build_ths_minute_config(
+                            database=str(payload.get("mongo_db") or "").strip() or None,
+                            collection=str(payload.get("collection") or "").strip() or None,
+                        ),
+                        sleep_range=(0, 0),
+                        source=str(payload.get("source") or "tdx"),
+                        pages=payload.get("pages") or os.getenv("MARKET_MINUTE_DEFAULT_PAGES", "all"),
+                        page_size=int(payload.get("page_size") or 800),
+                    )
+                    local_payload = build_local_stock_payload(ts_code) if stock_exists(ts_code) else {"datasets": [], "metadata": {}}
+                    self._json({"ok": result.get("ok", False), "ts_code": ts_code, "market_result": result, **local_payload})
                 except PermissionError as exc:
                     self._json({"ok": False, "error": str(exc)}, status=403)
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
@@ -1027,20 +1142,43 @@ class StockWebApp:
                 token = keys.get("tushare")
                 if not token:
                     raise PermissionError("普通用户需要先保存自己的 Tushare API key，或兑换 VIP。")
-                return TushareClient(token, app.settings.tushare_base_url)
+                return TushareClient(token, app.settings.tushare_base_url, pause=app.settings.tushare_pause_seconds)
 
-            def _deepseek_for_session(self) -> DeepSeekClient | None:
+            def _deepseek_for_session(self, require: bool = False) -> DeepSeekClient | None:
                 session = self._current_session()
                 mode = self._credential_mode(session)
                 if mode == "system":
-                    if not app.settings.deepseek_api_key:
+                    token = app.user_store.decrypted_system_api_keys().get("deepseek", "")
+                    if not token:
+                        if require:
+                            raise PermissionError("系统 DeepSeek key 未配置或不可解密，请先在管理员后台验证并锁定。")
                         return None
-                    return DeepSeekClient(app.settings.deepseek_api_key, app.settings.deepseek_base_url, model=app.settings.deepseek_model)
+                    return DeepSeekClient(token, app.settings.deepseek_base_url, model=app.settings.deepseek_model)
                 keys = app.user_store.decrypted_user_api_keys(session.get("username") if session else "")
                 token = keys.get("deepseek")
                 if not token:
                     raise PermissionError("普通用户需要先保存自己的 DeepSeek API key，或兑换 VIP。")
                 return DeepSeekClient(token, app.settings.deepseek_base_url, model=app.settings.deepseek_model)
+
+            def _ensure_deepseek_ready(self, client: DeepSeekClient | None) -> None:
+                if not client:
+                    raise PermissionError("DeepSeek key 未配置，无法启动多 Agent 分析。")
+                try:
+                    client.chat([{"role": "user", "content": "请只回复 ok"}], max_tokens=8)
+                except (DeepSeekError, RuntimeError, json.JSONDecodeError) as exc:
+                    raise DeepSeekError(f"DeepSeek key 验证失败，已停止分析：{exc}") from exc
+
+            def _validate_deepseek_key(self, token: str) -> dict:
+                if not token:
+                    return {"checks": {"deepseek": {"ok": False, "error": "DeepSeek key 不能为空。"}}, "errors": ["DeepSeek key 不能为空。"]}
+                try:
+                    DeepSeekClient(token, app.settings.deepseek_base_url, model=app.settings.deepseek_model, timeout=20).chat(
+                        [{"role": "user", "content": "请只回复 ok"}],
+                        max_tokens=8,
+                    )
+                    return {"checks": {"deepseek": {"ok": True}}, "errors": []}
+                except (DeepSeekError, RuntimeError, json.JSONDecodeError) as exc:
+                    return {"checks": {"deepseek": {"ok": False, "error": str(exc)}}, "errors": [f"DeepSeek key 验证失败：{exc}"]}
 
             def _validate_user_api_keys(self, values: dict[str, str]) -> dict:
                 checks = {}
@@ -1055,15 +1193,9 @@ class StockWebApp:
                         checks["tushare"] = {"ok": False, "error": str(exc)}
                         errors.append(f"Tushare key 验证失败：{exc}")
                 if deepseek_token:
-                    try:
-                        DeepSeekClient(deepseek_token, app.settings.deepseek_base_url, model=app.settings.deepseek_model, timeout=20).chat(
-                            [{"role": "user", "content": "请只回复 ok"}],
-                            max_tokens=8,
-                        )
-                        checks["deepseek"] = {"ok": True}
-                    except (DeepSeekError, RuntimeError, json.JSONDecodeError) as exc:
-                        checks["deepseek"] = {"ok": False, "error": str(exc)}
-                        errors.append(f"DeepSeek key 验证失败：{exc}")
+                    validation = self._validate_deepseek_key(deepseek_token)
+                    checks.update(validation["checks"])
+                    errors.extend(validation["errors"])
                 return {"checks": checks, "errors": errors}
 
             def _authenticate(self, username: str, password: str) -> dict | None:
@@ -1268,7 +1400,152 @@ class TaskRegistry:
             "rating_hint": result.get("rating_hint", ""),
             "confidence": result.get("confidence", ""),
             "run_id": result.get("run_id", ""),
+            "target_date": result.get("target_date", ""),
+            "updated": result.get("updated", ""),
+            "skipped": result.get("skipped", ""),
+            "no_data": result.get("no_data", ""),
+            "failed": result.get("failed", ""),
         }
+
+
+class DailyMarketScheduler:
+    def __init__(self, app: StockWebApp, config_path: Path, task_registry: TaskRegistry):
+        self.app = app
+        self.config_path = config_path
+        self.task_registry = task_registry
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.worker: threading.Thread | None = None
+        self.config = self._load_config()
+        self.thread = threading.Thread(target=self._loop, name="daily-market-scheduler", daemon=True)
+        self.thread.start()
+
+    def configure(self, enabled: bool, schedule_time: str) -> dict:
+        schedule_time = self._validate_time(schedule_time)
+        with self.lock:
+            self.config["enabled"] = bool(enabled)
+            self.config["time"] = schedule_time
+            self.config["updated_at"] = timestamp()
+            self._write_config_locked()
+        return self.status()
+
+    def run_now(self) -> dict:
+        return self._start_run(trigger="manual")
+
+    def status(self) -> dict:
+        with self.lock:
+            config = dict(self.config)
+            running = bool(self.worker and self.worker.is_alive())
+        return {
+            "scheduler": {
+                "enabled": bool(config.get("enabled")),
+                "time": config.get("time") or "21:30",
+                "last_run_date": config.get("last_run_date") or "",
+                "last_run_at": config.get("last_run_at") or "",
+                "last_task_id": config.get("last_task_id") or "",
+                "last_result": config.get("last_result") or {},
+                "running": running,
+                "stock_count": len(list_local_stock_codes()),
+            }
+        }
+
+    def _loop(self) -> None:
+        while not self.stop_event.wait(30):
+            try:
+                with self.lock:
+                    enabled = bool(self.config.get("enabled"))
+                    schedule_time = str(self.config.get("time") or "21:30")
+                    last_run_date = str(self.config.get("last_run_date") or "")
+                    running = bool(self.worker and self.worker.is_alive())
+                if not enabled or running:
+                    continue
+                now = datetime.now(CN_TZ).strftime("%H:%M")
+                today = today_yyyymmdd()
+                if now >= schedule_time and last_run_date != today:
+                    self._start_run(trigger="scheduled")
+            except Exception as exc:  # noqa: BLE001 - scheduler must keep ticking
+                with self.lock:
+                    self.config["last_error"] = str(exc)
+                    self._write_config_locked()
+
+    def _start_run(self, trigger: str) -> dict:
+        with self.lock:
+            if self.worker and self.worker.is_alive():
+                raise RuntimeError("每日行情更新任务正在运行。")
+            task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
+            target_date = today_yyyymmdd()
+            self.config["last_task_id"] = task_id
+            self._write_config_locked()
+        self.task_registry.create_task(
+            task_id,
+            "daily_market",
+            "每日行情增量更新",
+            metadata={"trigger": trigger, "target_date": target_date},
+        )
+        self.task_registry.update_task(task_id, status="running")
+        self.task_registry.add_event(task_id, "running", "开始检查本地已有股票的当日行情。", {"target_date": target_date})
+        self.worker = threading.Thread(target=self._run_task, args=(task_id, target_date, trigger), name=f"daily-market-{target_date}", daemon=True)
+        self.worker.start()
+        return self.status()
+
+    def _run_task(self, task_id: str, target_date: str, trigger: str) -> None:
+        try:
+            client = TushareClient(
+                self.app.settings.tushare_token,
+                self.app.settings.tushare_base_url,
+                pause=self.app.settings.tushare_pause_seconds,
+            )
+            result = sync_daily_market_for_existing_stocks(client, target_date=target_date)
+            result["trigger"] = trigger
+            self.task_registry.update_task(task_id, status="succeeded", result=result)
+            self.task_registry.add_event(
+                task_id,
+                "succeeded",
+                f"每日行情更新完成：更新 {result.get('updated')}，跳过 {result.get('skipped')}，无数据 {result.get('no_data')}，失败 {result.get('failed')}。",
+                result,
+            )
+            with self.lock:
+                self.config["last_run_date"] = target_date
+                self.config["last_run_at"] = timestamp()
+                self.config["last_result"] = result
+                self.config["last_error"] = ""
+                self._write_config_locked()
+        except Exception as exc:  # noqa: BLE001 - report task failure
+            self.task_registry.update_task(task_id, status="failed", error=str(exc))
+            self.task_registry.add_event(task_id, "failed", "每日行情更新失败。", {"error": str(exc)})
+            with self.lock:
+                self.config["last_error"] = str(exc)
+                self._write_config_locked()
+
+    def _load_config(self) -> dict:
+        if self.config_path.exists():
+            try:
+                data = read_json(self.config_path)
+                data["time"] = self._validate_time(str(data.get("time") or "21:30"))
+                data["enabled"] = bool(data.get("enabled"))
+                return data
+            except Exception:
+                pass
+        return {"enabled": False, "time": "21:30", "last_run_date": "", "last_run_at": "", "last_task_id": "", "last_result": {}}
+
+    def _write_config_locked(self) -> None:
+        write_json(self.config_path, self.config)
+
+    def _validate_time(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("请设置每日更新时间。")
+        parts = text.split(":")
+        if len(parts) != 2:
+            raise ValueError("每日更新时间格式必须是 HH:MM。")
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except ValueError as exc:
+            raise ValueError("每日更新时间必须是数字格式 HH:MM。") from exc
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError("每日更新时间必须在 00:00-23:59 之间。")
+        return f"{hour:02d}:{minute:02d}"
 
 
 class SpiderController:
@@ -1286,10 +1563,14 @@ class SpiderController:
             self._refresh_locked()
 
             source = self._parse_source(payload.get("source"))
+            source_meta = self._source_meta(source)
+            if source_meta.get("disabled"):
+                raise ValueError(f"{source_meta.get('name', source)}暂时关闭：{source_meta.get('disabled_reason', '等待后续优化')}")
             process = self.processes.get(source)
             if process and process.poll() is None:
                 raise RuntimeError(f"{self._source_label(source)}爬虫已经在运行。")
             selected_types = self._parse_types(payload.get("types")) if source == "ths" else []
+            stock_code = normalize_ts_code(str(payload.get("stock_code") or payload.get("ts_code") or payload.get("code") or "")) if source == "ths_market" else ""
             max_pages = self._bounded_int(payload.get("max_pages"), default=1, minimum=1, maximum=50, field="max_pages")
             threads = self._bounded_int(payload.get("threads"), default=2, minimum=1, maximum=4, field="threads")
             new_only = bool(payload.get("new_only", False))
@@ -1311,6 +1592,7 @@ class SpiderController:
                 page_sleep=page_sleep,
                 log_file=log_file,
                 env=env,
+                stock_code=stock_code,
             )
 
             with log_file.open("a", encoding="utf-8") as output:
@@ -1339,6 +1621,7 @@ class SpiderController:
                 "max_pages": max_pages,
                 "threads": threads,
                 "new_only": new_only,
+                "stock_code": stock_code,
                 "log_file": str(log_file),
                 "error": "",
             }
@@ -1347,7 +1630,7 @@ class SpiderController:
                     job_id,
                     "spider",
                     f"{source_label}爬虫",
-                    metadata={"source": source, "types": selected_types, "max_pages": max_pages, "new_only": new_only},
+                    metadata={"source": source, "types": selected_types, "stock_code": stock_code, "max_pages": max_pages, "new_only": new_only},
                 )
                 self.task_registry.update_task(job_id, status="running")
                 self.task_registry.add_event(job_id, "running", "爬虫进程已启动。", {"pid": process.pid, "log_file": str(log_file)})
@@ -1421,6 +1704,7 @@ class SpiderController:
                     "max_pages": None,
                     "threads": None,
                     "new_only": False,
+                    "stock_code": "",
                     "log_file": "",
                     "error": "",
                 }
@@ -1448,6 +1732,7 @@ class SpiderController:
         page_sleep: str,
         log_file: Path,
         env: dict,
+        stock_code: str,
     ) -> tuple[list[str], Path, str]:
         if source == "ths":
             cmd = [
@@ -1472,20 +1757,25 @@ class SpiderController:
                 cmd.extend(["--new-only", "--existing-stop-count", "10"])
             return cmd, self.spider_dir, "同花顺"
 
+        if source == "ths_market":
+            if not stock_code:
+                raise ValueError("分钟行情抓取需要填写股票代码。")
+            return [
+                sys.executable,
+                "-m",
+                "stock_pipeline",
+                "market",
+                "ths-minute",
+                "--codes",
+                stock_code,
+                "--sleep",
+                "0,0",
+            ], self.project_root, "分钟行情"
+
         if source == "guardian":
             env["GUARDIAN_START_PAGE"] = "1"
             env["GUARDIAN_END_PAGE"] = str(max_pages)
             return [sys.executable, "Guardian.py"], self.spider_dir / "newsweaver" / "Guardian", "Guardian"
-
-        if source == "bloomberg_urls":
-            return [sys.executable, "bloomberg_url_fetcher.py"], self.spider_dir / "newsweaver" / "Bloomberg" / "get_url", "Bloomberg URL"
-
-        if source == "bloomberg_articles":
-            env["BATCH_SIZE"] = str(max_pages)
-            low, high = [part.strip() for part in article_sleep.split(",", 1)]
-            env["ARTICLE_DELAY_MIN"] = low
-            env["ARTICLE_DELAY_MAX"] = high
-            return [sys.executable, "ultimate_crawler.py"], self.spider_dir / "newsweaver" / "Bloomberg" / "final_article", "Bloomberg 正文"
 
         raise ValueError("未知爬虫数据源。")
 
@@ -1566,10 +1856,13 @@ class SpiderController:
         return source
 
     def _source_label(self, source: str) -> str:
+        return self._source_meta(source).get("name", source)
+
+    def _source_meta(self, source: str) -> dict:
         for item in SPIDER_SOURCES:
             if item["id"] == source:
-                return item["name"]
-        return source
+                return item
+        return {"id": source, "name": source}
 
     def _bounded_int(self, value, default: int, minimum: int, maximum: int, field: str) -> int:
         try:
@@ -1834,6 +2127,63 @@ class UserStore:
                 result[name] = self.key_cipher.decrypt(ciphertext)
         return result
 
+    def system_api_key_state(self, data: dict | None = None) -> dict:
+        if data is None:
+            with self.lock:
+                keys = self._read().get("system_api_keys", {})
+        else:
+            keys = data.get("system_api_keys", {})
+        return {
+            name: {
+                "configured": bool(keys.get(name, {}).get("ciphertext")),
+                "updated_at": keys.get(name, {}).get("updated_at", ""),
+            }
+            for name in sorted(SYSTEM_KEY_NAMES)
+        }
+
+    def save_system_api_keys(self, values: dict[str, str], updated_by: str) -> dict:
+        cleaned = {name: str(value or "").strip() for name, value in values.items() if name in SYSTEM_KEY_NAMES}
+        if any(not value for value in cleaned.values()):
+            raise ValueError("系统 API key 不能为空。")
+        with self.lock:
+            data = self._read()
+            keys = data.setdefault("system_api_keys", {})
+            for name, value in cleaned.items():
+                keys[name] = {
+                    "ciphertext": self.key_cipher.encrypt(value),
+                    "updated_at": timestamp(),
+                    "updated_by": updated_by,
+                }
+                self._audit(data, updated_by, "system_api_key_saved", name, {})
+            self._write(data)
+        return self.system_api_key_state()
+
+    def delete_system_api_keys(self, names: list[str] | None, updated_by: str) -> dict:
+        selected = set(names or SYSTEM_KEY_NAMES) & SYSTEM_KEY_NAMES
+        with self.lock:
+            data = self._read()
+            keys = data.get("system_api_keys") or {}
+            for name in selected:
+                if name in keys:
+                    keys.pop(name, None)
+                    self._audit(data, updated_by, "system_api_key_deleted", name, {})
+            if keys:
+                data["system_api_keys"] = keys
+            else:
+                data.pop("system_api_keys", None)
+            self._write(data)
+        return self.system_api_key_state()
+
+    def decrypted_system_api_keys(self) -> dict[str, str]:
+        with self.lock:
+            keys = self._read().get("system_api_keys", {})
+        result = {}
+        for name in SYSTEM_KEY_NAMES:
+            ciphertext = keys.get(name, {}).get("ciphertext")
+            if ciphertext:
+                result[name] = self.key_cipher.decrypt(ciphertext)
+        return result
+
     def create_demo_account(self, created_by: str, limit: int, window_seconds: int) -> dict:
         now = time.time()
         password = secrets.token_urlsafe(10)
@@ -2005,6 +2355,7 @@ class UserStore:
                 }
             )
         return {
+            "system_api_keys": self.system_api_key_state(data),
             "users": users,
             "invites": [self._public_invite(invite) for invite in sorted(data.get("invites", {}).values(), key=lambda item: item.get("expires_at", 0), reverse=True)],
             "vip_codes": [self._public_vip_code(item) for item in sorted(data.get("vip_codes", {}).values(), key=lambda item: item.get("expires_at", 0), reverse=True)],
@@ -2017,7 +2368,7 @@ class UserStore:
 
     def _read(self) -> dict:
         if not self.path.exists():
-            return {"users": {}, "used_invites": {}, "invites": {}, "usage": {}, "demo_accounts": {}, "vip_codes": {}, "audit_logs": []}
+            return {"users": {}, "used_invites": {}, "invites": {}, "usage": {}, "demo_accounts": {}, "vip_codes": {}, "system_api_keys": {}, "audit_logs": []}
         data = read_json(self.path)
         data.setdefault("users", {})
         data.setdefault("used_invites", {})
@@ -2025,6 +2376,7 @@ class UserStore:
         data.setdefault("usage", {})
         data.setdefault("demo_accounts", {})
         data.setdefault("vip_codes", {})
+        data.setdefault("system_api_keys", {})
         data.setdefault("audit_logs", [])
         return data
 

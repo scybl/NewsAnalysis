@@ -40,6 +40,8 @@ DATASET_LABELS = {
     "index_member_all": "申万行业归属",
     "sw_daily": "申万行业日行情",
     "anns_d": "公司公告",
+    "tdx_intraday_minutes": "通达信分钟 K 线",
+    "ths_intraday_minutes": "同花顺分钟分时行情",
 }
 
 
@@ -88,6 +90,18 @@ FIELD_LABELS = {
     "reward": "报酬",
     "hold_vol": "持股数量",
     "trade_date": "交易日期",
+    "minute": "分钟",
+    "datetime": "时间",
+    "price": "价格",
+    "amount": "成交额",
+    "avg_price": "均价",
+    "volume": "成交量",
+    "pre_close": "昨收",
+    "source": "来源",
+    "dataset": "数据集",
+    "market_code": "行情代码",
+    "market_type": "市场类型",
+    "fetched_at": "抓取时间",
     "open": "开盘价",
     "high": "最高价",
     "low": "最低价",

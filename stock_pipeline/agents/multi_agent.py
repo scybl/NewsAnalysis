@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -247,6 +248,50 @@ DATASET_NEEDS: dict[str, str] = {
     "anns_d": "公告和事件催化",
     "index_member_all": "行业归属",
     "sw_daily": "行业指数走势",
+}
+
+AUTO_TUSHARE_DATASETS = {
+    "stock_basic",
+    "namechange",
+    "stock_company",
+    "stk_managers",
+    "stk_rewards",
+    "daily",
+    "weekly",
+    "monthly",
+    "daily_basic",
+    "adj_factor",
+    "stk_limit",
+    "suspend_d",
+    "moneyflow",
+    "margin_detail",
+    "income",
+    "balancesheet",
+    "cashflow",
+    "fina_indicator",
+    "express",
+    "forecast",
+    "dividend",
+    "fina_mainbz",
+    "fina_audit",
+    "disclosure_date",
+    "top10_holders",
+    "top10_floatholders",
+    "stk_holdernumber",
+    "stk_holdertrade",
+    "pledge_stat",
+    "pledge_detail",
+    "repurchase",
+    "share_float",
+    "block_trade",
+    "index_member_all",
+    "anns_d",
+    "sw_daily",
+}
+
+EXTERNAL_DATASETS = {
+    "tdx_intraday_minutes": "分钟 K 数据请使用“更新分钟行情”入口补抓。",
+    "ths_intraday_minutes": "同花顺行情数据请使用“更新分钟行情”入口补抓。",
 }
 
 
@@ -1222,6 +1267,12 @@ def _broker_data_requests(requests: list[dict[str, Any]], full_data: dict[str, A
             rejected.append({**request, "reason": "重复请求"})
             continue
         seen.add(dataset)
+        if dataset in EXTERNAL_DATASETS:
+            rejected.append({**request, "reason": EXTERNAL_DATASETS[dataset]})
+            continue
+        if dataset not in AUTO_TUSHARE_DATASETS:
+            rejected.append({**request, "reason": "当前系统没有可自动补抓的 Tushare 接口映射，已跳过以避免无权限/无效请求。"})
+            continue
         approved.append(request)
     return {
         "approved_requests": approved,
@@ -1534,10 +1585,12 @@ def _run_specialists(
             else:
                 result = _apply_agent_guardrails(fallback, analysis_type, dossier, analysis_dossier)
         except Exception as exc:  # noqa: BLE001 - keep the whole council alive
+            if _is_fatal_llm_error(exc):
+                raise
             result = _apply_agent_guardrails(
                 {
                     **fallback,
-                    "llm_error": str(exc),
+                    "llm_error": _friendly_llm_error(exc),
                     "reasoning_summary": f"{fallback['reasoning_summary']} 专题 agent 执行异常，已回退到规则化结果。",
                 },
                 analysis_type,
@@ -1595,6 +1648,10 @@ def _calibrate_agent_confidence(result: dict[str, Any]) -> dict[str, Any]:
     opinion_strength = _opinion_strength(direction, scores, item.get("agent"))
     evidence_confidence = _evidence_confidence(findings, counters, data_requests, scores, item)
     system_confidence = _clamp_float(evidence_confidence * 0.66 + opinion_strength * 0.26 + llm_confidence * 0.08)
+    if item.get("llm_error"):
+        system_confidence = min(system_confidence, 0.24)
+    if item.get("schema_error"):
+        system_confidence = min(system_confidence, 0.34)
 
     item["llm_confidence"] = llm_confidence
     item["opinion_strength"] = round(opinion_strength, 3)
@@ -1716,7 +1773,8 @@ def _critic_review(
 {json.dumps(context, ensure_ascii=False)}
 """
     try:
-        answer = llm_client.chat(
+        answer = _chat_with_retry(
+            llm_client,
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             response_format={"type": "json_object"},
             max_tokens=max(800, int(mode.get("critic_max_tokens") or 1536)),
@@ -1727,7 +1785,9 @@ def _critic_review(
             return {**fallback, "summary": review.get("summary") or fallback["summary"], "overall_risk": review.get("overall_risk") or fallback["overall_risk"]}
         return review
     except (DeepSeekError, RuntimeError, json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
-        return {**fallback, "llm_error": str(exc)}
+        if _is_fatal_llm_error(exc):
+            raise
+        return {**fallback, "llm_error": _friendly_llm_error(exc)}
 
 
 def _fallback_critic_review(
@@ -1917,7 +1977,7 @@ def _llm_agent_result(
         "prior_agent_results": _compact_agent_history(analysis_dossier.get("prior_agent_results", []), prior_limit),
         "current_stage": analysis_dossier.get("current_stage", ""),
         "critic_context": _compact_critic_context(analysis_dossier.get("critic_context", {}), profile) if critic_limit else {},
-        "raw_dossier_slice": _agent_raw_slice(dossier, agent, analysis_type),
+        "raw_dossier_slice": _agent_raw_slice(dossier, agent, analysis_type, profile),
     }
     system_prompt = f"""你是 A 股投研多 Agent 系统中的「{spec['role']}」。
 
@@ -1927,6 +1987,8 @@ def _llm_agent_result(
 - 主动指出反证、数据缺口和证伪条件。
 - 涉及资金流金额时，必须遵守输入中的 data_unit_notes 和 quantitative_checks，不得把万元口径误写成元/万元级结论。
 - 涉及猪价、能繁母猪、成本、行业供需等资料包外变量时，必须标记为外部假设或写入 data_requests，不得当作已验证证据。
+- 必须区分好公司、好价格、好时机；遇到高成长高估值标的，要提示 PEG/Forward PE 可能造成估值幻觉。
+- 必须给出触发条件、证伪条件和复核点，不能把研究观点写成确定性投资指令。
 - 输出可审计的结构化推理摘要，不输出隐藏思维链。
 - 结论要短，不要复述输入资料；每条 finding/counter 只保留最关键的证据。
 - 这不是投资建议，只能给研究观点和观察条件。
@@ -1950,19 +2012,92 @@ def _llm_agent_result(
 {json.dumps(context, ensure_ascii=False)}
 """
     try:
-        answer = llm_client.chat(
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        answer = _chat_with_retry(
+            llm_client,
+            messages,
             response_format={"type": "json_object"},
             max_tokens=max(1000, int(mode.get("agent_max_tokens") or 2048)),
+            attempts=2,
         )
         parsed = _parse_json_object(answer)
         return _apply_agent_guardrails(_normalize_llm_agent_result(parsed, fallback), analysis_type, dossier, analysis_dossier)
     except (DeepSeekError, RuntimeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        if _is_fatal_llm_error(exc):
+            raise
         return _apply_agent_guardrails({
             **fallback,
-            "llm_error": str(exc),
+            "llm_error": _friendly_llm_error(exc),
             "reasoning_summary": f"{fallback['reasoning_summary']} LLM 专业 agent 调用失败，已回退到规则化结果。",
         }, analysis_type, dossier, analysis_dossier)
+
+
+def _chat_with_retry(
+    llm_client: DeepSeekClient,
+    messages: list[dict[str, str]],
+    *,
+    response_format: dict[str, str] | None = None,
+    max_tokens: int | None = None,
+    attempts: int = 2,
+) -> str:
+    last_exc: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return llm_client.chat(messages, response_format=response_format, max_tokens=max_tokens)
+        except (DeepSeekError, RuntimeError, OSError) as exc:
+            last_exc = exc
+            if attempt >= attempts - 1 or not _is_retryable_llm_error(exc):
+                raise
+            time.sleep(1.2 * (attempt + 1))
+    if last_exc:
+        raise last_exc
+    raise DeepSeekError("LLM 请求未返回结果。")
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    retry_tokens = (
+        "broken pipe",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "temporarily unavailable",
+        "timed out",
+        "timeout",
+        "remote end closed",
+        "server disconnected",
+        "eof occurred",
+    )
+    return any(token in text for token in retry_tokens)
+
+
+def _is_fatal_llm_error(exc: Exception | str) -> bool:
+    text = str(exc).lower()
+    fatal_tokens = (
+        "deepseek http 401",
+        "deepseek http 403",
+        "deepseek http 404",
+        "authentication",
+        "invalid api key",
+        "api key",
+        "model_not_found",
+        "not found",
+        "unauthorized",
+        "forbidden",
+    )
+    return any(token in text for token in fatal_tokens)
+
+
+def _friendly_llm_error(exc: Exception | str) -> str:
+    text = str(exc)
+    lower = text.lower()
+    if "broken pipe" in lower:
+        return "LLM 连接中断，已自动重试一次；仍未成功，已使用规则回退结果。"
+    if any(token in lower for token in ("connection reset", "connection aborted", "remote end closed", "server disconnected")):
+        return "LLM 远端连接提前关闭，已自动重试一次；仍未成功，已使用规则回退结果。"
+    if "timed out" in lower or "timeout" in lower:
+        return "LLM 请求超时，已自动重试一次；仍未成功，已使用规则回退结果。"
+    return text
 
 
 def _normalize_llm_agent_result(parsed: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
@@ -2395,26 +2530,29 @@ def _agent_analysis_slice(analysis_dossier: dict[str, Any], keys: list[str]) -> 
     return _limit_nested_records(selected)
 
 
-def _agent_raw_slice(dossier: dict[str, Any], agent: str, analysis_type: str) -> dict[str, Any]:
+def _agent_raw_slice(dossier: dict[str, Any], agent: str, analysis_type: str, profile: str = "focused") -> dict[str, Any]:
     market = dossier.get("market", {})
     financials = dossier.get("financials", {})
     events = dossier.get("shareholders_and_events", {})
     industry = dossier.get("industry", {})
+    caps = _raw_slice_caps(profile)
     compact_market = {
         "technical_snapshot": market.get("technical_snapshot"),
-        "daily_recent": market.get("daily_recent", [])[:40],
-        "daily_basic_recent": market.get("daily_basic_recent", [])[:30],
-        "moneyflow_recent": market.get("moneyflow_recent", [])[:25],
-        "margin_recent": market.get("margin_recent", [])[:20],
-        "limit_recent": market.get("limit_recent", [])[:20],
+        "ths_intraday_snapshot": market.get("ths_intraday_snapshot"),
+        "daily_recent": market.get("daily_recent", [])[: caps["market"]],
+        "daily_basic_recent": market.get("daily_basic_recent", [])[: caps["market"]],
+        "moneyflow_recent": market.get("moneyflow_recent", [])[: caps["flow"]],
+        "ths_intraday_recent": market.get("ths_intraday_recent", [])[: caps["intraday"]],
+        "margin_recent": market.get("margin_recent", [])[: caps["flow"]],
+        "limit_recent": market.get("limit_recent", [])[: caps["small"]],
     }
     compact_financials = {
-        "income_recent": financials.get("income_recent", [])[:10],
-        "cashflow_recent": financials.get("cashflow_recent", [])[:10],
-        "indicator_recent": financials.get("indicator_recent", [])[:10],
-        "main_business": financials.get("main_business", [])[:12],
-        "dividend": financials.get("dividend", [])[:12],
-        "audit": financials.get("audit", [])[:8],
+        "income_recent": financials.get("income_recent", [])[: caps["financial"]],
+        "cashflow_recent": financials.get("cashflow_recent", [])[: caps["financial"]],
+        "indicator_recent": financials.get("indicator_recent", [])[: caps["financial"]],
+        "main_business": financials.get("main_business", [])[: caps["financial"]],
+        "dividend": financials.get("dividend", [])[: caps["financial"]],
+        "audit": financials.get("audit", [])[: caps["small"]],
         "financial_trends": financials.get("financial_trends", {}),
     }
     compact_events = {
@@ -2424,9 +2562,9 @@ def _agent_raw_slice(dossier: dict[str, Any], agent: str, analysis_type: str) ->
     compact_industry = _limit_nested_records(industry, 12)
     compact_announcements = dossier.get("announcements", [])[:20]
     mapping = {
-        "oversold_detector": {"market": {"technical_snapshot": market.get("technical_snapshot"), "daily_recent": market.get("daily_recent", [])[:80]}},
-        "volume_agent": {"market": {"daily_recent": market.get("daily_recent", [])[:80], "daily_basic_recent": market.get("daily_basic_recent", [])[:80]}},
-        "moneyflow_agent": {"market": {"moneyflow_recent": market.get("moneyflow_recent", [])[:60], "margin_recent": market.get("margin_recent", [])[:60]}},
+        "oversold_detector": {"market": {"technical_snapshot": market.get("technical_snapshot"), "daily_recent": market.get("daily_recent", [])[: caps["market_wide"]]}},
+        "volume_agent": {"market": {"daily_recent": market.get("daily_recent", [])[: caps["market_wide"]], "daily_basic_recent": market.get("daily_basic_recent", [])[: caps["market_wide"]], "ths_intraday_snapshot": market.get("ths_intraday_snapshot"), "ths_intraday_recent": market.get("ths_intraday_recent", [])[: caps["intraday"]]}},
+        "moneyflow_agent": {"market": {"moneyflow_recent": market.get("moneyflow_recent", [])[: caps["flow_wide"]], "margin_recent": market.get("margin_recent", [])[: caps["flow_wide"]], "ths_intraday_snapshot": market.get("ths_intraday_snapshot")}},
         "sentiment_agent": {"announcements": dossier.get("announcements", [])[:40], "industry": industry, "market": {"limit_recent": market.get("limit_recent", [])[:40]}},
         "industry_cycle_agent": {"industry": industry, "announcements": dossier.get("announcements", [])[:40], "market": {"daily_recent": market.get("daily_recent", [])[:40]}},
         "business_quality_agent": {"financials": {"main_business": financials.get("main_business", [])[:24]}, "industry": industry},
@@ -2451,6 +2589,14 @@ def _agent_raw_slice(dossier: dict[str, Any], agent: str, analysis_type: str) ->
     }
     fallback = {"market": compact_market, "financials": compact_financials, "events": compact_events, "industry": compact_industry}
     return _limit_nested_records(mapping.get(agent, fallback))
+
+
+def _raw_slice_caps(profile: str) -> dict[str, int]:
+    if profile == "deep":
+        return {"market": 32, "market_wide": 60, "flow": 24, "flow_wide": 45, "intraday": 48, "financial": 12, "small": 16}
+    if profile == "minimal":
+        return {"market": 10, "market_wide": 20, "flow": 8, "flow_wide": 12, "intraday": 12, "financial": 6, "small": 6}
+    return {"market": 18, "market_wide": 36, "flow": 14, "flow_wide": 24, "intraday": 24, "financial": 8, "small": 10}
 
 
 def _limit_nested_records(value: Any, limit: int = 40) -> Any:

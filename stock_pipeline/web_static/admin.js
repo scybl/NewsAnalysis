@@ -4,6 +4,10 @@ const createInviteBtn = document.querySelector("#createInviteBtn");
 const createDemoAccountBtn = document.querySelector("#createDemoAccountBtn");
 const createVipCodeBtn = document.querySelector("#createVipCodeBtn");
 const vipCodeDaysInput = document.querySelector("#vipCodeDaysInput");
+const systemDeepSeekInput = document.querySelector("#systemDeepSeekInput");
+const saveSystemDeepSeekBtn = document.querySelector("#saveSystemDeepSeekBtn");
+const deleteSystemDeepSeekBtn = document.querySelector("#deleteSystemDeepSeekBtn");
+const systemDeepSeekStatus = document.querySelector("#systemDeepSeekStatus");
 const adminSummary = document.querySelector("#adminSummary");
 const adminUsersTable = document.querySelector("#adminUsersTable");
 const adminInvitesTable = document.querySelector("#adminInvitesTable");
@@ -26,6 +30,8 @@ const spiderSourcesSelect = document.querySelector("#spiderSourcesSelect");
 const spiderSourceHint = document.querySelector("#spiderSourceHint");
 const spiderSourceTasks = document.querySelector("#spiderSourceTasks");
 const spiderTypesSelect = document.querySelector("#spiderTypesSelect");
+const spiderStockCodeField = document.querySelector("#spiderStockCodeField");
+const spiderStockCode = document.querySelector("#spiderStockCode");
 const spiderMaxPages = document.querySelector("#spiderMaxPages");
 const spiderThreads = document.querySelector("#spiderThreads");
 const spiderArticleSleep = document.querySelector("#spiderArticleSleep");
@@ -34,6 +40,15 @@ const spiderNewOnly = document.querySelector("#spiderNewOnly");
 const startSpiderBtn = document.querySelector("#startSpiderBtn");
 const stopSpiderBtn = document.querySelector("#stopSpiderBtn");
 const spiderLogs = document.querySelector("#spiderLogs");
+const dailyMarketStatus = document.querySelector("#dailyMarketStatus");
+const dailyMarketEnabled = document.querySelector("#dailyMarketEnabled");
+const dailyMarketTime = document.querySelector("#dailyMarketTime");
+const saveDailyMarketSchedulerBtn = document.querySelector("#saveDailyMarketSchedulerBtn");
+const runDailyMarketNowBtn = document.querySelector("#runDailyMarketNowBtn");
+const dailyMarketStockCount = document.querySelector("#dailyMarketStockCount");
+const dailyMarketLastDate = document.querySelector("#dailyMarketLastDate");
+const dailyMarketUpdated = document.querySelector("#dailyMarketUpdated");
+const dailyMarketSkipped = document.querySelector("#dailyMarketSkipped");
 
 let spiderPollTimer = null;
 
@@ -129,6 +144,49 @@ createVipCodeBtn?.addEventListener("click", async () => {
   }
 });
 
+saveSystemDeepSeekBtn?.addEventListener("click", async () => {
+  const token = systemDeepSeekInput?.value.trim() || "";
+  if (!token) {
+    adminSummary.textContent = "请先输入 DeepSeek key。";
+    return;
+  }
+  saveSystemDeepSeekBtn.disabled = true;
+  try {
+    const response = await fetch("/api/admin/system-api-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deepseek_api: token }),
+    });
+    await readApiPayload(response, "保存系统 DeepSeek key 失败");
+    if (systemDeepSeekInput) systemDeepSeekInput.value = "";
+    await loadAdminOverview();
+    adminSummary.textContent = "系统 DeepSeek key 已验证并锁定。";
+  } catch (error) {
+    adminSummary.textContent = `保存系统 DeepSeek key 失败：${error.message}`;
+  } finally {
+    saveSystemDeepSeekBtn.disabled = false;
+  }
+});
+
+deleteSystemDeepSeekBtn?.addEventListener("click", async () => {
+  if (!window.confirm("确定移除系统 DeepSeek key？系统/VIP 分析会暂停使用全局模型额度。")) return;
+  deleteSystemDeepSeekBtn.disabled = true;
+  try {
+    const response = await fetch("/api/admin/system-api-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "delete" }),
+    });
+    await readApiPayload(response, "移除系统 DeepSeek key 失败");
+    await loadAdminOverview();
+    adminSummary.textContent = "系统 DeepSeek key 已移除。";
+  } catch (error) {
+    adminSummary.textContent = `移除系统 DeepSeek key 失败：${error.message}`;
+  } finally {
+    deleteSystemDeepSeekBtn.disabled = false;
+  }
+});
+
 startSpiderBtn?.addEventListener("click", async () => {
   startSpiderBtn.disabled = true;
   let started = false;
@@ -146,6 +204,7 @@ startSpiderBtn?.addEventListener("click", async () => {
         article_sleep: spiderArticleSleep.value || "3,5",
         page_sleep: spiderPageSleep.value || "5,10",
         new_only: spiderNewOnly.checked,
+        stock_code: spiderStockCode?.value || "",
       }),
     });
     await readApiPayload(response, "启动爬虫失败");
@@ -175,6 +234,45 @@ stopSpiderBtn?.addEventListener("click", async () => {
   }
 });
 
+saveDailyMarketSchedulerBtn?.addEventListener("click", async () => {
+  saveDailyMarketSchedulerBtn.disabled = true;
+  try {
+    const response = await fetch("/api/admin/daily-market-scheduler", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "save",
+        enabled: !!dailyMarketEnabled?.checked,
+        time: dailyMarketTime?.value || "21:30",
+      }),
+    });
+    const payload = await readApiPayload(response, "保存每日行情定时失败");
+    renderDailyMarketScheduler(payload.scheduler || {});
+  } catch (error) {
+    if (dailyMarketStatus) dailyMarketStatus.textContent = `保存失败：${error.message}`;
+  } finally {
+    saveDailyMarketSchedulerBtn.disabled = false;
+  }
+});
+
+runDailyMarketNowBtn?.addEventListener("click", async () => {
+  runDailyMarketNowBtn.disabled = true;
+  try {
+    const response = await fetch("/api/admin/daily-market-scheduler", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "run_now" }),
+    });
+    const payload = await readApiPayload(response, "启动每日行情更新失败");
+    renderDailyMarketScheduler(payload.scheduler || {});
+    await loadAdminTasks();
+  } catch (error) {
+    if (dailyMarketStatus) dailyMarketStatus.textContent = `启动失败：${error.message}`;
+  } finally {
+    runDailyMarketNowBtn.disabled = false;
+  }
+});
+
 async function initializeAdminPage() {
   try {
     const response = await fetch("/api/session");
@@ -192,6 +290,7 @@ async function initializeAdminPage() {
       await refreshSpiderConsole();
       startSpiderPolling();
     }
+    if (dailyMarketStatus) await refreshDailyMarketScheduler();
   } catch {
     window.location.href = "/login";
   }
@@ -203,6 +302,7 @@ async function loadAdminOverview() {
     const response = await fetch("/api/admin/overview");
     const payload = await readApiPayload(response, "读取账户管理失败");
     const demo = payload.demo || {};
+    renderSystemApiKeys(payload.system_api_keys || {});
     const invites = payload.invites || [];
     const vipCodes = payload.vip_codes || [];
     const demoAccounts = payload.demo_accounts || [];
@@ -220,6 +320,15 @@ async function loadAdminOverview() {
   } catch (error) {
     adminSummary.textContent = `读取失败：${error.message}`;
   }
+}
+
+function renderSystemApiKeys(keys) {
+  if (!systemDeepSeekStatus) return;
+  const deepseek = keys.deepseek || {};
+  systemDeepSeekStatus.textContent = deepseek.configured
+    ? `已锁定${deepseek.updated_at ? ` · ${deepseek.updated_at}` : ""}`
+    : "未配置";
+  if (deleteSystemDeepSeekBtn) deleteSystemDeepSeekBtn.disabled = !deepseek.configured;
 }
 
 function renderAdminUsers(users) {
@@ -398,9 +507,39 @@ async function refreshSpiderConsole() {
     const logsPayload = await readApiPayload(logsResponse, "读取爬虫日志失败");
     spiderLogs.textContent = logsPayload.content || statusPayload.spider?.error || "暂无日志";
     if (spiderLogFile) spiderLogFile.textContent = logsPayload.log_file ? basename(logsPayload.log_file) : "暂无日志文件";
+    await refreshDailyMarketScheduler();
   } catch (error) {
     spiderStatus.textContent = `爬虫状态读取失败：${error.message}`;
   }
+}
+
+async function refreshDailyMarketScheduler() {
+  if (!dailyMarketStatus) return;
+  try {
+    const response = await fetch("/api/admin/daily-market-scheduler");
+    const payload = await readApiPayload(response, "读取每日行情定时失败");
+    renderDailyMarketScheduler(payload.scheduler || {});
+  } catch (error) {
+    dailyMarketStatus.textContent = `读取失败：${error.message}`;
+  }
+}
+
+function renderDailyMarketScheduler(scheduler) {
+  if (!dailyMarketStatus) return;
+  if (dailyMarketEnabled) dailyMarketEnabled.checked = !!scheduler.enabled;
+  if (dailyMarketTime) dailyMarketTime.value = scheduler.time || "21:30";
+  const last = scheduler.last_result || {};
+  const running = !!scheduler.running;
+  dailyMarketStatus.textContent = running
+    ? "运行中"
+    : scheduler.enabled
+      ? `已启用 · ${scheduler.time || "21:30"}`
+      : "未启用";
+  if (dailyMarketStockCount) dailyMarketStockCount.textContent = String(scheduler.stock_count ?? "-");
+  if (dailyMarketLastDate) dailyMarketLastDate.textContent = scheduler.last_run_date || "-";
+  if (dailyMarketUpdated) dailyMarketUpdated.textContent = String(last.updated ?? "-");
+  if (dailyMarketSkipped) dailyMarketSkipped.textContent = String(last.skipped ?? "-");
+  if (runDailyMarketNowBtn) runDailyMarketNowBtn.disabled = running;
 }
 
 function renderSpiderStatus(payload) {
@@ -412,10 +551,11 @@ function renderSpiderStatus(payload) {
   const selectedSpider = payload.spiders?.[selectedSource] || spider;
   const status = selectedSpider.status || "idle";
   const running = status === "running" || status === "stopping";
-  startSpiderBtn.disabled = running;
+  const sourceDisabled = !!spiderSourcesSelect?.querySelector("input[type='radio']:checked")?.disabled;
+  startSpiderBtn.disabled = running || sourceDisabled;
   stopSpiderBtn.disabled = !running;
   const sourceText = selectedSpider.source_label || sourceLabel(selectedSpider.source) || "-";
-  const typeText = Array.isArray(selectedSpider.types) && selectedSpider.types.length ? selectedSpider.types.join("、") : "-";
+  const typeText = selectedSpider.stock_code || (Array.isArray(selectedSpider.types) && selectedSpider.types.length ? selectedSpider.types.join("、") : "-");
   const modeText = "写入 MongoDB";
   const pages = selectedSpider.max_pages ? `${selectedSpider.max_pages} 页` : "-";
   const errorText = selectedSpider.error ? `；错误：${selectedSpider.error}` : "";
@@ -454,11 +594,11 @@ function renderSpiderSources(sources) {
   spiderSourcesSelect.innerHTML = sources
     .map(
       (source, index) => `
-        <label class="spider-source-option">
-          <input type="radio" name="spiderSource" value="${escapeHtml(source.id)}" ${index === 0 ? "checked" : ""} />
+        <label class="spider-source-option ${source.disabled ? "disabled" : ""}">
+          <input type="radio" name="spiderSource" value="${escapeHtml(source.id)}" ${index === 0 && !source.disabled ? "checked" : ""} ${source.disabled ? "disabled" : ""} />
           <span data-mark="${escapeHtml(sourceMark(source.id))}">
             <strong>${escapeHtml(source.name || source.id)}</strong>
-            <small>${escapeHtml(source.description || "")}</small>
+            <small>${escapeHtml(source.disabled ? source.disabled_reason || "暂时关闭" : source.description || "")}</small>
           </span>
         </label>
       `
@@ -473,29 +613,33 @@ function renderSpiderSources(sources) {
 function updateSpiderSourceControls() {
   const source = getSelectedSpiderSource();
   const isThs = source === "ths";
-  const isBloombergArticles = source === "bloomberg_articles";
+  const isThsMarket = source === "ths_market";
   const categoryField = spiderTypesSelect?.closest("label");
   if (categoryField) categoryField.hidden = !isThs;
   if (spiderThreads) spiderThreads.closest("label").hidden = !isThs;
   if (spiderPageSleep) spiderPageSleep.closest("label").hidden = !isThs;
   if (spiderNewOnly) spiderNewOnly.closest("label").hidden = !isThs;
+  if (spiderStockCodeField) spiderStockCodeField.hidden = !isThsMarket;
   if (spiderMaxPages) {
     const label = spiderMaxPages.closest("label")?.querySelector("span");
-    if (label) label.textContent = isBloombergArticles ? "批量篇数" : "页数";
-    spiderMaxPages.max = isBloombergArticles ? "50" : "50";
-    if (source === "bloomberg_urls") spiderMaxPages.closest("label").hidden = true;
+    if (label) label.textContent = "页数";
+    spiderMaxPages.max = "50";
+    if (source === "bloomberg_urls" || isThsMarket) spiderMaxPages.closest("label").hidden = true;
     else spiderMaxPages.closest("label").hidden = false;
   }
   if (spiderArticleSleep) {
     const label = spiderArticleSleep.closest("label")?.querySelector("span");
-    if (label) label.textContent = isBloombergArticles ? "文章延迟秒" : "文章间隔";
-    spiderArticleSleep.closest("label").hidden = source === "guardian" || source === "bloomberg_urls";
+    if (label) label.textContent = "文章间隔";
+    spiderArticleSleep.closest("label").hidden = source === "guardian" || source === "bloomberg_urls" || isThsMarket;
   }
+  const disabled = !!spiderSourcesSelect?.querySelector("input[type='radio']:checked")?.disabled;
+  if (startSpiderBtn) startSpiderBtn.disabled = disabled;
   const hints = {
     ths: "多分类 · 增量 · MongoDB",
+    ths_market: "指定股票 · 分钟行情 · MongoDB + 本地资料包",
     guardian: "API · 页数范围 · MongoDB",
-    bloomberg_urls: "URL 队列 · 默认 25 条",
-    bloomberg_articles: "正文队列 · Chrome 登录态",
+    bloomberg_urls: "暂时关闭 · 等待稳定性优化",
+    bloomberg_articles: "暂时关闭 · 等待稳定性优化",
   };
   if (spiderSourceHint) spiderSourceHint.textContent = hints[source] || "";
 }
@@ -537,6 +681,7 @@ function renderSpiderTypes(types) {
 function sourceLabel(source) {
   const labels = {
     ths: "同花顺",
+    ths_market: "分钟行情",
     guardian: "Guardian",
     bloomberg_urls: "Bloomberg URL",
     bloomberg_articles: "Bloomberg 正文",
@@ -547,6 +692,7 @@ function sourceLabel(source) {
 function sourceHint(source) {
   const hints = {
     ths: "同花顺分类新闻",
+    ths_market: "指定股票行情补抓",
     guardian: "Guardian API",
     bloomberg_urls: "URL 队列",
     bloomberg_articles: "正文队列",
@@ -562,6 +708,7 @@ function cssEscape(value) {
 function sourceMark(source) {
   const marks = {
     ths: "TH",
+    ths_market: "HQ",
     guardian: "GD",
     bloomberg_urls: "BU",
     bloomberg_articles: "BA",
@@ -576,14 +723,24 @@ async function readApiPayload(response, fallbackMessage) {
     try {
       payload = JSON.parse(text);
     } catch {
-      if (!response.ok) throw new Error(text);
-      throw new Error(text || fallbackMessage);
+      throw new Error(formatNonJsonApiError(text, fallbackMessage, response.status));
     }
   }
   if (!response.ok || payload.ok === false) {
     throw new Error(payload.error || payload.message || text || fallbackMessage);
   }
   return payload;
+}
+
+function formatNonJsonApiError(text, fallbackMessage, status) {
+  const raw = String(text || "").trim();
+  if (/<!doctype html|<html[\s>]/i.test(raw)) {
+    if (status === 404 || /Error code:\s*404/i.test(raw)) {
+      return `${fallbackMessage}：本地后端没有加载这个接口，请重启 Web 服务后刷新页面。`;
+    }
+    return `${fallbackMessage}：后端返回了 HTML 错误页，请检查服务是否仍在登录态并已重启到最新版本。`;
+  }
+  return raw || fallbackMessage;
 }
 
 function inviteStatusLabel(status) {

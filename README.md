@@ -16,7 +16,8 @@ python3 -m venv .venv
 
 ```bash
 TUSHARE_API=你的TushareToken
-DEEPSEEK_API=你的DeepSeekKey
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
 STOCK_WEB_USER=admin
 STOCK_WEB_PASSWORD=请换成强密码
 STOCK_WEB_SESSION_SECRET=一段随机字符串
@@ -36,7 +37,7 @@ MONGODB_DATABASE=news
 MONGODB_COLLECTION=articles
 ```
 
-也兼容 `TUSHARE_TOKEN` 和 `DEEPSEEK_API_KEY`。
+也兼容 `TUSHARE_TOKEN`。DeepSeek key 不再放入 `.env`，请用管理员账号进入“账户管理”页，在“系统模型 Key”中验证并锁定。该 key 会使用 `STOCK_WEB_KEY_ENCRYPTION_SECRET` 加密保存；这个 secret 必须长期固定，变更后已保存的 key 将无法解密。
 
 运行一次完整分析：
 
@@ -70,7 +71,7 @@ scripts/run_web.sh
 
 注册功能只接受管理员后台生成的邀请码。管理员登录后可在“管理”面板生成 6 位数字邀请码，默认 3 天有效，成功注册后会被标记为已使用，不能再次注册。`STOCK_WEB_INVITE_CODES` 只作为可选启动种子，不建议日常使用。朋友测试账号也在管理员面板生成，默认每 24 小时最多 30 次 API 请求，可用 `STOCK_WEB_DEMO_REQUEST_LIMIT` 和 `STOCK_WEB_DEMO_WINDOW_SECONDS` 调整新生成测试账号的默认额度。
 
-管理员后台分为账户管理和爬虫控制。账户管理可查看用户用量、生成邀请码、生成 VIP 兑换码、发放/撤销用户 VIP、禁用/启用用户、重置测试账号额度，并查看后台任务和权限操作审计日志。禁用用户会立即移除该用户当前会话。
+管理员后台分为账户管理和爬虫控制。账户管理可查看用户用量、配置系统 DeepSeek key、生成邀请码、生成 VIP 兑换码、发放/撤销用户 VIP、禁用/启用用户、重置测试账号额度，并查看后台任务和权限操作审计日志。禁用用户会立即移除该用户当前会话。
 
 股票数据按股票代码共享保存到 `local_data/{ts_code}`，不是按用户隔离。`STOCK_DATA_CACHE_TTL_SECONDS` 控制共享缓存有效期，默认 24 小时内同一只股票不会重复调用 Tushare 更新。`STOCK_ANALYSIS_REUSE_TTL_SECONDS` 控制近期 DeepSeek / 多 Agent 分析结果的复用窗口，默认 30 分钟。`STOCK_ANALYSIS_HISTORY_REVIEW_LIMIT` 控制 LLM 分析时纳入最近几份历史分析做复盘，默认 3 份。
 
@@ -131,13 +132,17 @@ cp .env.deploy.sample .env
 
 ```bash
 TUSHARE_API=...
-DEEPSEEK_API=...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
 STOCK_WEB_PASSWORD=...
 STOCK_WEB_SESSION_SECRET=...
+STOCK_WEB_KEY_ENCRYPTION_SECRET=...
 MONGO_PASSWORD=...
 GUARDIAN_API_KEY=...
 PUBLIC_WEB_PORT=8765
 ```
+
+部署完成后，用管理员账号登录后台，在“账户管理 / 系统模型 Key”里录入 DeepSeek key。
 
 从本机一键同步并部署到服务器：
 

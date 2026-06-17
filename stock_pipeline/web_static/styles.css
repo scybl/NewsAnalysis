@@ -1711,12 +1711,19 @@ body:has(.admin-shell) {
 
 .inline-admin-form {
   display: grid;
-  grid-template-columns: minmax(130px, 1fr) auto;
+  grid-template-columns: minmax(130px, 1fr) auto auto;
   gap: 10px;
   align-items: end;
   border-bottom: 1px solid #eef1f5;
   padding: 12px 14px;
   background: #fbfcfd;
+}
+
+.admin-muted {
+  margin: 10px 14px 14px;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .inline-admin-form label {
@@ -2016,6 +2023,20 @@ body:has(.admin-shell) {
 .spider-source-option:hover span {
   border-color: #98a8bd;
   background: #f4f7fb;
+}
+
+.spider-source-option.disabled {
+  cursor: not-allowed;
+}
+
+.spider-source-option.disabled span {
+  opacity: 0.56;
+  background: #f2f4f7;
+}
+
+.spider-source-option.disabled:hover span {
+  border-color: #d7deea;
+  background: #f2f4f7;
 }
 
 .spider-source-option input:checked + span {
@@ -2666,6 +2687,13 @@ html.theme-dark .spider-source-option span::before {
 html.theme-dark .spider-source-option:hover span {
   background: #182231;
   border-color: #516176;
+}
+
+html.theme-dark .spider-source-option.disabled span,
+html.theme-dark .spider-source-option.disabled:hover span {
+  background: #121923;
+  border-color: #293445;
+  opacity: 0.54;
 }
 
 html.theme-dark .spider-source-option input:checked + span {

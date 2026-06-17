@@ -1,0 +1,51 @@
+[
+  {
+    "schema_version": "news.v1",
+    "publisher": "The Guardian",
+    "source_name": "guardian",
+    "type": "Sport",
+    "section": "Sport",
+    "url": "https://www.theguardian.com/sport/2026/jun/16/england-ireland-womens-t20-world-cup-cricket-match-report",
+    "canonical_url": "https://theguardian.com/sport/2026/jun/16/england-ireland-womens-t20-world-cup-cricket-match-report",
+    "title": "England survive wobble to see off Ireland but have Sciver-Brunt injury concern",
+    "headline": "England survive wobble to see off Ireland but have Sciver-Brunt injury concern",
+    "summary": "England survived a wobble against Ireland recovering from 35 for three to chase down 119 with 15 balls remaining to win by four wickets",
+    "content": "England survived a wobble against Ireland on Tuesday at Southampton, recovering from 35 for three to chase down 119 with 15 balls remaining and four wickets to spare, and keep their World Cup campaign on track. England, though, will be sweating on the fitness of their captain Nat Sciver-Brunt, who top-scored with 48 but was forced to retire hurt with nine runs still needed, after apparently suffering a recurrence of the calf injury she has struggled with all summer. She will be assessed by medics ahead of England’s next match against Scotland at Headingley on Saturday. This should have been a walk in the park for England, but the temptation to chase down the runs quickly and elevate an already-healthy net run rate seemingly proved too great. Ireland have two world-class players in their ranks, captain Gaby Lewis and her vice-captain Orla Prendergast: England’s top order took them on and came out on the wrong side. Firstly, Lewis held onto two catches at extra cover in the fifth over, sending Amy Jones and Friday’s centurion Danni Wyatt-Hodge packing. The second was routine but the first, taken over her shoulder tracking backwards, was a moment of magic for a team who badly needed one. Minutes later, Prendergast yorked Alice Capsey, further jangling English nerves. As so often, it was left to the wise old heads of Sciver-Brunt and Heather Knight to take a breath and bring some calm in a partnership worth 64 from 49 balls. Bazball it certainly was not, but it got the job done, helped along by a procession of Irish bowlers whose name was not Prendergast. By the time the right-armer returned in the 14th over, trapping Knight leg-before, England needed just 20 from 37. Though Sciver-Brunt retired hurt and Freya Kemp was run out in the dying minutes of the game, Charlie Dean stroked one through the covers for four and Alice Tector finished things off in anti-climactic fashion in the 18th over with a leg-side wide. The match had begun an hour late due to rain, shaping Sciver-Brunt’s decision to bowl first in overcast conditions. Lauren Bell and Linsey Smith have opened the bowling here many a time for Southern Vipers and Hampshire, though it perhaps felt slightly different to have a crowd of over 9,000 cheering their wickets this time. Dean, formerly of this parish, chimed in with a wicket maiden in the powerplay, finishing with two for 11 – her best ever showing in a World Cup. And Sophie Ecclestone, who had looked off-colour on Friday, was punished for 13 runs from her first over but counter-punched with three wickets. Last September, Lewis hit a hundred at this very ground for Lancashire in the One-Day Cup final, finishing the day by holding the trophy aloft. But any hopes of a repeat performance here were dashed when she ramped her first ball into the hands of short backward square and departed for a duck. Meanwhile Prendergast smoked four beautiful boundaries, only to chop a nothing ball from Dani Gibson onto her own stumps. That left Ireland 57 for five at the halfway stage, struggling to even reach three figures, at least until No 8 Louise Little answered Ireland’s call with a cameo of 26 not out from 15 balls – her highest score for Ireland. Little missed out on selection for Saturday’s match against Scotland, and was only playing in this match because Ava Canning has been sent for a precautionary scan on her lower back. But the 23-year-old added a touch of swagger to the Ireland innings when she dispatched Bell’s 20th over for 17 runs – albeit aided by a misfield from Linsey Smith on the boundary rope. There was a certain irony in the fact that Sri Lanka – who England absolutely thumped in Friday’s tournament opener – had earlier masterminded a much higher run-chase of 151 against New Zealand on this same pitch. The shock result leaves the reigning champions on the brink of elimination, with two losses from two matches. It also throws Group B wide open. The winner of Thursday’s match between Scotland and West Indies will be in pole position to progress to the knockout stages alongside leaders England.",
+    "time": "2026-06-16 22:05:44",
+    "published_at": "2026-06-16T22:05:44Z",
+    "source": "Sport",
+    "author": "Raf Nicholson at the Utilita Bowl",
+    "language": "en",
+    "tags": [
+      "Women's T20 World Cup 2026",
+      "England women's cricket team",
+      "Ireland women's cricket team",
+      "Women's T20 World Cup",
+      "Women's cricket",
+      "Cricket",
+      "Sport"
+    ],
+    "entities": {
+      "persons": [],
+      "organizations": [],
+      "locations": []
+    },
+    "document": {
+      "title": "England survive wobble to see off Ireland but have Sciver-Brunt injury concern",
+      "content": [
+        {
+          "subtitle": "Paragraph 1",
+          "text": "England survived a wobble against Ireland on Tuesday at Southampton, recovering from 35 for three to chase down 119 with 15 balls remaining and four wickets to spare, and keep their World Cup campaign on track. England, though, will be sweating on the fitness of their captain Nat Sciver-Brunt, who top-scored with 48 but was forced to retire hurt with nine runs still needed, after apparently suffering a recurrence of the calf injury she has struggled with all summer. She will be assessed by medics ahead of England’s next match against Scotland at Headingley on Saturday. This should have been a walk in the park for England, but the temptation to chase down the runs quickly and elevate an already-healthy net run rate seemingly proved too great. Ireland have two world-class players in their ranks, captain Gaby Lewis and her vice-captain Orla Prendergast: England’s top order took them on and came out on the wrong side. Firstly, Lewis held onto two catches at extra cover in the fifth over, sending Amy Jones and Friday’s centurion Danni Wyatt-Hodge packing. The second was routine but the first, taken over her shoulder tracking backwards, was a moment of magic for a team who badly needed one. Minutes later, Prendergast yorked Alice Capsey, further jangling English nerves. As so often, it was left to the wise old heads of Sciver-Brunt and Heather Knight to take a breath and bring some calm in a partnership worth 64 from 49 balls. Bazball it certainly was not, but it got the job done, helped along by a procession of Irish bowlers whose name was not Prendergast. By the time the right-armer returned in the 14th over, trapping Knight leg-before, England needed just 20 from 37. Though Sciver-Brunt retired hurt and Freya Kemp was run out in the dying minutes of the game, Charlie Dean stroked one through the covers for four and Alice Tector finished things off in anti-climactic fashion in the 18th over with a leg-side wide. The match had begun an hour late due to rain, shaping Sciver-Brunt’s decision to bowl first in overcast conditions. Lauren Bell and Linsey Smith have opened the bowling here many a time for Southern Vipers and Hampshire, though it perhaps felt slightly different to have a crowd of over 9,000 cheering their wickets this time. Dean, formerly of this parish, chimed in with a wicket maiden in the powerplay, finishing with two for 11 – her best ever showing in a World Cup. And Sophie Ecclestone, who had looked off-colour on Friday, was punished for 13 runs from her first over but counter-punched with three wickets. Last September, Lewis hit a hundred at this very ground for Lancashire in the One-Day Cup final, finishing the day by holding the trophy aloft. But any hopes of a repeat performance here were dashed when she ramped her first ball into the hands of short backward square and departed for a duck. Meanwhile Prendergast smoked four beautiful boundaries, only to chop a nothing ball from Dani Gibson onto her own stumps. That left Ireland 57 for five at the halfway stage, struggling to even reach three figures, at least until No 8 Louise Little answered Ireland’s call with a cameo of 26 not out from 15 balls – her highest score for Ireland. Little missed out on selection for Saturday’s match against Scotland, and was only playing in this match because Ava Canning has been sent for a precautionary scan on her lower back. But the 23-year-old added a touch of swagger to the Ireland innings when she dispatched Bell’s 20th over for 17 runs – albeit aided by a misfield from Linsey Smith on the boundary rope. There was a certain irony in the fact that Sri Lanka – who England absolutely thumped in Friday’s tournament opener – had earlier masterminded a much higher run-chase of 151 against New Zealand on this same pitch. The shock result leaves the reigning champions on the brink of elimination, with two losses from two matches. It also throws Group B wide open. The winner of Thursday’s match between Scotland and West Indies will be in pole position to progress to the knockout stages alongside leaders England."
+        }
+      ],
+      "raw_html": ""
+    },
+    "crawler_meta": {
+      "status_code": 200,
+      "response_time_ms": 0,
+      "raw_html_length": 0,
+      "hash": "4d606410aea1588553875432fd40da98"
+    },
+    "content_hash": "1e6f39f34611d076698cbabd35030f5d9161ea44d1bd337a1452e0484ba299cb",
+    "title_time_hash": "9da274b02deba6b66a3fef6802a365ba06fb8cfcbdd146b930e09dc9309dbfc9",
+    "created_at": 

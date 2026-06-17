@@ -82,6 +82,21 @@
             </section>
             <section class="admin-card">
               <div class="admin-card-head">
+                <h4>系统模型 Key</h4>
+                <span id="systemDeepSeekStatus">未配置</span>
+              </div>
+              <div class="inline-admin-form">
+                <label>
+                  <span>DeepSeek Key</span>
+                  <input id="systemDeepSeekInput" type="password" autocomplete="off" placeholder="输入后验证并锁定" />
+                </label>
+                <button id="saveSystemDeepSeekBtn" type="button">验证并锁定</button>
+                <button id="deleteSystemDeepSeekBtn" type="button">移除</button>
+              </div>
+              <p class="admin-muted">系统/VIP/测试账号使用这里保存的 DeepSeek key；保存后不回显明文。</p>
+            </section>
+            <section class="admin-card">
+              <div class="admin-card-head">
                 <h4>后台任务</h4>
                 <span>爬虫与多 Agent 分析</span>
               </div>

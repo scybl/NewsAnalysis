@@ -17,6 +17,10 @@ def build_dossier(full_data: dict[str, Any]) -> dict[str, Any]:
     indicators = sorted_records(datasets.get("fina_indicator", []), ("end_date", "ann_date"))
     industry = datasets.get("index_member_all", [])
     announcements = _filter_announcements(sorted_records(datasets.get("anns_d", []), ("ann_date",)))
+    intraday_minutes = sorted_records(
+        datasets.get("tdx_intraday_minutes", []) or datasets.get("ths_intraday_minutes", []),
+        ("datetime", "minute", "trade_date"),
+    )
 
     compact = {
         "ts_code": full_data["ts_code"],
@@ -36,6 +40,8 @@ def build_dossier(full_data: dict[str, Any]) -> dict[str, Any]:
             "weekly_recent": limit_records(sorted_records(datasets.get("weekly", []), ("trade_date",)), 52, ["trade_date", "open", "high", "low", "close", "pct_chg", "vol", "amount"]),
             "monthly_recent": limit_records(sorted_records(datasets.get("monthly", []), ("trade_date",)), 36, ["trade_date", "open", "high", "low", "close", "pct_chg", "vol", "amount"]),
             "moneyflow_recent": limit_records(sorted_records(datasets.get("moneyflow", []), ("trade_date",)), 60, ["trade_date", "buy_sm_amount", "sell_sm_amount", "buy_md_amount", "sell_md_amount", "buy_lg_amount", "sell_lg_amount", "buy_elg_amount", "sell_elg_amount", "net_mf_amount"]),
+            "ths_intraday_snapshot": _ths_intraday_snapshot(intraday_minutes),
+            "ths_intraday_recent": limit_records(intraday_minutes, 80, ["trade_date", "minute", "open", "high", "low", "close", "price", "avg_price", "volume", "amount", "pre_close", "source", "fetched_at"]),
             "margin_recent": limit_records(sorted_records(datasets.get("margin_detail", []), ("trade_date",)), 60, ["trade_date", "rzye", "rqye", "rzmre", "rqmcl", "rzche", "rqchl", "rzrqye"]),
             "limit_recent": limit_records(sorted_records(datasets.get("stk_limit", []), ("trade_date",)), 40, ["trade_date", "up_limit", "down_limit"]),
             "suspend_recent": limit_records(sorted_records(datasets.get("suspend_d", []), DATE_FIELDS), 40),
@@ -116,6 +122,32 @@ def _technical_snapshot(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 max_drawdown = min(max_drawdown, price / peak - 1)
         snapshot["max_drawdown_pct_recent"] = round(max_drawdown * 100, 2)
     return snapshot
+
+
+def _ths_intraday_snapshot(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {}
+    latest = rows[0]
+    first = rows[-1]
+    latest_price = _to_float(latest.get("price") if latest.get("price") is not None else latest.get("close"))
+    first_price = _to_float(first.get("price") if first.get("price") is not None else first.get("open") if first.get("open") is not None else first.get("close"))
+    pre_close = _to_float(latest.get("pre_close"))
+    prices = [_to_float(row.get("price") if row.get("price") is not None else row.get("close")) for row in rows if _to_float(row.get("price") if row.get("price") is not None else row.get("close")) is not None]
+    volumes = [_to_float(row.get("volume")) for row in rows if _to_float(row.get("volume")) is not None]
+    amounts = [_to_float(row.get("amount")) for row in rows if _to_float(row.get("amount")) is not None]
+    return {
+        "trade_date": latest.get("trade_date"),
+        "latest_minute": latest.get("minute"),
+        "latest_price": latest_price,
+        "change_from_open_pct": round((latest_price / first_price - 1) * 100, 2) if latest_price is not None and first_price else None,
+        "change_from_pre_close_pct": round((latest_price / pre_close - 1) * 100, 2) if latest_price is not None and pre_close else None,
+        "intraday_high": max(prices) if prices else None,
+        "intraday_low": min(prices) if prices else None,
+        "total_volume": round(sum(volumes), 2) if volumes else None,
+        "total_amount": round(sum(amounts), 2) if amounts else None,
+        "rows": len(rows),
+        "source": latest.get("source") or "unknown",
+    }
 
 
 def _financial_trends(income: list[dict[str, Any]], indicators: list[dict[str, Any]]) -> dict[str, Any]:

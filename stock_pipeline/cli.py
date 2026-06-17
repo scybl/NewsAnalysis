@@ -11,6 +11,8 @@ from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
 from .news.crawler import CATEGORIES, CrawlOptions, crawl_news, parse_sleep
 from .news.storage import Mysql, search_news
+from .ths_minute import build_config as build_ths_minute_config
+from .ths_minute import fetch_and_store_minutes
 from .tushare_client import TushareClient
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 from .value_speculation import VALUE_SPECULATION_QUESTION, build_value_speculation_dossier
@@ -67,6 +69,18 @@ def main() -> None:
     news_search_parser.add_argument("terms", nargs="+", help="检索关键词，多个关键词按 OR 匹配")
     news_search_parser.add_argument("--limit", type=int, default=20, help="最多返回条数")
 
+    market_parser = subparsers.add_parser("market", help="行情补充数据抓取")
+    market_subparsers = market_parser.add_subparsers(dest="market_command", required=True)
+    ths_minute_parser = market_subparsers.add_parser("ths-minute", help="抓取指定股票分钟行情到 MongoDB；默认使用通达信/mootdx")
+    ths_minute_parser.add_argument("--codes", required=True, help="股票代码，逗号分隔，例如 000001,300033 或 000001.SZ,300033.SZ")
+    ths_minute_parser.add_argument("--source", choices=["tdx", "ths", "auto"], default="tdx", help="分钟行情源：tdx 为通达信历史分钟 K；ths 为同花顺最新日分时；auto 先 tdx 后 ths")
+    ths_minute_parser.add_argument("--pages", default="all", help="tdx 分页数量；all 表示一直翻到数据源返回空页")
+    ths_minute_parser.add_argument("--page-size", type=int, default=800, help="tdx 单页数量，最大 800")
+    ths_minute_parser.add_argument("--mongo-db", default=None, help="MongoDB 数据库名，默认 MARKET_MINUTE_DATABASE 或 stock_market")
+    ths_minute_parser.add_argument("--collection", default=None, help="MongoDB 集合名，默认 MARKET_MINUTE_COLLECTION 或 tdx_intraday_minutes")
+    ths_minute_parser.add_argument("--sleep", type=parse_sleep, default=(0.8, 1.8), help="股票之间请求间隔，格式: min,max")
+    ths_minute_parser.add_argument("--timeout", type=float, default=12.0, help="单次请求超时秒数")
+
     args = parser.parse_args()
     if args.command == "collect":
         run_collect(args)
@@ -80,6 +94,8 @@ def main() -> None:
         serve_web(args.host, args.port)
     elif args.command == "news":
         run_news(args)
+    elif args.command == "market":
+        run_market(args)
 
 
 def _add_collect_args(parser: argparse.ArgumentParser) -> None:
@@ -93,7 +109,9 @@ def run_collect(args: argparse.Namespace) -> Path:
     settings = get_settings(require_deepseek=False)
     ts_code = normalize_ts_code(args.code)
     output_dir = ensure_dir(Path(args.output_dir) / f"{ts_code}_{timestamp()}")
-    collector = StockDataCollector(TushareClient(settings.tushare_token, settings.tushare_base_url))
+    collector = StockDataCollector(
+        TushareClient(settings.tushare_token, settings.tushare_base_url, pause=settings.tushare_pause_seconds)
+    )
     print(f"开始采集 {ts_code}，输出目录：{output_dir}")
     full_data = collector.collect(ts_code, output_dir, years=args.years, full_history=args.full_history or args.years is None)
     dossier = build_dossier(full_data)
@@ -206,3 +224,22 @@ def run_news(args: argparse.Namespace) -> None:
             print(f"{row.get('time')} [{row.get('type')}] {row.get('title')}")
             if row.get("url"):
                 print(f"  {row.get('url')}")
+
+
+def run_market(args: argparse.Namespace) -> None:
+    if args.market_command == "ths-minute":
+        codes = [item.strip() for item in args.codes.split(",") if item.strip()]
+        if not codes:
+            raise ValueError("请通过 --codes 传入至少一个股票代码。")
+        config = build_ths_minute_config(database=args.mongo_db, collection=args.collection, timeout=args.timeout)
+        result = fetch_and_store_minutes(codes, config=config, sleep_range=args.sleep, source=args.source, pages=args.pages, page_size=args.page_size)
+        print(f"分钟行情抓取完成：{result['database']}.{result['collection']} source={result.get('source')}")
+        for item in result["results"]:
+            if item.get("ok"):
+                print(
+                    f"  {item['ts_code']} {item.get('name') or ''} "
+                    f"{item.get('date_range', {}).get('start') or item.get('trade_date')}..{item.get('date_range', {}).get('end') or item.get('trade_date')} "
+                    f"dataset={item.get('dataset')} rows={item['rows']} inserted={item['inserted']} updated={item['updated']}"
+                )
+            else:
+                print(f"  {item['ts_code']}: 失败：{item.get('error')}")

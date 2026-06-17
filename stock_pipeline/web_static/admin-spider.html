@@ -79,6 +79,10 @@
                   <span>分类</span>
                   <div id="spiderTypesSelect" class="spider-type-grid"></div>
                 </label>
+                <label class="field-wide" id="spiderStockCodeField" hidden>
+                  <span>股票代码</span>
+                  <input id="spiderStockCode" placeholder="例如 000001 或 000001.SZ" />
+                </label>
                 <label>
                   <span>页数</span>
                   <input id="spiderMaxPages" type="number" min="1" max="50" value="1" />
@@ -115,6 +119,32 @@
                 <div><span>页数</span><strong id="spiderPagesText">-</strong></div>
               </div>
             </section>
+            <section class="admin-card daily-market-card">
+              <div class="admin-card-head">
+                <h4>每日行情</h4>
+                <span id="dailyMarketStatus">未启用</span>
+              </div>
+              <div class="spider-form">
+                <label class="field-wide check-row">
+                  <input id="dailyMarketEnabled" type="checkbox" />
+                  <span>每日自动更新已有股票</span>
+                </label>
+                <label>
+                  <span>北京时间</span>
+                  <input id="dailyMarketTime" type="time" value="21:30" />
+                </label>
+                <div class="admin-actions field-wide">
+                  <button id="saveDailyMarketSchedulerBtn" type="button">保存定时</button>
+                  <button id="runDailyMarketNowBtn" type="button">立即执行</button>
+                </div>
+              </div>
+              <div class="spider-state-grid">
+                <div><span>股票数</span><strong id="dailyMarketStockCount">-</strong></div>
+                <div><span>上次日期</span><strong id="dailyMarketLastDate">-</strong></div>
+                <div><span>更新</span><strong id="dailyMarketUpdated">-</strong></div>
+                <div><span>跳过</span><strong id="dailyMarketSkipped">-</strong></div>
+              </div>
+            </section>
             <section class="admin-card spider-log-card">
               <div class="admin-card-head">
                 <h4>运行日志</h4>
@@ -126,6 +156,6 @@
         </section>
       </section>
     </main>
-    <script src="/admin.js?v=admin-unified-20260616-v1"></script>
+    <script src="/admin.js?v=daily-market-20260617"></script>
   </body>
 </html>

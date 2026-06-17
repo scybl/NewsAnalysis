@@ -49,6 +49,13 @@ import logging
 import signal
 import sys
 
+try:
+    import pychrome
+    HAS_PYCHROME = True
+except ImportError:
+    pychrome = None
+    HAS_PYCHROME = False
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '../../../../.env'))
 
 SPIDER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
@@ -88,11 +95,6 @@ class BloombergURLFetcher:
         # 使用环境变量配置端口，默认9225（避开finalarticle的9222）
         self.chrome_debug_port = int(os.getenv('CHROME_DEBUG_PORT', '9225'))
         
-        # 本地数据目录与URL存储文件
-        self.data_dir = 'data'
-        os.makedirs(self.data_dir, exist_ok=True)
-        self.master_urls_file = os.path.join(self.data_dir, 'bloomberg_all_urls.json')
-        
         # 创建logs目录
         self.logs_dir = 'logs'
         os.makedirs(self.logs_dir, exist_ok=True)
@@ -115,27 +117,6 @@ class BloombergURLFetcher:
         logging.info(f"日志文件: {self.log_file}")
         
         self.init_mongodb_connection()
-        self.init_local_urls_file()
-    
-    def init_local_urls_file(self):
-        """初始化本地URL存储文件"""
-        if not os.path.exists(self.master_urls_file):
-            data = {
-                "metadata": {
-                    "created_date": datetime.now().isoformat() + 'Z',
-                    "total_urls": 0,
-                    "last_updated": datetime.now().isoformat() + 'Z',
-                    "source": "Bloomberg /news/articles/"
-                },
-                "urls": []
-            }
-            with open(self.master_urls_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            print(f"[INFO] 初始化本地URL文件: {self.master_urls_file}")
-            logging.info(f"初始化本地URL文件: {self.master_urls_file}")
-        else:
-            print(f"[INFO] 本地URL文件已存在: {self.master_urls_file}")
-            logging.info(f"本地URL文件已存在: {self.master_urls_file}")
     
     def rename_log_file_with_warning(self):
         """重命名日志文件，在前面加上warning前缀"""
@@ -163,6 +144,8 @@ class BloombergURLFetcher:
     def find_chrome_path(self):
         """查找 Chrome 可执行文件路径"""
         possible_paths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             os.path.expanduser(r"~\AppData\Local\Google\Chrome\Application\chrome.exe"),
@@ -228,10 +211,12 @@ class BloombergURLFetcher:
             tabs = browser.list_tab()
             
             if not tabs:
-                print("[ERROR] 没有找到标签页")
-                return [], {}
+                print("[WARNING] 没有找到标签页，正在打开Bloomberg latest页面...")
+                tab = browser.new_tab("https://www.bloomberg.com/latest")
+                time.sleep(5)
+            else:
+                tab = tabs[0]
             
-            tab = tabs[0]
             tab.start()
             tab.call_method("Network.enable")
             result = tab.call_method("Network.getAllCookies")
@@ -484,10 +469,12 @@ class BloombergURLFetcher:
             tabs = browser.list_tab()
             
             if not tabs:
-                print(f"[ERROR] {self.chrome_debug_port}端口没有找到标签页")
-                return [], {}
+                print(f"[WARNING] {self.chrome_debug_port}端口没有找到标签页，正在打开Bloomberg latest页面...")
+                tab = browser.new_tab("https://www.bloomberg.com/latest")
+                time.sleep(5)
+            else:
+                tab = tabs[0]
             
-            tab = tabs[0]
             tab.start()
             tab.call_method("Network.enable")
             result = tab.call_method("Network.getAllCookies")
@@ -1110,170 +1097,69 @@ class BloombergURLFetcher:
             return []
     
     def save_urls_to_mongodb(self, urls: List[str]) -> int:
-        """批量保存URL到MongoDB和本地文件"""
+        """批量保存URL到MongoDB URL队列。"""
         if not urls:
             return 0
         
         print(f"\n[INFO] 开始处理 {len(urls)} 个URL...")
         logging.info(f"开始处理 {len(urls)} 个URL")
         
-        # 1. 从MongoDB查询所有历史URL（全量）
+        # MongoDB 是正式数据源；本地 JSON 只作为旧版本兼容，不再读写。
         mongodb_all_urls = set()
         if self.collection is not None:
             cursor = self.collection.find(
-                {},  # ✅ 查询所有URL，不加过滤
+                {},
                 {'url': 1, '_id': 0}
             )
             mongodb_all_urls = {doc['url'] for doc in cursor}
-            print(f"[INFO] 服务器全量历史: {len(mongodb_all_urls)} 个")
-            logging.info(f"服务器全量历史: {len(mongodb_all_urls)} 个")
-        
-        # 2. 从本地文件读取所有历史URL（全量）
-        local_all_urls = set()
-        try:
-            with open(self.master_urls_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                local_all_urls = set(data.get('urls', []))
-            print(f"[INFO] 本地全量历史: {len(local_all_urls)} 个")
-            logging.info(f"本地全量历史: {len(local_all_urls)} 个")
-        except Exception as e:
-            print(f"[WARNING] 读取本地文件失败: {e}")
-            logging.warning(f"读取本地文件失败: {e}")
-        
-        # 3. 全量对比服务器和本地，检查差异
-        only_in_mongodb = mongodb_all_urls - local_all_urls
-        only_in_local = local_all_urls - mongodb_all_urls
-        
-        has_url_mismatch = False
-        if only_in_mongodb:
-            has_url_mismatch = True
-            print(f"[WARNING] 服务器有但本地没有: {len(only_in_mongodb)} 个")
-            logging.warning(f"服务器有但本地没有: {len(only_in_mongodb)} 个")
-            for url in list(only_in_mongodb)[:3]:  # 只显示前3个
-                logging.warning(f"  服务器独有: {url}")
-        
-        if only_in_local:
-            has_url_mismatch = True
-            print(f"[WARNING] 本地有但服务器没有: {len(only_in_local)} 个")
-            logging.warning(f"本地有但服务器没有: {len(only_in_local)} 个")
-            for url in list(only_in_local)[:3]:  # 只显示前3个
-                logging.warning(f"  本地独有: {url}")
-        
-        # 如果检测到URL不一致，重命名日志文件
-        if has_url_mismatch:
-            self.rename_log_file_with_warning()
-        
-        # 4. 各自查重各塞各的（跟各自的全量历史比）
+            print(f"[INFO] MongoDB URL历史: {len(mongodb_all_urls)} 个")
+            logging.info(f"MongoDB URL历史: {len(mongodb_all_urls)} 个")
+
         mongodb_all_canonical_urls = {canonicalize_url(url) for url in mongodb_all_urls}
         mongodb_new_urls = [url for url in urls if url not in mongodb_all_urls and canonicalize_url(url) not in mongodb_all_canonical_urls]
-        local_new_urls = [url for url in urls if url not in local_all_urls]
         
-        # 统计：至少在一个地方是新的URL
-        any_new_urls = list(set(mongodb_new_urls) | set(local_new_urls))
-        
-        if not any_new_urls:
-            print(f"[INFO] 所有URL两边都已存在，无需保存")
-            logging.info("所有URL两边都已存在")
+        if not mongodb_new_urls:
+            print(f"[INFO] 所有URL已存在于MongoDB，无需保存")
+            logging.info("所有URL已存在于MongoDB")
             return 0
         
         print(f"[INFO] MongoDB新URL: {len(mongodb_new_urls)} 个")
-        print(f"[INFO] 本地新URL: {len(local_new_urls)} 个")
-        logging.info(f"MongoDB新URL: {len(mongodb_new_urls)} 个，本地新URL: {len(local_new_urls)} 个")
+        logging.info(f"MongoDB新URL: {len(mongodb_new_urls)} 个")
         
-        # 5. 保存到MongoDB（只保存MongoDB没有的）
         mongodb_success = 0
         if self.collection is not None and mongodb_new_urls:
-            url_docs = []
             for url in mongodb_new_urls:
-                url_docs.append({
-                    'url': url,
-                    'canonical_url': canonicalize_url(url),
-                    'fetched_at': datetime.now().isoformat() + 'Z',
-                    'status': 'pending',
-                    'version': '1.0'
-                })
-            
-            try:
-                result = self.collection.insert_many(url_docs, ordered=False)
-                mongodb_success = len(result.inserted_ids)
-                print(f"[OK] MongoDB插入成功: {mongodb_success} 个URL")
-                logging.info(f"MongoDB插入成功: {mongodb_success} 个URL")
-            except Exception as e:
-                print(f"[ERROR] MongoDB插入失败: {e}")
-                logging.error(f"MongoDB插入失败: {e}")
-        elif not mongodb_new_urls:
-            print(f"[INFO] MongoDB无新增URL")
-            logging.info("MongoDB无新增URL")
+                now = datetime.now().isoformat() + 'Z'
+                result = self.collection.update_one(
+                    {'canonical_url': canonicalize_url(url)},
+                    {
+                        '$setOnInsert': {
+                            'url': url,
+                            'canonical_url': canonicalize_url(url),
+                            'fetched_at': now,
+                            'status': 'pending',
+                            'version': '1.0'
+                        }
+                    },
+                    upsert=True
+                )
+                if result.upserted_id is not None:
+                    mongodb_success += 1
+
+            print(f"[OK] MongoDB插入成功: {mongodb_success} 个URL")
+            logging.info(f"MongoDB插入成功: {mongodb_success} 个URL")
         
-        # 6. 保存到本地主文件（只保存本地没有的）
-        local_success = 0
-        if local_new_urls:
-            try:
-                with open(self.master_urls_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                # 添加本地新URL
-                data['urls'].extend(local_new_urls)
-                data['metadata']['total_urls'] = len(data['urls'])
-                data['metadata']['last_updated'] = datetime.now().isoformat() + 'Z'
-                
-                with open(self.master_urls_file, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                
-                local_success = len(local_new_urls)
-                print(f"[OK] 本地主文件更新成功: {local_success} 个URL")
-                logging.info(f"本地主文件更新成功: {local_success} 个URL")
-            except Exception as e:
-                print(f"[ERROR] 本地主文件更新失败: {e}")
-                logging.error(f"本地主文件更新失败: {e}")
-        else:
-            print(f"[INFO] 本地无新增URL")
-            logging.info("本地无新增URL")
-        
-        # 7. 保存增量文件（保存任意一方新增的URL）
-        if any_new_urls:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            increment_file = os.path.join(self.data_dir, f'bloomberg_urls_{timestamp}.json')
-            try:
-                increment_data = {
-                    "fetch_time": datetime.now().isoformat() + 'Z',
-                    "total_count": len(any_new_urls),
-                    "mongodb_new": len(mongodb_new_urls),
-                    "local_new": len(local_new_urls),
-                    "urls": any_new_urls
-                }
-                with open(increment_file, 'w', encoding='utf-8') as f:
-                    json.dump(increment_data, f, ensure_ascii=False, indent=2)
-                print(f"[OK] 增量文件保存: {increment_file}")
-                logging.info(f"增量文件保存: {increment_file}")
-            except Exception as e:
-                print(f"[ERROR] 增量文件保存失败: {e}")
-                logging.error(f"增量文件保存失败: {e}")
-        
-        # 8. 显示新增的URL
-        if any_new_urls:
-            print(f"\n[INFO] 本次新增URL列表:")
-            for i, url in enumerate(any_new_urls, 1):
-                # 标记这个URL是在哪里新增的
-                in_mongodb = url in mongodb_new_urls
-                in_local = url in local_new_urls
-                location = []
-                if in_mongodb:
-                    location.append("MongoDB")
-                if in_local:
-                    location.append("本地")
-                location_str = "+".join(location)
-                
-                print(f"  {i}. [{location_str}] {url}")
-                logging.info(f"新增URL [{location_str}]: {url}")
+        print(f"\n[INFO] 本次新增URL列表:")
+        for i, url in enumerate(mongodb_new_urls, 1):
+            print(f"  {i}. [MongoDB] {url}")
+            logging.info(f"新增URL [MongoDB]: {url}")
         
         print(f"\n[SUCCESS] 保存结果:")
         print(f"  - MongoDB: 新增 {mongodb_success} 个")
-        print(f"  - 本地: 新增 {local_success} 个")
-        print(f"  - 总计: {len(any_new_urls)} 个URL至少在一处新增")
-        logging.info(f"保存结果: MongoDB新增 {mongodb_success} 个，本地新增 {local_success} 个")
+        print(f"  - 总计: {mongodb_success} 个URL新增到MongoDB")
+        logging.info(f"保存结果: MongoDB新增 {mongodb_success} 个")
         
-        return len(any_new_urls)
+        return mongodb_success
     
     def close_connection(self):
         """关闭MongoDB连接"""

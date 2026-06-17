@@ -5,6 +5,7 @@ const selectedTitle = document.querySelector("#selectedTitle");
 const selectedMeta = document.querySelector("#selectedMeta");
 const analyzeBtn = document.querySelector("#analyzeBtn");
 const updateDataBtn = document.querySelector("#updateDataBtn");
+const updateThsMarketBtn = document.querySelector("#updateThsMarketBtn");
 const loadDataBtn = document.querySelector("#loadDataBtn");
 const readAnalysisBtn = document.querySelector("#readAnalysisBtn");
 const analysisTypeSelect = document.querySelector("#analysisTypeSelect");
@@ -153,14 +154,24 @@ async function readApiPayload(response, fallbackMessage) {
     try {
       payload = JSON.parse(text);
     } catch {
-      if (!response.ok) throw new Error(text);
-      throw new Error(text || fallbackMessage);
+      throw new Error(formatNonJsonApiError(text, fallbackMessage, response.status));
     }
   }
   if (!response.ok || payload.ok === false) {
     throw new Error(payload.error || payload.message || text || fallbackMessage);
   }
   return payload;
+}
+
+function formatNonJsonApiError(text, fallbackMessage, status) {
+  const raw = String(text || "").trim();
+  if (/<!doctype html|<html[\s>]/i.test(raw)) {
+    if (status === 404 || /Error code:\s*404/i.test(raw)) {
+      return `${fallbackMessage}：本地后端没有加载这个接口，请重启 Web 服务后刷新页面。`;
+    }
+    return `${fallbackMessage}：后端返回了 HTML 错误页，请检查服务是否仍在登录态并已重启到最新版本。`;
+  }
+  return raw || fallbackMessage;
 }
 
 input.addEventListener("input", () => {
@@ -192,7 +203,11 @@ deleteUserApiKeysBtn?.addEventListener("click", deleteUserApiKeys);
 redeemVipBtn?.addEventListener("click", redeemVipCode);
 
 updateDataBtn.addEventListener("click", async () => {
-  await syncSelectedData(false);
+  await syncSelectedData({ force: true });
+});
+
+updateThsMarketBtn?.addEventListener("click", async () => {
+  await syncSelectedThsMarketData();
 });
 
 analysisTypeSelect.addEventListener("change", () => {
@@ -214,8 +229,8 @@ analyzeBtn.addEventListener("click", async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ts_code: selected.ts_code, years: "all", analysis_type: framework.key }),
     });
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error || "分析失败");
+    const payload = await readApiPayload(response, "分析失败");
+    if (!payload.answer) throw new Error("分析未返回正文，已停止展示结果。");
     renderScores(payload.rating_hint, payload.scores || {}, payload.analysis_type);
     const rows = Object.entries(payload.dataset_rows || {})
       .sort(([a], [b]) => a.localeCompare(b))
@@ -223,7 +238,7 @@ analyzeBtn.addEventListener("click", async () => {
       .join("\n");
     const errors = payload.fetch_errors?.length ? `\n\n未成功接口：${payload.fetch_errors.length} 个` : "";
     const risks = (payload.risk_flags || []).map((item) => `- [${item.level}] ${item.title}: ${item.message}`).join("\n");
-    output.textContent = `${payload.answer || "已完成数据采集，但未配置 DeepSeek Key，未生成文本分析。"}\n\n---\n分析类型：${payload.analysis_label || framework.label}\n输出目录：${payload.output_dir}\n分析资料包：${payload.analysis_dossier_path || payload.value_dossier_path}\n分析文件：${payload.analysis_path || "未生成"}\n\n规则风险提示：\n${risks || "暂无明显规则风险"}\n\n数据集行数：\n${rows}${errors}`;
+    output.textContent = `${payload.answer}\n\n---\n分析类型：${payload.analysis_label || framework.label}\n输出目录：${payload.output_dir}\n分析资料包：${payload.analysis_dossier_path || payload.value_dossier_path}\n分析文件：${payload.analysis_path || "未生成"}\n\n规则风险提示：\n${risks || "暂无明显规则风险"}\n\n数据集行数：\n${rows}${errors}`;
     await refreshAnalysisResults();
   } catch (error) {
     output.textContent = `出错了：${error.message}`;
@@ -348,7 +363,7 @@ loadDataBtn.addEventListener("click", async () => {
     const response = await fetch("/api/local-stock-data", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ts_code: selected.ts_code }),
+      body: JSON.stringify({ ts_code: selected.ts_code, pages: "all" }),
     });
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || "读取失败");
@@ -651,6 +666,7 @@ function selectStock(item) {
   analyzeBtn.disabled = true;
   multiAgentBtn.disabled = false;
   updateDataBtn.disabled = false;
+  if (updateThsMarketBtn) updateThsMarketBtn.disabled = false;
   loadDataBtn.disabled = false;
   analysisHistorySelect.disabled = false;
   scorePanel.hidden = true;
@@ -670,20 +686,22 @@ function selectStock(item) {
   refreshAgentRuns();
 }
 
-async function syncSelectedData() {
+async function syncSelectedData(options = {}) {
   if (!selected) return;
+  const force = options.force !== false;
   const token = ++syncToken;
   updateDataBtn.disabled = true;
+  if (updateThsMarketBtn) updateThsMarketBtn.disabled = true;
   loadDataBtn.disabled = true;
   multiAgentBtn.disabled = true;
   readAnalysisBtn.disabled = true;
   readAgentRunBtn.disabled = true;
-  output.textContent = `正在更新 ${selected.name}（${selected.ts_code}）的本地${historyScopeText()}数据，请稍等...`;
+  output.textContent = `正在全量更新 ${selected.name}（${selected.ts_code}）的 Tushare ${historyScopeText()}数据，请稍等...`;
   try {
     const response = await fetch("/api/sync-stock-data", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ts_code: selected.ts_code, years: "all" }),
+      body: JSON.stringify({ ts_code: selected.ts_code, years: "all", force }),
     });
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || "更新失败");
@@ -693,10 +711,11 @@ async function syncSelectedData() {
     const meta = payload.metadata || {};
     const snapshotCount = meta.snapshots?.length || 0;
     const range = meta.date_range ? `${formatDateLabel(meta.date_range.start_date)} 至 ${formatDateLabel(meta.date_range.end_date)}` : "未知";
+    const dailySummary = buildDailyCoverageSummary(payload.datasets || [], meta.dataset_rows || {});
     const cacheLine = payload.cache_hit
       ? `已复用共享缓存，缓存年龄：${formatDurationText(payload.cache_age_seconds)}。`
       : "本地数据已更新。";
-    output.textContent = `${cacheLine}\n采集范围：${range}\n当前数据目录：${payload.local_dir}\n股票存储目录：${payload.stock_dir}\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或选择分析类型后点击“生成分析”。`;
+    output.textContent = `${cacheLine}\n数据源：Tushare\n采集范围：${range}\n每日行情覆盖：${dailySummary}\n当前数据目录：${payload.local_dir}\n股票存储目录：${payload.stock_dir}\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或继续补抓分钟行情。`;
     await refreshAnalysisResults();
   } catch (error) {
     if (token === syncToken) {
@@ -705,6 +724,56 @@ async function syncSelectedData() {
   } finally {
     if (token === syncToken) {
       updateDataBtn.disabled = false;
+      if (updateThsMarketBtn) updateThsMarketBtn.disabled = false;
+      loadDataBtn.disabled = false;
+      multiAgentBtn.disabled = false;
+      analysisHistorySelect.disabled = false;
+      syncReadAnalysisButtonState();
+      syncReadAgentRunButtonState();
+    }
+  }
+}
+
+async function syncSelectedThsMarketData() {
+  if (!selected) return;
+  const token = ++syncToken;
+  updateDataBtn.disabled = true;
+  if (updateThsMarketBtn) updateThsMarketBtn.disabled = true;
+  loadDataBtn.disabled = true;
+  multiAgentBtn.disabled = true;
+  readAnalysisBtn.disabled = true;
+  readAgentRunBtn.disabled = true;
+  output.textContent = `正在补抓 ${selected.name}（${selected.ts_code}）的分钟行情数据，请稍等...`;
+  try {
+    const response = await fetch("/api/sync-ths-market-data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: selected.ts_code }),
+    });
+    const payload = await readApiPayload(response, "分钟行情更新失败");
+    if (token !== syncToken) return;
+    loadedDatasets = payload.datasets || loadedDatasets || [];
+    renderStockMetricsFromDatasets(loadedDatasets);
+    const result = payload.market_result?.results?.[0] || {};
+    const localText = result.local_merged ? `已合并到本地资料包：${result.local_path}` : "本地 Tushare 资料包尚不存在，仅写入 MongoDB。";
+    const dateRange = result.date_range?.start && result.date_range?.end ? `${result.date_range.start} - ${result.date_range.end}` : result.trade_date || "-";
+    const pageText = result.requested_pages === "all"
+      ? `全部可取页；实际 ${result.pages_fetched ?? "-"} 页 × ${result.page_size ?? "-"} 根/页${result.source_exhausted ? "；已到数据源尽头" : ""}`
+      : result.requested_pages && result.page_size
+        ? `${result.requested_pages} 页 × ${result.page_size} 根/页`
+        : result.requested_pages ?? "-";
+    const scopeText = result.history_supported === false
+      ? "当前接口仅更新最新交易日，不包含历史分钟分时。"
+      : `历史范围：${dateRange}；覆盖交易日：${result.succeeded_days ?? 0}；请求窗口：${pageText}`;
+    output.textContent = `分钟行情更新完成。\n数据源：${result.source || payload.market_result?.source || "-"}\n数据集：${result.dataset || "-"}\n股票：${result.ts_code || selected.ts_code} ${result.name || ""}\n最新交易日：${result.trade_date || "-"}\n${scopeText}\n本次分钟行数：${result.rows ?? 0}；本地累计：${result.stored_rows ?? result.rows ?? 0}\n新增：${result.inserted ?? 0}；更新：${result.updated ?? 0}\n${localText}\n\n现在可以点击“读取数据”查看分钟行情数据集。`;
+  } catch (error) {
+    if (token === syncToken) {
+      output.textContent = `分钟行情更新失败：${error.message}`;
+    }
+  } finally {
+    if (token === syncToken) {
+      updateDataBtn.disabled = false;
+      if (updateThsMarketBtn) updateThsMarketBtn.disabled = false;
       loadDataBtn.disabled = false;
       multiAgentBtn.disabled = false;
       analysisHistorySelect.disabled = false;
@@ -820,10 +889,10 @@ function formatMultiAgentJobProgress(job, framework) {
   for (const item of progress.slice(-30)) {
     const time = formatProgressTime(item.time);
     const stage = item.stage ? ` / ${item.stage}` : "";
-    lines.push(`- ${time}${stage}：${item.message || ""}`);
+    lines.push(`- ${time}${stage}：${formatRuntimeError(item.message || "")}`);
   }
   if (job.error) {
-    lines.push("", "## 报错", job.error);
+    lines.push("", "## 报错", formatRuntimeError(job.error));
   }
   return lines.join("\n");
 }
@@ -906,6 +975,25 @@ function latestRecord(records, dateKey) {
     .sort((a, b) => String(b[dateKey]).localeCompare(String(a[dateKey])))[0] || records?.[0] || null;
 }
 
+function buildDailyCoverageSummary(datasets, datasetRows = {}) {
+  const daily = findDataset(datasets, "daily");
+  const records = daily?.records || [];
+  const dates = records
+    .map((row) => String(row?.trade_date || ""))
+    .filter((value) => /^\d{8}$/.test(value))
+    .sort();
+  const dailyRows = datasetRows.daily ?? records.length;
+  const parts = [
+    `日线 ${dailyRows} 行`,
+    `每日指标 ${datasetRows.daily_basic ?? findDataset(datasets, "daily_basic")?.records?.length ?? 0} 行`,
+    `资金流 ${datasetRows.moneyflow ?? findDataset(datasets, "moneyflow")?.records?.length ?? 0} 行`,
+  ];
+  if (dates.length) {
+    parts.unshift(`${formatDateLabel(dates[0])} 至 ${formatDateLabel(dates[dates.length - 1])}`);
+  }
+  return parts.join("；");
+}
+
 function firstFinite(...values) {
   for (const value of values) {
     const number = toNumber(value);
@@ -984,6 +1072,7 @@ function renderAgentResultCard(item) {
   const findings = item.findings || item.key_findings || [];
   const summary = item.reasoning_summary || item.summary || firstFindingText(findings) || "暂无观点摘要。";
   const reason = firstFindingText(findings) || firstCounterText(item.counter_evidence) || "暂无明确原因。";
+  const llmError = item.llm_error ? formatRuntimeError(item.llm_error) : "";
   const scoreItems = Object.entries(item.scores || {}).slice(0, 4);
   const confidenceMeta = [
     Number.isFinite(toNumber(opinionStrength)) ? `观点 ${formatConfidence(opinionStrength)}` : "",
@@ -1005,10 +1094,26 @@ function renderAgentResultCard(item) {
         <div><i style="width: ${confidencePercent(confidence)}%"></i></div>
         <b>${escapeHtml(formatConfidence(confidence))}</b>
       </div>
+      ${llmError ? `<div class="agent-confidence-meta">${escapeHtml(llmError)}</div>` : ""}
       ${confidenceMeta ? `<div class="agent-confidence-meta">${escapeHtml(confidenceMeta)}</div>` : ""}
       ${scoreItems.length ? `<div class="agent-score-list">${scoreItems.map(([key, value]) => `<span>${escapeHtml(scoreLabel(key))} ${escapeHtml(value)}/5</span>`).join("")}</div>` : ""}
     </article>
   `;
+}
+
+function formatRuntimeError(message) {
+  const raw = String(message || "");
+  if (!raw) return "";
+  if (/errno 32|broken pipe/i.test(raw)) {
+    return "LLM 连接中断，系统已自动重试；若仍失败则使用规则回退结果。";
+  }
+  if (/connection reset|connection aborted|remote end closed|server disconnected/i.test(raw)) {
+    return "LLM 远端连接提前关闭，系统已自动重试；若仍失败则使用规则回退结果。";
+  }
+  if (/timed out|timeout/i.test(raw)) {
+    return "LLM 请求超时，系统已自动重试；若仍失败则使用规则回退结果。";
+  }
+  return raw;
 }
 
 function agentDisplayLabel(item) {
