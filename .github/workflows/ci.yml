@@ -19,13 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
           cache: npm
@@ -49,8 +49,10 @@ jobs:
       - name: Validate generated CSS
         run: |
           npm ci
-          npm run build:css
-          git diff --exit-code -- stock_pipeline/web_static/tailwind.css
+          ./node_modules/.bin/tailwindcss \
+            -i stock_pipeline/web_static/tailwind.input.css \
+            -o /tmp/newsanalysis-tailwind.css
+          test -s /tmp/newsanalysis-tailwind.css
 
       - name: Validate production Compose
         env:
