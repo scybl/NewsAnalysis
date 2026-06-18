@@ -58,7 +58,9 @@ jobs:
         env:
           MONGO_PASSWORD: ci-password
           MONGO_PASSWORD_URI: ci-password
-        run: docker compose -f docker-compose.prod.yml config --quiet
+        run: |
+          cp .env.deploy.sample .env
+          docker compose -f docker-compose.prod.yml config --quiet
 
       - name: Build production image
         run: docker build --tag newsanalysis:ci .
