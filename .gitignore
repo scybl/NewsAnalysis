@@ -1,6 +1,15 @@
 .DS_Store
 .env
+.deploy.env
 .env.example
+.ssh/
+.aws/
+*.pem
+*.key
+*.p12
+*.pfx
+*.db
+*.sqlite*
 .venv/
 .pip-cache/
 node_modules/

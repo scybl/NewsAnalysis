@@ -15,6 +15,9 @@ services:
 
   web:
     build: .
+    labels:
+      com.newsanalysis.release: ${RELEASE_VERSION:-unknown}
+      com.newsanalysis.release-time: ${RELEASE_TIME:-unknown}
     restart: unless-stopped
     depends_on:
       - mongo
@@ -28,6 +31,8 @@ services:
       MONGO_PORT: 27017
       MONGODB_DATABASE: ${MONGODB_DATABASE:-news}
       MONGODB_COLLECTION: ${MONGODB_COLLECTION:-articles}
+      RELEASE_VERSION: ${RELEASE_VERSION:-unknown}
+      RELEASE_TIME: ${RELEASE_TIME:-unknown}
     ports:
       - "${PUBLIC_WEB_PORT:-8765}:8765"
     volumes:

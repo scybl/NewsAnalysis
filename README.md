@@ -144,17 +144,32 @@ PUBLIC_WEB_PORT=8765
 
 部署完成后，用管理员账号登录后台，在“账户管理 / 系统模型 Key”里录入 DeepSeek key。
 
-从本机一键同步并部署到服务器：
+从本机一键同步并部署到服务器。先创建只保存在本机的连接配置：
 
 ```bash
-DEPLOY_HOST=你的服务器IP DEPLOY_USER=root DEPLOY_PATH=/opt/newsanalysis scripts/deploy_server.sh
+cp .deploy.env.sample .deploy.env
+# 编辑 .deploy.env 后执行：
+scripts/deploy_server.sh
 ```
 
-默认会把本机 `.env` 一起复制到服务器。如果你想手动维护服务器 `.env`：
+本机部署脚本和 GitHub Actions 都不会上传 `.env`、用户数据、MongoDB 数据、会话、日志、报告、私钥、证书或本地数据库文件。生产 `.env` 只在服务器维护，`local_data` 等运行目录通过 Docker 卷持续保留。
 
-```bash
-DEPLOY_COPY_ENV=0 DEPLOY_HOST=你的服务器IP scripts/deploy_server.sh
-```
+本机脚本只会打包 Git 已跟踪的文件，已跟踪文件的本地修改可以直接发布；新建源码需要先执行 `git add 文件名`，避免项目目录里未纳入版本控制的私密文件被误传。
+
+### 推送后自动部署
+
+仓库内置了 `.github/workflows/deploy.yml`。向 `main` 推送成功后，GitHub Actions 会自动同步代码、重建服务并检查 `/api/health`；同一时间只会执行一个生产发布。
+
+在 GitHub 仓库的 `Settings / Environments` 中创建 `production` 环境，并配置以下 Secrets：
+
+- `DEPLOY_HOST`：服务器 IP 或域名（必填）
+- `DEPLOY_USER`：SSH 用户，默认 `root`
+- `DEPLOY_SSH_KEY`：能够登录服务器的 SSH 私钥（必填）
+- `DEPLOY_PORT`：SSH 端口，默认 `22`
+- `DEPLOY_PATH`：服务器目录，默认 `/opt/newsanalysis`
+- `DEPLOY_HEALTH_URL`：服务器内部探活地址，默认 `http://127.0.0.1:8765/api/health`
+
+对应公钥需要提前写入服务器用户的 `~/.ssh/authorized_keys`。生产 `.env` 仍只保存在服务器，不会从 GitHub Actions 上传。容器标签 `com.newsanalysis.release` 和 `com.newsanalysis.release-time` 会记录当前运行版本及发布时间。
 
 Ubuntu 服务器如果还没有 Docker，可以先在服务器上执行：
 

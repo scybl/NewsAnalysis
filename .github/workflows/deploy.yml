@@ -1,0 +1,72 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${DEPLOY_PORT:-22}" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Sync and restart service
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        run: |
+          export DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          export DEPLOY_PATH="${DEPLOY_PATH:-/opt/newsanalysis}"
+          export DEPLOY_HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:8765/api/health}"
+          target="${DEPLOY_USER:-root}@${DEPLOY_HOST}"
+          release_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ssh_args=(-i ~/.ssh/deploy_key -p "$DEPLOY_PORT")
+
+          ssh "${ssh_args[@]}" "$target" "mkdir -p '$DEPLOY_PATH'"
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key -p $DEPLOY_PORT" \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.env' \
+            --exclude '.deploy.env' \
+            --exclude '.ssh/' \
+            --exclude '.aws/' \
+            --exclude '*.pem' \
+            --exclude '*.key' \
+            --exclude '*.p12' \
+            --exclude '*.pfx' \
+            --exclude '*.db' \
+            --exclude '*.sqlite*' \
+            --exclude '.venv/' \
+            --exclude '.pip-cache/' \
+            --exclude '__pycache__/' \
+            --exclude '*.pyc' \
+            --exclude 'cache/' \
+            --exclude 'local_data/' \
+            --exclude 'logs/' \
+            --exclude 'reports/' \
+            --exclude 'sessions/' \
+            ./ "$target:$DEPLOY_PATH/"
+
+          ssh "${ssh_args[@]}" "$target" "cd '$DEPLOY_PATH' && test -f .env || cp .env.deploy.sample .env"
+          ssh "${ssh_args[@]}" "$target" "cd '$DEPLOY_PATH' && RELEASE_VERSION='$GITHUB_SHA' RELEASE_TIME='$release_time' docker compose -f docker-compose.prod.yml up -d --build"
+          ssh "${ssh_args[@]}" "$target" "for attempt in \$(seq 1 30); do curl --fail --silent '$DEPLOY_HEALTH_URL' >/dev/null && exit 0; sleep 2; done; cd '$DEPLOY_PATH'; docker compose -f docker-compose.prod.yml logs --tail=100 web >&2; exit 1"

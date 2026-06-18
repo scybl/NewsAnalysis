@@ -2,6 +2,15 @@
 .git
 .env
 .env.*
+.deploy.env
+.ssh
+.aws
+*.pem
+*.key
+*.p12
+*.pfx
+*.db
+*.sqlite*
 .venv
 .pip-cache
 __pycache__
