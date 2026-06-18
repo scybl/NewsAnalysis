@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: CI / validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Reject tracked secrets and runtime data
+        shell: bash
+        run: |
+          sensitive_files="$(git ls-files | grep -E '(^|/)\.env$|(^|/)\.deploy\.env$|(^|/)\.ssh/|(^|/)\.aws/|\.(pem|key|p12|pfx|db|sqlite|sqlite3)$' || true)"
+          if [[ -n "$sensitive_files" ]]; then
+            echo "Sensitive or runtime files must not be tracked:" >&2
+            echo "$sensitive_files" >&2
+            exit 1
+          fi
+
+      - name: Validate Python and shell syntax
+        shell: bash
+        run: |
+          git ls-files -z '*.py' | xargs -0 python -m py_compile
+          git ls-files -z 'scripts/*.sh' | xargs -0 -n1 bash -n
+
+      - name: Validate generated CSS
+        run: |
+          npm ci
+          npm run build:css
+          git diff --exit-code -- stock_pipeline/web_static/tailwind.css
+
+      - name: Validate production Compose
+        env:
+          MONGO_PASSWORD: ci-password
+          MONGO_PASSWORD_URI: ci-password
+        run: docker compose -f docker-compose.prod.yml config --quiet
+
+      - name: Build production image
+        run: docker build --tag newsanalysis:ci .

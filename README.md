@@ -160,16 +160,21 @@ scripts/deploy_server.sh
 
 仓库内置了 `.github/workflows/deploy.yml`。向 `main` 推送成功后，GitHub Actions 会自动同步代码、重建服务并检查 `/api/health`；同一时间只会执行一个生产发布。
 
+`.github/workflows/ci.yml` 会在 PR 和 `main` 更新时运行 `CI / validate`，检查敏感文件、Python/Shell 语法、前端 CSS、生产 Compose，并完整构建生产 Docker 镜像。`main` 分支保护要求这个检查通过后才能合并。
+
 在 GitHub 仓库的 `Settings / Environments` 中创建 `production` 环境，并配置以下 Secrets：
 
 - `DEPLOY_HOST`：服务器 IP 或域名（必填）
 - `DEPLOY_USER`：SSH 用户，默认 `root`
 - `DEPLOY_SSH_KEY`：能够登录服务器的 SSH 私钥（必填）
+- `DEPLOY_KNOWN_HOSTS`：已核验的服务器 SSH 主机公钥记录（必填）
 - `DEPLOY_PORT`：SSH 端口，默认 `22`
 - `DEPLOY_PATH`：服务器目录，默认 `/opt/newsanalysis`
 - `DEPLOY_HEALTH_URL`：服务器内部探活地址，默认 `http://127.0.0.1:8765/api/health`
 
 对应公钥需要提前写入服务器用户的 `~/.ssh/authorized_keys`。生产 `.env` 仍只保存在服务器，不会从 GitHub Actions 上传。容器标签 `com.newsanalysis.release` 和 `com.newsanalysis.release-time` 会记录当前运行版本及发布时间。
+
+`DEPLOY_KNOWN_HOSTS` 可以在可信网络中运行 `ssh-keyscan -p SSH端口 服务器地址` 获取；写入 Secret 前应通过云厂商控制台或服务器本地 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 核对指纹，避免信任被冒充的服务器。
 
 Ubuntu 服务器如果还没有 Docker，可以先在服务器上执行：
 
