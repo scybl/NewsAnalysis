@@ -16,7 +16,6 @@ const readAgentRunBtn = document.querySelector("#readAgentRunBtn");
 const themeToggleBtn = document.querySelector("#themeToggleBtn");
 const adminPanelLink = document.querySelector("#adminPanelLink");
 const logoutBtn = document.querySelector("#logoutBtn");
-const refreshBtn = document.querySelector("#refreshBtn");
 const output = document.querySelector("#analysisOutput");
 const scorePanel = document.querySelector("#scorePanel");
 const apiKeyPanel = document.querySelector("#apiKeyPanel");
@@ -163,6 +162,10 @@ async function readApiPayload(response, fallbackMessage) {
   return payload;
 }
 
+function approveDataFetch(message) {
+  return window.confirm(`${message}\n\n该操作会访问外部数据源或消耗 API/模型额度。确认执行？`);
+}
+
 function formatNonJsonApiError(text, fallbackMessage, status) {
   const raw = String(text || "").trim();
   if (/<!doctype html|<html[\s>]/i.test(raw)) {
@@ -177,20 +180,6 @@ function formatNonJsonApiError(text, fallbackMessage, status) {
 input.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => search(input.value), 180);
-});
-
-refreshBtn.addEventListener("click", async () => {
-  statusEl.textContent = "正在刷新股票列表...";
-  refreshBtn.disabled = true;
-  try {
-    await fetch("/api/refresh");
-    statusEl.textContent = "股票列表已刷新";
-    search(input.value);
-  } catch (error) {
-    statusEl.textContent = `刷新失败：${error.message}`;
-  } finally {
-    refreshBtn.disabled = false;
-  }
 });
 
 logoutBtn.addEventListener("click", async () => {
@@ -218,6 +207,7 @@ analysisTypeSelect.addEventListener("change", () => {
 analyzeBtn.addEventListener("click", async () => {
   if (!selected) return;
   const framework = selectedAnalysisFramework();
+  if (!approveDataFetch(`生成 ${selected.name}（${selected.ts_code}）的${framework.label}分析`)) return;
   analyzeBtn.disabled = true;
   readAnalysisBtn.disabled = true;
   scorePanel.hidden = true;
@@ -227,7 +217,7 @@ analyzeBtn.addEventListener("click", async () => {
     const response = await fetch("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ts_code: selected.ts_code, years: "all", analysis_type: framework.key }),
+      body: JSON.stringify({ ts_code: selected.ts_code, years: "all", analysis_type: framework.key, approved: true }),
     });
     const payload = await readApiPayload(response, "分析失败");
     if (!payload.answer) throw new Error("分析未返回正文，已停止展示结果。");
@@ -279,13 +269,14 @@ multiAgentBtn.addEventListener("click", async () => {
   if (!selected) return;
   const token = ++syncToken;
   const framework = selectedAnalysisFramework();
+  if (!approveDataFetch(`创建 ${selected.name}（${selected.ts_code}）的${framework.label}多 Agent 分析任务`)) return;
   multiAgentBtn.disabled = true;
   output.textContent = `正在创建 ${selected.name}（${selected.ts_code}）的${framework.label}多 Agent 后台任务...`;
   try {
     const response = await fetch("/api/multi-agent-analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ts_code: selected.ts_code, analysis_type: framework.key, years: "all", allow_dynamic_fetch: true, async: true, max_parallel_agents: 8 }),
+      body: JSON.stringify({ ts_code: selected.ts_code, analysis_type: framework.key, years: "all", allow_dynamic_fetch: true, async: true, max_parallel_agents: 8, approved: true }),
     });
     const job = await readApiPayload(response, "多 Agent 分析任务创建失败");
     await pollMultiAgentJob(job.job_id, framework, token);
@@ -689,6 +680,7 @@ function selectStock(item) {
 async function syncSelectedData(options = {}) {
   if (!selected) return;
   const force = options.force !== false;
+  if (!approveDataFetch(`更新 ${selected.name}（${selected.ts_code}）的 Tushare ${historyScopeText()}数据`)) return;
   const token = ++syncToken;
   updateDataBtn.disabled = true;
   if (updateThsMarketBtn) updateThsMarketBtn.disabled = true;
@@ -701,7 +693,7 @@ async function syncSelectedData(options = {}) {
     const response = await fetch("/api/sync-stock-data", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ts_code: selected.ts_code, years: "all", force }),
+      body: JSON.stringify({ ts_code: selected.ts_code, years: "all", force, approved: true }),
     });
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || "更新失败");
@@ -736,6 +728,7 @@ async function syncSelectedData(options = {}) {
 
 async function syncSelectedThsMarketData() {
   if (!selected) return;
+  if (!approveDataFetch(`补抓 ${selected.name}（${selected.ts_code}）的分钟行情数据`)) return;
   const token = ++syncToken;
   updateDataBtn.disabled = true;
   if (updateThsMarketBtn) updateThsMarketBtn.disabled = true;
@@ -748,14 +741,14 @@ async function syncSelectedThsMarketData() {
     const response = await fetch("/api/sync-ths-market-data", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ts_code: selected.ts_code, source: "pytdx_history" }),
+      body: JSON.stringify({ ts_code: selected.ts_code, source: "pytdx_history", approved: true }),
     });
     const payload = await readApiPayload(response, "分钟行情更新失败");
     if (token !== syncToken) return;
     loadedDatasets = payload.datasets || loadedDatasets || [];
     renderStockMetricsFromDatasets(loadedDatasets);
     const result = payload.market_result?.results?.[0] || {};
-    const localText = result.local_merged ? `已合并到本地资料包：${result.local_path}` : "本地 Tushare 资料包尚不存在，仅写入 MongoDB。";
+    const localText = result.local_merged ? `MongoDB 引用已写入资料包：${result.local_path}` : "本地 Tushare 资料包尚不存在，分钟数据已写入 MongoDB。";
     const dateRange = result.date_range?.start && result.date_range?.end ? `${result.date_range.start} - ${result.date_range.end}` : result.trade_date || "-";
     const pageText = result.requested_pages === "all"
       ? `全部可取页；实际 ${result.pages_fetched ?? "-"} 页 × ${result.page_size ?? "-"} 根/页${result.source_exhausted ? "；已到数据源尽头" : ""}`
@@ -768,7 +761,7 @@ async function syncSelectedThsMarketData() {
         ? "当前接口仅更新最新交易日，不包含历史分钟分时。"
         : `历史范围：${dateRange}；覆盖交易日：${result.succeeded_days ?? 0}；请求窗口：${pageText}`;
     const estimateText = result.amount_estimated || result.ohlc_estimated ? "\n说明：该历史源只返回分时价格和成交量；OHLC 和成交额为估算字段。" : "";
-    output.textContent = `分钟行情更新完成。\n数据源：${result.source || payload.market_result?.source || "-"}\n数据集：${result.dataset || "-"}\n股票：${result.ts_code || selected.ts_code} ${result.name || ""}\n最新交易日：${result.trade_date || "-"}\n${scopeText}\n本次分钟行数：${result.rows ?? 0}；本地累计：${result.stored_rows ?? result.rows ?? 0}\n新增：${result.inserted ?? 0}；更新：${result.updated ?? 0}${estimateText}\n${localText}\n\n现在可以点击“读取数据”查看分钟行情数据集。`;
+    output.textContent = `分钟行情更新完成。\n数据源：${result.source || payload.market_result?.source || "-"}\n数据集：${result.dataset || "-"}\n股票：${result.ts_code || selected.ts_code} ${result.name || ""}\n最新交易日：${result.trade_date || "-"}\n${scopeText}\n本次分钟行数：${result.rows ?? 0}；MongoDB 累计：${result.stored_rows ?? result.rows ?? 0}\n新增：${result.inserted ?? 0}；更新：${result.updated ?? 0}${estimateText}\n${localText}\n\n现在可以点击“读取数据”查看最近的分钟行情，完整历史保存在 MongoDB。`;
   } catch (error) {
     if (token === syncToken) {
       output.textContent = `分钟行情更新失败：${error.message}`;
@@ -1472,8 +1465,12 @@ function renderActiveDataset() {
 
   const shownStart = visibleRecords.length ? start + 1 : 0;
   const shownEnd = Math.min(start + pageSize, visibleRecords.length);
+  const totalRows = activeDataset.row_count ?? records.length;
+  const storageText = activeDataset.storage === "mongodb" && totalRows > records.length
+    ? `，MongoDB 共 ${totalRows} 行，已载入最近 ${records.length} 行`
+    : `，共 ${records.length} 行`;
   const filteredText = visibleRecords.length === records.length ? "" : `，筛选后 ${visibleRecords.length} 行`;
-  datasetSummary.textContent = `${activeDataset.label}：共 ${records.length} 行${filteredText}，当前显示 ${shownStart}-${shownEnd} 行`;
+  datasetSummary.textContent = `${activeDataset.label}${storageText}${filteredText}，当前显示 ${shownStart}-${shownEnd} 行`;
   updateTableFilterInfo(records.length, visibleRecords.length);
   pageInfo.textContent = `第 ${currentPage} / ${totalPages} 页`;
   prevPageBtn.disabled = currentPage <= 1;

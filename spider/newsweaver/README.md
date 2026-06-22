@@ -12,24 +12,24 @@ This directory contains the Bloomberg and Guardian crawlers imported from the Ne
 
 ## Configuration
 
-The original `.env` files were not copied. Configure secrets and endpoints with environment variables before running any crawler:
+The original `.env` files were not copied. Store secrets in the project encrypted secret store before running any crawler:
+
+```bash
+.venv/bin/python -m stock_pipeline secrets set mongo.password
+.venv/bin/python -m stock_pipeline secrets set guardian.api_key
+```
+
+Configure non-secret endpoints with environment variables when needed:
 
 ```bash
 export MONGODB_DATABASE=news
 export MONGODB_COLLECTION=articles
 export MONGO_HOST=127.0.0.1
 export MONGO_PORT=27017
-export MONGO_USER=
-export MONGO_PASSWORD=
+export MONGO_USER=admin
 export MONGO_AUTHSOURCE=admin
 ```
 
 Bloomberg scripts also need a logged-in Chrome session with the debug port described in their subdirectory README files.
-
-Guardian additionally needs:
-
-```bash
-export GUARDIAN_API_KEY=<guardian-api-key>
-```
 
 If you connect to MongoDB through SSH tunneling, set `SSH_HOST`, `SSH_PORT`, `SSH_USER`, `SSH_KEY_PATH`, `SSH_REMOTE_HOST`, and `SSH_REMOTE_PORT`.

@@ -8,6 +8,16 @@ const systemDeepSeekInput = document.querySelector("#systemDeepSeekInput");
 const saveSystemDeepSeekBtn = document.querySelector("#saveSystemDeepSeekBtn");
 const deleteSystemDeepSeekBtn = document.querySelector("#deleteSystemDeepSeekBtn");
 const systemDeepSeekStatus = document.querySelector("#systemDeepSeekStatus");
+const agentTokenNameInput = document.querySelector("#agentTokenNameInput");
+const agentTokenScopesInput = document.querySelector("#agentTokenScopesInput");
+const agentTokenDaysInput = document.querySelector("#agentTokenDaysInput");
+const agentTokenRateInput = document.querySelector("#agentTokenRateInput");
+const createAgentTokenBtn = document.querySelector("#createAgentTokenBtn");
+const adminAgentTokensTable = document.querySelector("#adminAgentTokensTable");
+const adminAgentAuditTable = document.querySelector("#adminAgentAuditTable");
+const agentGatewayStatus = document.querySelector("#agentGatewayStatus");
+const agentTokenActiveCount = document.querySelector("#agentTokenActiveCount");
+const agentAuditCount = document.querySelector("#agentAuditCount");
 const adminSummary = document.querySelector("#adminSummary");
 const adminUsersTable = document.querySelector("#adminUsersTable");
 const adminInvitesTable = document.querySelector("#adminInvitesTable");
@@ -46,6 +56,7 @@ const dailyMarketTime = document.querySelector("#dailyMarketTime");
 const saveDailyMarketSchedulerBtn = document.querySelector("#saveDailyMarketSchedulerBtn");
 const runDailyMarketNowBtn = document.querySelector("#runDailyMarketNowBtn");
 const dailyMarketStockCount = document.querySelector("#dailyMarketStockCount");
+const dailyStockListCount = document.querySelector("#dailyStockListCount");
 const dailyMarketLastDate = document.querySelector("#dailyMarketLastDate");
 const dailyMarketUpdated = document.querySelector("#dailyMarketUpdated");
 const dailyMarketSkipped = document.querySelector("#dailyMarketSkipped");
@@ -70,6 +81,10 @@ function applyTheme(theme) {
     themeToggleBtn.textContent = isDark ? "浅色模式" : "深色模式";
     themeToggleBtn.setAttribute("aria-pressed", String(isDark));
   }
+}
+
+function approveDataFetch(message) {
+  return window.confirm(`${message}\n\n该操作会访问外部数据源或启动爬虫任务。确认执行？`);
 }
 
 themeToggleBtn?.addEventListener("click", () => {
@@ -187,11 +202,36 @@ deleteSystemDeepSeekBtn?.addEventListener("click", async () => {
   }
 });
 
+createAgentTokenBtn?.addEventListener("click", async () => {
+  createAgentTokenBtn.disabled = true;
+  try {
+    const response = await fetch("/api/admin/agent-token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: agentTokenNameInput?.value || "agent",
+        scopes: agentTokenScopesInput?.value || "R",
+        expires_in_days: Number(agentTokenDaysInput?.value || 30),
+        rate_limit_per_min: Number(agentTokenRateInput?.value || 60),
+      }),
+    });
+    const payload = await readApiPayload(response, "生成 Agent token 失败");
+    await loadAdminOverview();
+    const token = payload.agent_token?.token || "";
+    adminSummary.textContent = token ? `Agent token 已生成（只显示一次）：${token}` : "Agent token 已生成。";
+  } catch (error) {
+    adminSummary.textContent = `生成 Agent token 失败：${error.message}`;
+  } finally {
+    createAgentTokenBtn.disabled = false;
+  }
+});
+
 startSpiderBtn?.addEventListener("click", async () => {
   startSpiderBtn.disabled = true;
   let started = false;
   try {
     const selectedSource = spiderSourcesSelect?.querySelector("input[type='radio']:checked")?.value || "ths";
+    if (!approveDataFetch(`启动 ${sourceLabel(selectedSource)} 爬虫`)) return;
     const selectedTypes = [...spiderTypesSelect.querySelectorAll("input[type='checkbox']:checked")].map((input) => input.value);
     const response = await fetch("/api/admin/spider/start", {
       method: "POST",
@@ -205,6 +245,7 @@ startSpiderBtn?.addEventListener("click", async () => {
         page_sleep: spiderPageSleep.value || "5,10",
         new_only: spiderNewOnly.checked,
         stock_code: spiderStockCode?.value || "",
+        approved: true,
       }),
     });
     await readApiPayload(response, "启动爬虫失败");
@@ -246,7 +287,7 @@ saveDailyMarketSchedulerBtn?.addEventListener("click", async () => {
         time: dailyMarketTime?.value || "21:30",
       }),
     });
-    const payload = await readApiPayload(response, "保存每日行情定时失败");
+    const payload = await readApiPayload(response, "保存每日股票数据定时失败");
     renderDailyMarketScheduler(payload.scheduler || {});
   } catch (error) {
     if (dailyMarketStatus) dailyMarketStatus.textContent = `保存失败：${error.message}`;
@@ -258,12 +299,13 @@ saveDailyMarketSchedulerBtn?.addEventListener("click", async () => {
 runDailyMarketNowBtn?.addEventListener("click", async () => {
   runDailyMarketNowBtn.disabled = true;
   try {
+    if (!approveDataFetch("立即执行每日股票数据更新")) return;
     const response = await fetch("/api/admin/daily-market-scheduler", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "run_now" }),
+      body: JSON.stringify({ action: "run_now", approved: true }),
     });
-    const payload = await readApiPayload(response, "启动每日行情更新失败");
+    const payload = await readApiPayload(response, "启动每日股票数据更新失败");
     renderDailyMarketScheduler(payload.scheduler || {});
     await loadAdminTasks();
   } catch (error) {
@@ -303,6 +345,8 @@ async function loadAdminOverview() {
     const payload = await readApiPayload(response, "读取账户管理失败");
     const demo = payload.demo || {};
     renderSystemApiKeys(payload.system_api_keys || {});
+    renderAdminAgentTokens(payload.agent_tokens || []);
+    renderAdminAgentAudit(payload.agent_audit_logs || []);
     const invites = payload.invites || [];
     const vipCodes = payload.vip_codes || [];
     const demoAccounts = payload.demo_accounts || [];
@@ -313,6 +357,9 @@ async function loadAdminOverview() {
     renderAdminDemoAccounts(demoAccounts);
     renderAdminAudit(payload.audit_logs || []);
     await loadAdminTasks();
+    if (agentGatewayStatus) agentGatewayStatus.textContent = "v1";
+    if (agentTokenActiveCount) agentTokenActiveCount.textContent = String((payload.agent_tokens || []).filter((item) => item.status === "active").length);
+    if (agentAuditCount) agentAuditCount.textContent = String((payload.agent_audit_logs || []).length);
     if (adminUserCount) adminUserCount.textContent = String((payload.users || []).length);
     if (adminInviteCount) adminInviteCount.textContent = String(invites.filter((item) => item.status === "active").length);
     if (adminVipCodeCount) adminVipCodeCount.textContent = String(vipCodes.filter((item) => item.status === "active").length);
@@ -331,28 +378,96 @@ function renderSystemApiKeys(keys) {
   if (deleteSystemDeepSeekBtn) deleteSystemDeepSeekBtn.disabled = !deepseek.configured;
 }
 
-function renderAdminUsers(users) {
-  const rows = users.map((user) => `
+function renderAdminAgentTokens(tokens) {
+  if (!adminAgentTokensTable) return;
+  const rows = tokens.map((token) => `
     <tr>
-      <td>${escapeHtml(user.username || "")}</td>
-      <td>${escapeHtml(user.disabled ? "已禁用" : user.role || "")}</td>
-      <td>${escapeHtml(String(user.usage_total || 0))}</td>
-      <td>${escapeHtml(user.last_request_at || "-")}</td>
-      <td>${escapeHtml(user.vip_until_text || "-")}</td>
-      <td>${escapeHtml(apiKeySummary(user.api_keys || {}))}</td>
-      <td>${escapeHtml(user.invite_code || "-")}</td>
+      <td>${escapeHtml(token.name || "")}</td>
+      <td><code>${escapeHtml(token.token_prefix || "")}</code></td>
+      <td>${escapeHtml((token.scopes || []).join(","))}</td>
+      <td>${escapeHtml(token.status || "")}</td>
+      <td>${escapeHtml(token.expires_at_text || "-")}</td>
+      <td>${escapeHtml(String(token.rate_limit_per_min || "-"))}</td>
+      <td>${escapeHtml(token.last_used_at || "-")}</td>
       <td>
-        <div class="table-actions">
-          <button type="button" data-user-action="grant_vip" data-username="${escapeHtml(user.username || "")}">发 VIP</button>
-          <button type="button" data-user-action="revoke_vip" data-username="${escapeHtml(user.username || "")}">撤 VIP</button>
-          <button type="button" data-user-action="${user.disabled ? "enable" : "disable"}" data-username="${escapeHtml(user.username || "")}">${user.disabled ? "启用" : "禁用"}</button>
-        </div>
+        <button type="button" data-agent-token-revoke="${escapeHtml(token.id || "")}" ${token.status === "revoked" ? "disabled" : ""}>撤销</button>
       </td>
     </tr>
   `).join("");
+  adminAgentTokensTable.innerHTML = `
+    <thead><tr><th>名称</th><th>前缀</th><th>Scope</th><th>状态</th><th>过期</th><th>限速</th><th>最近使用</th><th>操作</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="8">暂无 Agent token</td></tr>`}</tbody>
+  `;
+  adminAgentTokensTable.querySelectorAll("[data-agent-token-revoke]").forEach((button) => {
+    button.addEventListener("click", () => revokeAgentToken(button.dataset.agentTokenRevoke));
+  });
+}
+
+function renderAdminAgentAudit(logs) {
+  if (!adminAgentAuditTable) return;
+  const rows = logs.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.time || "")}</td>
+      <td><code>${escapeHtml(item.token_prefix || "-")}</code></td>
+      <td>${escapeHtml(item.method || "")}</td>
+      <td>${escapeHtml(item.route || "")}</td>
+      <td>${escapeHtml(item.scope || "")}</td>
+      <td>${escapeHtml(String(item.status_code || ""))}</td>
+    </tr>
+  `).join("");
+  adminAgentAuditTable.innerHTML = `
+    <thead><tr><th>时间</th><th>Token</th><th>方法</th><th>路径</th><th>Scope</th><th>状态</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6">暂无 Agent 调用</td></tr>`}</tbody>
+  `;
+}
+
+async function revokeAgentToken(id) {
+  if (!id) return;
+  if (!window.confirm("确定撤销这个 Agent token？撤销后使用该 token 的 MCP/Codex 调用会立即失败。")) return;
+  adminSummary.textContent = "正在撤销 Agent token...";
+  try {
+    const response = await fetch("/api/admin/agent-token/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    await readApiPayload(response, "撤销 Agent token 失败");
+    await loadAdminOverview();
+    adminSummary.textContent = "Agent token 已撤销。";
+  } catch (error) {
+    adminSummary.textContent = `撤销 Agent token 失败：${error.message}`;
+  }
+}
+
+function renderAdminUsers(users) {
+  if (!adminUsersTable) return;
+  const rows = users.map((user) => {
+    const protectedAccount = !!user.protected || user.role === "admin";
+    const protectedAttr = protectedAccount ? "disabled title=\"最高管理员权限不可修改\"" : "";
+    return `
+      <tr>
+        <td>${escapeHtml(user.username || "")}</td>
+        <td>${escapeHtml(user.disabled ? "已禁用" : user.role || "")}</td>
+        <td>${escapeHtml(user.disabled_until_text || "-")}</td>
+        <td>${escapeHtml(String(user.usage_total || 0))}</td>
+        <td>${escapeHtml(user.last_request_at || "-")}</td>
+        <td>${escapeHtml(user.vip_until_text || "-")}</td>
+        <td>${escapeHtml(apiKeySummary(user.api_keys || {}))}</td>
+        <td>${escapeHtml(user.invite_code || "-")}</td>
+        <td>
+          <div class="table-actions">
+            <button type="button" data-user-action="grant_vip" data-username="${escapeHtml(user.username || "")}" ${protectedAttr}>发 VIP</button>
+            <button type="button" data-user-action="revoke_vip" data-username="${escapeHtml(user.username || "")}" ${protectedAttr}>撤 VIP</button>
+            <button type="button" data-user-action="${user.disabled ? "enable" : "disable"}" data-username="${escapeHtml(user.username || "")}" ${protectedAttr}>${user.disabled ? "启用" : "禁用"}</button>
+            <button type="button" data-user-action="archive" data-username="${escapeHtml(user.username || "")}" ${protectedAttr}>归档</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
   adminUsersTable.innerHTML = `
-    <thead><tr><th>账号</th><th>角色</th><th>API 用量</th><th>最近请求</th><th>VIP 到期</th><th>用户 Key</th><th>邀请码</th><th>操作</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="8">暂无注册用户</td></tr>`}</tbody>
+    <thead><tr><th>账号</th><th>角色</th><th>封禁至</th><th>API 用量</th><th>最近请求</th><th>VIP 到期</th><th>用户 Key</th><th>邀请码</th><th>操作</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="9">暂无注册用户</td></tr>`}</tbody>
   `;
   adminUsersTable.querySelectorAll("[data-user-action]").forEach((button) => {
     button.addEventListener("click", () => runUserAction(button.dataset.username, button.dataset.userAction));
@@ -360,6 +475,7 @@ function renderAdminUsers(users) {
 }
 
 function renderAdminInvites(invites) {
+  if (!adminInvitesTable) return;
   const rows = invites.map((invite) => `
     <tr>
       <td><code>${escapeHtml(invite.code || "")}</code></td>
@@ -392,6 +508,7 @@ function renderAdminVipCodes(items) {
 }
 
 function renderAdminDemoAccounts(accounts) {
+  if (!adminDemoAccountsTable) return;
   const rows = accounts.map((account) => `
     <tr>
       <td><code>${escapeHtml(account.username || "")}</code></td>
@@ -399,7 +516,12 @@ function renderAdminDemoAccounts(accounts) {
       <td>${escapeHtml(formatDuration(account.window_seconds || 0))}</td>
       <td>${escapeHtml(formatDuration(account.resets_in_seconds || 0))}</td>
       <td>${escapeHtml(account.created_at || "-")}</td>
-      <td><button type="button" data-demo-reset="${escapeHtml(account.username || "")}">重置额度</button></td>
+      <td>
+        <div class="table-actions">
+          <button type="button" data-demo-reset="${escapeHtml(account.username || "")}">重置额度</button>
+          <button type="button" data-user-action="archive" data-username="${escapeHtml(account.username || "")}">归档</button>
+        </div>
+      </td>
     </tr>
   `).join("");
   adminDemoAccountsTable.innerHTML = `
@@ -408,6 +530,9 @@ function renderAdminDemoAccounts(accounts) {
   `;
   adminDemoAccountsTable.querySelectorAll("[data-demo-reset]").forEach((button) => {
     button.addEventListener("click", () => resetDemoBudget(button.dataset.demoReset));
+  });
+  adminDemoAccountsTable.querySelectorAll("[data-user-action]").forEach((button) => {
+    button.addEventListener("click", () => runUserAction(button.dataset.username, button.dataset.userAction));
   });
 }
 
@@ -418,6 +543,23 @@ async function runUserAction(username, action) {
     const rawDays = window.prompt("发放 VIP 天数", "30");
     if (!rawDays) return;
     payload.days = Number(rawDays);
+  }
+  if (action === "disable") {
+    const rawDays = window.prompt("封禁天数（到期后自动解锁）", "30");
+    if (rawDays === null) return;
+    const days = Number(rawDays);
+    if (!Number.isInteger(days) || days < 1 || days > 3650) {
+      window.alert("请输入 1-3650 之间的整数天数。");
+      return;
+    }
+    payload.days = days;
+  }
+  if (action === "archive") {
+    const confirmed = window.confirm(`确认归档账号 ${username}？账号将不能登录，但历史数据会保存在归档区，不会物理删除。`);
+    if (!confirmed) return;
+    const reason = window.prompt("归档原因（可选）", "");
+    if (reason === null) return;
+    payload.reason = reason;
   }
   adminSummary.textContent = "正在更新用户权限...";
   try {
@@ -462,18 +604,46 @@ async function loadAdminTasks() {
 
 function renderAdminTasks(tasks) {
   const rows = tasks.map((task) => `
-    <tr>
-      <td>${escapeHtml(task.kind || "")}</td>
-      <td>${escapeHtml(task.title || "")}</td>
-      <td>${taskStatusLabel(task.status)}</td>
-      <td>${escapeHtml(task.updated_at || "-")}</td>
-      <td>${escapeHtml(task.error || task.result_summary?.rating_hint || "-")}</td>
-    </tr>
-  `).join("");
+      <tr>
+        <td>${escapeHtml(taskKindLabel(task.kind))}</td>
+        <td>${escapeHtml(taskTriggerLabel(task.metadata?.trigger))}</td>
+        <td>${escapeHtml(task.title || "")}</td>
+        <td>${taskStatusLabel(task.status)}</td>
+        <td>${escapeHtml(task.created_at || "-")}</td>
+        <td>${escapeHtml(task.finished_at || "-")}</td>
+        <td>${escapeHtml(taskSummary(task))}</td>
+      </tr>
+    `).join("");
   adminTasksTable.innerHTML = `
-    <thead><tr><th>类型</th><th>任务</th><th>状态</th><th>更新时间</th><th>摘要</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="5">暂无后台任务</td></tr>`}</tbody>
+    <thead><tr><th>类型</th><th>触发</th><th>任务</th><th>状态</th><th>开始</th><th>完成</th><th>摘要</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="7">暂无后台任务</td></tr>`}</tbody>
   `;
+}
+
+function taskKindLabel(kind) {
+  return ({
+    daily_market: "股票数据",
+    spider: "爬虫",
+    multi_agent: "多 Agent",
+    multi_agent_cache: "分析缓存",
+  })[kind] || kind || "-";
+}
+
+function taskTriggerLabel(trigger) {
+  if (trigger === "scheduled") return "定时";
+  if (trigger === "manual") return "手动";
+  return trigger || "手动";
+}
+
+function taskSummary(task) {
+  if (task.error) return task.error;
+  const result = task.result_summary || {};
+  if (task.kind === "daily_market") {
+    return `列表 ${result.stock_list_count ?? "-"} · 更新 ${result.updated ?? "-"} · 跳过 ${result.skipped ?? "-"} · 失败 ${result.failed ?? "-"}`;
+  }
+  if (result.rating_hint) return result.rating_hint;
+  const events = Array.isArray(task.events) ? task.events : [];
+  return events.at(-1)?.message || "-";
 }
 
 function renderAdminAudit(logs) {
@@ -508,6 +678,7 @@ async function refreshSpiderConsole() {
     spiderLogs.textContent = logsPayload.content || statusPayload.spider?.error || "暂无日志";
     if (spiderLogFile) spiderLogFile.textContent = logsPayload.log_file ? basename(logsPayload.log_file) : "暂无日志文件";
     await refreshDailyMarketScheduler();
+    await loadAdminTasks();
   } catch (error) {
     spiderStatus.textContent = `爬虫状态读取失败：${error.message}`;
   }
@@ -517,7 +688,7 @@ async function refreshDailyMarketScheduler() {
   if (!dailyMarketStatus) return;
   try {
     const response = await fetch("/api/admin/daily-market-scheduler");
-    const payload = await readApiPayload(response, "读取每日行情定时失败");
+    const payload = await readApiPayload(response, "读取每日股票数据定时失败");
     renderDailyMarketScheduler(payload.scheduler || {});
   } catch (error) {
     dailyMarketStatus.textContent = `读取失败：${error.message}`;
@@ -536,6 +707,7 @@ function renderDailyMarketScheduler(scheduler) {
       ? `已启用 · ${scheduler.time || "21:30"}`
       : "未启用";
   if (dailyMarketStockCount) dailyMarketStockCount.textContent = String(scheduler.stock_count ?? "-");
+  if (dailyStockListCount) dailyStockListCount.textContent = String(scheduler.stock_list_count ?? "-");
   if (dailyMarketLastDate) dailyMarketLastDate.textContent = scheduler.last_run_date || "-";
   if (dailyMarketUpdated) dailyMarketUpdated.textContent = String(last.updated ?? "-");
   if (dailyMarketSkipped) dailyMarketSkipped.textContent = String(last.skipped ?? "-");
@@ -776,6 +948,8 @@ function auditActionLabel(action) {
     revoke_vip: "撤销 VIP",
     disable_user: "禁用用户",
     enable_user: "启用用户",
+    archive_user: "归档用户",
+    archive_demo_account: "归档测试账号",
     reset_demo_budget: "重置测试额度",
   })[action] || action || "-";
 }

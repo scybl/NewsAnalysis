@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>归档账号 - 价值投机分析</title>
+    <script>
+      try {
+        if (localStorage.getItem("stockTheme") === "dark") {
+          document.documentElement.classList.add("theme-dark");
+        }
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=admin-archives-20260618-v1" />
+  </head>
+  <body>
+    <main class="admin-page admin-shell">
+      <aside class="admin-sidebar">
+        <a class="admin-brand" href="/">
+          <span class="admin-brand-mark">VA</span>
+          <span>
+            <strong>价值投机分析</strong>
+            <small>Admin Console</small>
+          </span>
+        </a>
+        <nav class="admin-nav" aria-label="后台导航">
+          <a href="/admin-accounts.html">
+            <span class="admin-nav-icon">A</span>
+            <span>账户管理</span>
+          </a>
+          <a href="/admin-agent.html">
+            <span class="admin-nav-icon">G</span>
+            <span>Agent Gateway</span>
+          </a>
+          <a class="active" href="/admin-archives.html">
+            <span class="admin-nav-icon">R</span>
+            <span>归档账号</span>
+          </a>
+          <a href="/admin-spider.html">
+            <span class="admin-nav-icon">S</span>
+            <span>爬虫控制</span>
+          </a>
+          <a href="/admin-news.html">
+            <span class="admin-nav-icon">N</span>
+            <span>新闻数据</span>
+          </a>
+        </nav>
+        <div class="admin-sidebar-footer">
+          <a class="admin-footer-link" href="/">
+            <span class="admin-nav-icon">H</span>
+            <span>返回分析</span>
+          </a>
+          <div class="admin-footer-actions">
+            <button id="themeToggleBtn" type="button">深色模式</button>
+            <button id="logoutBtn" type="button">退出登录</button>
+          </div>
+        </div>
+      </aside>
+
+      <section class="admin-workspace">
+        <header class="admin-page-head">
+          <div>
+            <span class="admin-kicker">ARCHIVE</span>
+            <h1>归档账号</h1>
+            <p>查看已冻结留存的账号。这里不展示密码哈希或 API Key 密文，只展示安全摘要。</p>
+          </div>
+          <div class="admin-actions archive-search">
+            <input id="archiveSearchInput" type="search" placeholder="搜索账号、归档人、原因..." />
+            <button id="archiveSearchBtn" class="primary-action" type="button">搜索</button>
+          </div>
+        </header>
+
+        <div class="admin-panel">
+          <div class="admin-kpis">
+            <div><span>归档总数</span><strong id="archiveTotalCount">-</strong></div>
+            <div><span>注册用户</span><strong id="archiveUserCount">-</strong></div>
+            <div><span>测试账号</span><strong id="archiveDemoCount">-</strong></div>
+            <div><span>当前筛选</span><strong id="archiveQueryLabel">全部</strong></div>
+          </div>
+          <div id="archiveSummary" class="admin-summary"></div>
+          <div class="admin-grid archive-grid">
+            <section class="admin-card archive-card-wide">
+              <div class="admin-card-head">
+                <h4>归档注册用户</h4>
+                <span>冻结但留存账号、Key 状态和用量快照</span>
+              </div>
+              <div class="admin-table-wrap">
+                <table id="archiveUsersTable"></table>
+              </div>
+            </section>
+            <section class="admin-card archive-card-wide">
+              <div class="admin-card-head">
+                <h4>归档测试账号</h4>
+                <span>冻结但留存额度配置和用量快照</span>
+              </div>
+              <div class="admin-table-wrap">
+                <table id="archiveDemoAccountsTable"></table>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/admin-archives.js?v=admin-archives-20260618-v1"></script>
+  </body>
+</html>

@@ -19,25 +19,23 @@ pip install -r requirments.txt
 
 ## Database
 
-默认写入 MongoDB 的 `news.articles`，可以通过环境变量覆盖：
+默认写入 MongoDB 的 `news.articles`。敏感连接信息不要写入 `.env`，请在项目根目录使用统一加密密钥库：
 
 ```bash
-export MONGODB_URI=
+.venv/bin/python -m stock_pipeline secrets set mongo.password
+```
+
+非敏感库名和集合名仍可用环境变量覆盖：
+
+```bash
 export MONGO_HOST=localhost
 export MONGO_PORT=27017
 export MONGO_DB=news
 export MONGO_COLLECTION=articles
-export MONGO_USER=
-export MONGO_PASSWORD=
+export MONGO_USER=admin
 export MONGO_AUTHSOURCE=admin
 export MONGODB_DATABASE=news
 export MONGODB_COLLECTION=articles
-```
-
-如果使用完整连接串，设置 `MONGODB_URI` 即可：
-
-```bash
-export MONGODB_URI="mongodb://localhost:27017/"
 ```
 
 首次运行会自动创建索引：

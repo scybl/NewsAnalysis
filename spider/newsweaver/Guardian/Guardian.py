@@ -20,18 +20,22 @@ from urllib.parse import quote_plus
 import sys
 
 # 加载项目根目录环境变量
-load_dotenv(os.path.join(os.path.dirname(__file__), '../../../.env'))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
+load_dotenv(os.path.join(PROJECT_ROOT, '.env'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 SPIDER_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 if SPIDER_ROOT not in sys.path:
     sys.path.insert(0, SPIDER_ROOT)
 
+from stock_pipeline.secret_store import secret_value
 from news_schema import dedupe_filter, ensure_news_indexes, normalize_news_document
 
 class GuardianCrawler:
     def __init__(self, api_key: str = None, data_file: str = None, base_url: str = None):
         # 从环境变量读取配置，如果没有传参则使用环境变量
-        self.api_key = api_key or os.getenv('GUARDIAN_API_KEY')
+        self.api_key = api_key or secret_value("guardian.api_key", ("GUARDIAN_API_KEY",))
         self.base_url = base_url or os.getenv('GUARDIAN_BASE_URL', 'https://content.guardianapis.com')
         # 统一将本地存储放到 data 目录
         self.data_dir = os.getenv('GUARDIAN_DATA_DIR', 'data')

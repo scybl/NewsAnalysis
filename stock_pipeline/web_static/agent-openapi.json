@@ -1,0 +1,144 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "NewsAnalysis Agent Gateway",
+    "version": "1.0.0",
+    "description": "Scoped machine API for local A-share research and multi-agent analysis jobs."
+  },
+  "servers": [
+    {"url": "/api/agent/v1"}
+  ],
+  "components": {
+    "securitySchemes": {
+      "agentBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "na_agent_..."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "ok": {"type": "boolean", "example": false},
+          "error": {"type": "string"}
+        }
+      },
+      "AnalysisJobRequest": {
+        "type": "object",
+        "required": ["ts_code"],
+        "properties": {
+          "ts_code": {"type": "string", "example": "000001.SZ"},
+          "analysis_type": {
+            "type": "string",
+            "enum": ["value_speculation", "value_quality", "value_dividend", "oversold_rebound"],
+            "default": "value_speculation"
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "properties": {
+          "job_id": {"type": "string"},
+          "status": {"type": "string", "enum": ["queued", "running", "succeeded", "failed", "cancelled", "stopped"]},
+          "progress": {"type": "array", "items": {"type": "object"}},
+          "result": {"type": "object", "nullable": true},
+          "error": {"type": "string"}
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Agent Gateway health",
+        "responses": {"200": {"description": "Healthy"}}
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "Agent API contract",
+        "responses": {"200": {"description": "OpenAPI document"}}
+      }
+    },
+    "/whoami": {
+      "get": {
+        "summary": "Inspect agent token",
+        "security": [{"agentBearer": []}],
+        "responses": {
+          "200": {"description": "Token identity and scopes"},
+          "401": {"description": "Invalid token", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/stocks/search": {
+      "get": {
+        "summary": "Search stocks",
+        "security": [{"agentBearer": []}],
+        "parameters": [{"name": "q", "in": "query", "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Stock matches"}}
+      }
+    },
+    "/stocks/{ts_code}/status": {
+      "get": {
+        "summary": "Read local stock status",
+        "security": [{"agentBearer": []}],
+        "parameters": [{"name": "ts_code", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Local status"}}
+      }
+    },
+    "/stocks/{ts_code}/data": {
+      "get": {
+        "summary": "Read local stock data",
+        "security": [{"agentBearer": []}],
+        "parameters": [{"name": "ts_code", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "Local stock payload"}}
+      }
+    },
+    "/analysis-jobs": {
+      "post": {
+        "summary": "Submit multi-agent analysis",
+        "description": "Requires B scope and an Idempotency-Key header. Dynamic external fetch is disabled.",
+        "security": [{"agentBearer": []}],
+        "parameters": [{"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AnalysisJobRequest"}}}
+        },
+        "responses": {
+          "202": {"description": "Job queued"},
+          "403": {"description": "B scope required"},
+          "428": {"description": "Idempotency key or system model key missing"}
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "summary": "List agent-owned jobs",
+        "security": [{"agentBearer": []}],
+        "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}],
+        "responses": {"200": {"description": "Recent jobs"}}
+      }
+    },
+    "/jobs/{job_id}": {
+      "get": {
+        "summary": "Read one agent-owned job",
+        "security": [{"agentBearer": []}],
+        "parameters": [{"name": "job_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {
+          "200": {"description": "Job snapshot", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Job"}}}},
+          "403": {"description": "Job belongs to another token"}
+        }
+      }
+    },
+    "/jobs/{job_id}/stream": {
+      "get": {
+        "summary": "Stream job progress",
+        "description": "SSE events: snapshot, progress, ping, result, timeout.",
+        "security": [{"agentBearer": []}],
+        "parameters": [{"name": "job_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "text/event-stream"}}
+      }
+    }
+  }
+}

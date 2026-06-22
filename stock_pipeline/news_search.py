@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 import re
-import time
 import urllib.parse
+from datetime import datetime, timedelta
 from typing import Any
 
 from .config import PROJECT_ROOT, load_dotenv
+from .secret_store import secret_value
 
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -47,6 +48,71 @@ def search_related_news(company: dict[str, Any], limit: int = 12, days: int = 45
     keywords = build_stock_news_keywords(company)
     if not keywords:
         return {"enabled": False, "keywords": [], "items": [], "error": "缺少股票关键词。"}
+    date_range = _recent_date_range(days)
+    return search_news_evidence(company, keywords=keywords, start_date=date_range["start"], end_date=date_range["end"], limit=limit)
+
+
+def build_news_evidence_context(
+    company: dict[str, Any],
+    learning_context: dict[str, Any] | None = None,
+    *,
+    recent_days: int = 60,
+    recent_limit: int = 12,
+    historical_limit: int = 6,
+    max_windows: int = 4,
+    window_days: int = 45,
+) -> dict[str, Any]:
+    keywords = build_stock_news_keywords(company)
+    if not keywords:
+        return {"enabled": False, "keywords": [], "recent": {"items": []}, "historical_windows": [], "error": "缺少股票关键词。"}
+
+    recent_range = _recent_date_range(recent_days)
+    recent = search_news_evidence(company, keywords=keywords, start_date=recent_range["start"], end_date=recent_range["end"], limit=recent_limit)
+    windows = []
+    for case in _historical_news_windows(learning_context or {}, max_windows=max_windows, window_days=window_days):
+        evidence = search_news_evidence(
+            company,
+            keywords=keywords,
+            start_date=case["start_date"],
+            end_date=case["end_date"],
+            limit=historical_limit,
+        )
+        windows.append(
+            {
+                **case,
+                "items": evidence.get("items", []),
+                "total": evidence.get("total", 0),
+                "error": evidence.get("error", ""),
+            }
+        )
+    return {
+        "enabled": bool(recent.get("enabled")),
+        "database": recent.get("database", ""),
+        "collection": recent.get("collection", ""),
+        "keywords": keywords,
+        "recent": {
+            "date_range": recent.get("date_range", {}),
+            "items": recent.get("items", []),
+            "total": recent.get("total", 0),
+        },
+        "items": recent.get("items", []),
+        "historical_windows": windows,
+        "error": recent.get("error", ""),
+        "instruction": "优先使用同一标的、同一行业关键词、对应时间窗内的新闻作为事件证据；若无命中，必须说明数据库没有检索到新闻支撑。",
+    }
+
+
+def search_news_evidence(
+    company: dict[str, Any],
+    *,
+    keywords: list[str] | None = None,
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 12,
+) -> dict[str, Any]:
+    keywords = _dedupe_keywords(keywords or build_stock_news_keywords(company))
+    if not keywords:
+        return {"enabled": False, "keywords": [], "items": [], "error": "缺少股票关键词。"}
     try:
         import pymongo
     except ImportError as exc:
@@ -59,8 +125,9 @@ def search_related_news(company: dict[str, Any], limit: int = 12, days: int = 45
     try:
         client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=1200, socketTimeoutMS=1200)
         collection = client[database][collection_name]
-        query = _news_query(keywords, days)
+        query = _news_query(keywords, start_date=start_date, end_date=end_date)
         projection = {"_id": 0, "title": 1, "time": 1, "url": 1, "type": 1, "publisher": 1, "summary": 1, "content": 1}
+        total = collection.count_documents(query)
         rows = list(collection.find(query, projection).sort("time", pymongo.DESCENDING).limit(max(1, min(50, limit))))
         return {
             "enabled": True,
@@ -68,6 +135,8 @@ def search_related_news(company: dict[str, Any], limit: int = 12, days: int = 45
             "collection": collection_name,
             "keywords": keywords,
             "items": [_public_news_item(row, keywords) for row in rows],
+            "total": total,
+            "date_range": {"start": start_date, "end": end_date},
             "error": "",
         }
     except Exception as exc:  # noqa: BLE001 - news context should not block analysis
@@ -78,12 +147,13 @@ def search_related_news(company: dict[str, Any], limit: int = 12, days: int = 45
 
 
 def _mongo_uri() -> str:
-    if os.getenv("MONGODB_URI"):
-        return os.getenv("MONGODB_URI", "")
+    direct_uri = secret_value("mongo.uri", ("MONGODB_URI", "MONGO_URI"))
+    if direct_uri:
+        return direct_uri
     host = os.getenv("MONGO_HOST", "localhost")
     port = int(os.getenv("MONGO_PORT", "27017"))
-    username = os.getenv("MONGO_USER", "")
-    password = os.getenv("MONGO_PASSWORD", "")
+    username = secret_value("mongo.user", ("MONGO_USER",))
+    password = secret_value("mongo.password", ("MONGO_PASSWORD",))
     auth_source = os.getenv("MONGO_AUTHSOURCE", "admin")
     if username and password:
         user = urllib.parse.quote_plus(username)
@@ -92,16 +162,16 @@ def _mongo_uri() -> str:
     return f"mongodb://{host}:{port}/"
 
 
-def _news_query(keywords: list[str], days: int) -> dict[str, Any]:
+def _news_query(keywords: list[str], *, start_date: str = "", end_date: str = "") -> dict[str, Any]:
     escaped = [re.escape(item) for item in keywords if item]
     pattern = "|".join(escaped[:24])
     clauses = [{"title": {"$regex": pattern, "$options": "i"}}]
     clauses.append({"content": {"$regex": pattern, "$options": "i"}})
     clauses.append({"summary": {"$regex": pattern, "$options": "i"}})
     query: dict[str, Any] = {"$or": clauses}
-    if days > 0:
-        cutoff = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - days * 86400))
-        query["time"] = {"$gte": cutoff}
+    time_range = _time_filter(start_date, end_date)
+    if time_range:
+        query["time"] = time_range
     return query
 
 
@@ -115,6 +185,7 @@ def _public_news_item(row: dict[str, Any], keywords: list[str]) -> dict[str, Any
         "publisher": row.get("publisher", ""),
         "url": row.get("url", ""),
         "matched_keywords": hits[:8],
+        "excerpt": _trim(row.get("summary") or row.get("content") or "", 220),
     }
 
 
@@ -128,3 +199,62 @@ def _dedupe_keywords(values: list[str]) -> list[str]:
         seen.add(text.lower())
         result.append(text)
     return result
+
+
+def _historical_news_windows(learning_context: dict[str, Any], *, max_windows: int, window_days: int) -> list[dict[str, Any]]:
+    windows = []
+    for case in learning_context.get("similar_cases", [])[:max_windows]:
+        trade_date = str(case.get("trade_date") or "")
+        center = _parse_date(trade_date)
+        if not center:
+            continue
+        start = center - timedelta(days=window_days)
+        end = center + timedelta(days=window_days)
+        windows.append(
+            {
+                "trade_date": center.strftime("%Y%m%d"),
+                "start_date": start.strftime("%Y-%m-%d"),
+                "end_date": end.strftime("%Y-%m-%d"),
+                "similarity": case.get("similarity"),
+                "outcome_class": case.get("outcome_class", ""),
+                "forward_returns": case.get("forward_returns", {}),
+                "reason": "historical_similarity_window",
+            }
+        )
+    return windows
+
+
+def _time_filter(start_date: str, end_date: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    start = _parse_date(start_date)
+    end = _parse_date(end_date)
+    if start:
+        result["$gte"] = start.strftime("%Y-%m-%d 00:00:00")
+    if end:
+        result["$lte"] = end.strftime("%Y-%m-%d 23:59:59")
+    return result
+
+
+def _recent_date_range(days: int) -> dict[str, str]:
+    end = datetime.now()
+    start = end - timedelta(days=max(0, days))
+    return {"start": start.strftime("%Y-%m-%d"), "end": end.strftime("%Y-%m-%d")}
+
+
+def _parse_date(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y%m%d", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text[: len(fmt)], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _trim(value: Any, limit: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "..."

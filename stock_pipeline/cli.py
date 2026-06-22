@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
 from pathlib import Path
 
@@ -10,9 +11,11 @@ from .config import PROJECT_ROOT, get_news_db_config, get_settings
 from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
 from .news.crawler import CATEGORIES, CrawlOptions, crawl_news, parse_sleep
-from .news.storage import Mysql, search_news
+from .news_library import query_news_library
+from .secret_store import SECRET_ENV_MAP, get_secret_store
 from .ths_minute import build_config as build_ths_minute_config
 from .ths_minute import fetch_and_store_minutes
+from .totp import generate_totp_secret, normalize_totp_secret, otpauth_uri
 from .tushare_client import TushareClient
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 from .value_speculation import VALUE_SPECULATION_QUESTION, build_value_speculation_dossier
@@ -48,6 +51,20 @@ def main() -> None:
     web_parser = subparsers.add_parser("web", help="启动简单前端")
     web_parser.add_argument("--host", default="127.0.0.1", help="监听地址")
     web_parser.add_argument("--port", type=int, default=8765, help="监听端口")
+
+    secrets_parser = subparsers.add_parser("secrets", help="管理本地加密密钥库，不把 key 写入 .env")
+    secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command", required=True)
+    secrets_subparsers.add_parser("list", help="列出已配置的密钥名，不显示明文")
+    secrets_set_parser = secrets_subparsers.add_parser("set", help="写入一个密钥，默认从安全输入读取")
+    secrets_set_parser.add_argument("name", help="密钥名，例如 tushare.api_token、web.admin_password、guardian.api_key")
+    secrets_set_parser.add_argument("--value", default=None, help="直接传入值；不推荐在共享机器上使用，可能进入 shell 历史")
+    secrets_delete_parser = secrets_subparsers.add_parser("delete", help="删除一个密钥")
+    secrets_delete_parser.add_argument("name", help="密钥名")
+    secrets_subparsers.add_parser("migrate-env", help="把当前 .env/环境变量中的敏感项迁入加密密钥库")
+    setup_totp_parser = secrets_subparsers.add_parser("setup-admin-totp", help="生成并保存管理员 Authenticator 一次性验证码密钥")
+    setup_totp_parser.add_argument("--account", default=None, help="Authenticator 中显示的账号名，默认读取管理员账号")
+    setup_totp_parser.add_argument("--issuer", default="NewsAnalysis", help="Authenticator 中显示的发行方")
+    setup_totp_parser.add_argument("--secret", default=None, help="使用已有 Base32 密钥；不传则自动生成")
 
     news_parser = subparsers.add_parser("news", help="财经新闻抓取和检索")
     news_subparsers = news_parser.add_subparsers(dest="news_command", required=True)
@@ -92,6 +109,8 @@ def main() -> None:
         run_chat(args)
     elif args.command == "web":
         serve_web(args.host, args.port)
+    elif args.command == "secrets":
+        run_secrets(args)
     elif args.command == "news":
         run_news(args)
     elif args.command == "market":
@@ -103,6 +122,54 @@ def _add_collect_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--years", type=int, default=None, help="只回看指定年数；不传则默认抓取全部历史")
     parser.add_argument("--full-history", action="store_true", help="从 1990-01-01 开始尽量抓全历史")
     parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "reports"), help="报告输出根目录")
+
+
+def run_secrets(args: argparse.Namespace) -> None:
+    from .config import load_dotenv
+
+    load_dotenv()
+    store = get_secret_store()
+    if args.secrets_command == "list":
+        states = store.list_states()
+        if not states:
+            print("尚未配置任何加密密钥。")
+            print("常用密钥名：" + "、".join(sorted(SECRET_ENV_MAP)))
+            return
+        for name, state in states.items():
+            mark = "已配置" if state.configured else "未配置"
+            suffix = f"；更新时间：{state.updated_at}" if state.updated_at else ""
+            print(f"{name}: {mark}{suffix}")
+        return
+    if args.secrets_command == "set":
+        value = args.value
+        if value is None:
+            value = getpass.getpass(f"{args.name}: ")
+        store.set(args.name, value, updated_by="cli")
+        print(f"{args.name}: 已加密保存。")
+        return
+    if args.secrets_command == "delete":
+        deleted = store.delete(args.name)
+        print(f"{args.name}: {'已删除' if deleted else '原本未配置'}。")
+        return
+    if args.secrets_command == "migrate-env":
+        migrated = store.migrate_from_env()
+        if migrated:
+            print("已迁移：" + "、".join(migrated))
+            print("确认服务可启动后，可以从 .env 删除这些敏感项。")
+        else:
+            print("没有发现需要迁移的 env 敏感项，或密钥库中已存在对应值。")
+        return
+    if args.secrets_command == "setup-admin-totp":
+        username = args.account or store.get("web.admin_username", "admin")
+        secret = normalize_totp_secret(args.secret or generate_totp_secret())
+        store.set("web.admin_totp_secret", secret, updated_by="cli")
+        print("管理员 Authenticator 已启用。")
+        print("请在 Google/Microsoft/Authy 等 Authenticator 中添加以下 URI，或手动输入密钥。")
+        print(f"账号：{username}")
+        print(f"手动密钥：{secret}")
+        print(f"otpauth URI：{otpauth_uri(secret, account=username, issuer=args.issuer)}")
+        print("添加完成后，管理员登录需要账号、密码和 30 秒一次性验证码。")
+        return
 
 
 def run_collect(args: argparse.Namespace) -> Path:
@@ -218,8 +285,10 @@ def run_news(args: argparse.Namespace) -> None:
         return
 
     if args.news_command == "search":
-        with Mysql(get_news_db_config()) as mysql:
-            rows = search_news(mysql, args.terms, limit=args.limit)
+        result = query_news_library({"q": [" ".join(args.terms)], "page_size": [str(args.limit)], "days": ["0"]})
+        if not result.get("enabled"):
+            raise RuntimeError(f"本地新闻库不可用：{result.get('error') or 'unknown error'}")
+        rows = result.get("items", [])
         for row in rows:
             print(f"{row.get('time')} [{row.get('type')}] {row.get('title')}")
             if row.get("url"):

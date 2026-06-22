@@ -12,32 +12,31 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-`.env` 支持以下变量名：
+敏感信息不要写入 `.env`。首次运行先把 key、管理员密码和连接密码写入本地加密密钥库：
 
 ```bash
-TUSHARE_API=你的TushareToken
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-pro
-STOCK_WEB_USER=admin
-STOCK_WEB_PASSWORD=请换成强密码
-STOCK_WEB_SESSION_SECRET=一段随机字符串
-STOCK_WEB_KEY_ENCRYPTION_SECRET=另一段长期固定的随机字符串
-STOCK_WEB_INVITE_CODES=
-STOCK_WEB_INVITE_TTL_SECONDS=259200
-STOCK_WEB_DEMO_REQUEST_LIMIT=30
-STOCK_WEB_DEMO_WINDOW_SECONDS=86400
-STOCK_DATA_CACHE_TTL_SECONDS=86400
-STOCK_ANALYSIS_HISTORY_REVIEW_LIMIT=3
-STOCK_ANALYSIS_REUSE_TTL_SECONDS=1800
-STOCK_ANALYSIS_REFRESH_TTL_SECONDS=3600
-STOCK_AGENT_ENGINE=legacy
-STOCK_AGENT_TEMPLATE=native
-MONGODB_URI=mongodb://localhost:27017/
-MONGODB_DATABASE=news
-MONGODB_COLLECTION=articles
+.venv/bin/python -m stock_pipeline secrets set tushare.api_token
+.venv/bin/python -m stock_pipeline secrets set web.admin_username
+.venv/bin/python -m stock_pipeline secrets set web.admin_password
+.venv/bin/python -m stock_pipeline secrets set web.session_secret
+.venv/bin/python -m stock_pipeline secrets set mongo.password
 ```
 
-也兼容 `TUSHARE_TOKEN`。DeepSeek key 不再放入 `.env`，请用管理员账号进入“账户管理”页，在“系统模型 Key”中验证并锁定。该 key 会使用 `STOCK_WEB_KEY_ENCRYPTION_SECRET` 加密保存；这个 secret 必须长期固定，变更后已保存的 key 将无法解密。
+管理员账号支持 Authenticator/TOTP 二次验证。启用方式：
+
+```bash
+.venv/bin/python -m stock_pipeline secrets setup-admin-totp
+```
+
+命令会输出手动密钥和 `otpauth://` URI，只显示一次；把它添加到 Google Authenticator、Microsoft Authenticator、Authy 等应用后，管理员每次登录都需要账号、密码和 30 秒一次性验证码。不要把这段 URI 或手动密钥提交到 Git、截图或聊天记录。
+
+如果已经有旧 `.env`，可以一次性迁移敏感项：
+
+```bash
+.venv/bin/python -m stock_pipeline secrets migrate-env
+```
+
+密钥库保存在 `local_data/secure/secrets.json.enc`，本地 master key 保存在 `local_data/secure/master.key`，两者都会设置为当前用户可读写。`.env` 只保留非敏感运行参数，例如 `DEEPSEEK_MODEL`、缓存 TTL、MongoDB host/collection 等。DeepSeek key 可继续用管理员账号进入“账户管理”页，在“系统模型 Key”中验证并锁定；保存后不回显明文。
 
 运行一次完整分析：
 
@@ -67,7 +66,7 @@ scripts/run_web.sh
 
 然后打开 `http://127.0.0.1:8765`，可以用股票代码、名称、首字母或拼音检索，例如 `000001`、`平安银行`、`mygf`、`muyuangufen`。
 
-前端默认启用账号密码登录。若未配置，默认账号密码为 `admin/admin`，只适合本地测试；部署到服务器前请务必在 `.env` 中设置 `STOCK_WEB_USER`、`STOCK_WEB_PASSWORD` 和 `STOCK_WEB_SESSION_SECRET`。
+前端默认启用账号密码登录。若未配置，默认账号密码为 `admin/admin`，只适合本地测试；部署到服务器前请务必用 `stock_pipeline secrets set web.admin_username/web.admin_password/web.session_secret` 写入加密密钥库，并运行 `stock_pipeline secrets setup-admin-totp` 启用管理员 Authenticator 二次验证。
 
 注册功能只接受管理员后台生成的邀请码。管理员登录后可在“管理”面板生成 6 位数字邀请码，默认 3 天有效，成功注册后会被标记为已使用，不能再次注册。`STOCK_WEB_INVITE_CODES` 只作为可选启动种子，不建议日常使用。朋友测试账号也在管理员面板生成，默认每 24 小时最多 30 次 API 请求，可用 `STOCK_WEB_DEMO_REQUEST_LIMIT` 和 `STOCK_WEB_DEMO_WINDOW_SECONDS` 调整新生成测试账号的默认额度。
 
@@ -85,7 +84,18 @@ scripts/run_web.sh
 
 LangGraph 模式会把每次最终结论写入 `local_data/{ts_code}/current/decision_memory.jsonl` 和 `local_data/agent_memory/global_decisions.jsonl`。下一次分析同一只股票或其他股票时，会读取最近几条决策记忆作为复盘上下文；这只保存分析结论摘要和运行 ID，不保存任何用户 API key。
 
-账号分为管理员、VIP、普通用户和测试账号。管理员和 VIP 使用系统 `.env` 中的 Tushare / DeepSeek key；普通用户需要在页面内保存自己的 key。用户 key 会用 `STOCK_WEB_KEY_ENCRYPTION_SECRET` 派生的 Fernet 密钥加密保存，删除时会直接移除密文记录，不保留删除痕迹。管理员可在账户管理页生成 VIP 兑换码，并自定义兑换后的 VIP 天数；兑换码默认 3 天内有效，一次性使用。
+管理员后台新增 **Agent Gateway** 页面，可签发与浏览器会话隔离的 `na_agent_...` token。当前开放：
+
+- `R`：读取本地股票、资料包和 Agent 任务。
+- `B`：提交消耗系统 DeepSeek 额度的异步多 Agent 分析任务。
+
+Agent API 位于 `/api/agent/v1`，OpenAPI 合约位于 `/api/agent/v1/openapi.json`。完整任务记录和 `Idempotency-Key` 重放结果保存在 `local_data/agent_jobs.json`；服务重启时未完成任务会标记为中断，不会假装继续运行。
+
+仓库内 `mcp_server/` 是 Agent Gateway 的薄 MCP 包装，提供健康检查、股票搜索、本地资料读取和分析任务提交/轮询。MCP 只转发 scoped token，不接触管理员密码、浏览器 Cookie、Tushare key 或 DeepSeek key。安装与配置见 `mcp_server/README.md`。
+
+账号分为管理员、VIP、普通用户和测试账号。管理员和 VIP 使用本地加密密钥库中的 Tushare / DeepSeek key；普通用户需要在页面内保存自己的 key。用户 key 会用本地加密密钥派生的 Fernet 密钥加密保存，删除时会直接移除密文记录，不保留删除痕迹。管理员可在账户管理页生成 VIP 兑换码，并自定义兑换后的 VIP 天数；兑换码默认 3 天内有效，一次性使用。
+
+股票基础列表由后台“每日股票数据”任务按北京时间自动刷新，默认时间为 `21:30`，不在普通用户前台提供手动刷新入口。其他会访问外部数据源或消耗 API/模型额度的手动动作默认需要审批确认，包括同步股票资料包、补抓分钟行情、单 Agent/多 Agent 分析、启动爬虫和立即执行每日股票数据更新。后端会校验 `approved=true`，并把审批动作写入审计日志；如需关闭可设置非敏感参数 `DATA_FETCH_APPROVAL_REQUIRED=0`。
 
 抓取同花顺财经新闻到 MongoDB：
 
@@ -102,6 +112,9 @@ SPIDER_TYPES=财经要闻,公司新闻 SPIDER_MAX_PAGES=3 scripts/spider_crawl.s
 本地 MongoDB 可用 Docker 启动，数据会保存在 `local_data/mongo`：
 
 ```bash
+mkdir -p local_data/secure
+# 写入与加密密钥库 mongo.password 相同的 MongoDB 初始化密码，文件不会进入 Git。
+# 首次启动 MongoDB 后不要随意改这个文件，否则已初始化实例仍使用旧密码。
 docker compose up -d mongo
 scripts/mongo_ping.sh
 ```
@@ -122,23 +135,22 @@ scripts/spider_dry_run.sh
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-生产环境配置文件使用服务器上的 `.env`。可以从模板复制：
+生产环境同样不要把 key 写入 `.env`。部署后在服务器目录执行：
 
 ```bash
-cp .env.deploy.sample .env
+.venv/bin/python -m stock_pipeline secrets set tushare.api_token
+.venv/bin/python -m stock_pipeline secrets set web.admin_password
+.venv/bin/python -m stock_pipeline secrets set web.session_secret
+.venv/bin/python -m stock_pipeline secrets set mongo.password
+mkdir -p local_data/secure
+# local_data/secure/mongo_root_password.txt 需与 mongo.password 相同，供 Docker 初始化 MongoDB 使用。
 ```
 
-然后至少替换这些值：
+`.env` 只保留非敏感参数，例如：
 
 ```bash
-TUSHARE_API=...
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-pro
-STOCK_WEB_PASSWORD=...
-STOCK_WEB_SESSION_SECRET=...
-STOCK_WEB_KEY_ENCRYPTION_SECRET=...
-MONGO_PASSWORD=...
-GUARDIAN_API_KEY=...
 PUBLIC_WEB_PORT=8765
 ```
 
@@ -152,9 +164,23 @@ cp .deploy.env.sample .deploy.env
 scripts/deploy_server.sh
 ```
 
-本机部署脚本和 GitHub Actions 都不会上传 `.env`、用户数据、MongoDB 数据、会话、日志、报告、私钥、证书或本地数据库文件。生产 `.env` 只在服务器维护，`local_data` 等运行目录通过 Docker 卷持续保留。
+本机部署脚本和 GitHub Actions 都不会上传 `.env`、用户数据、MongoDB 数据、会话、日志、报告、私钥、证书、本地数据库文件或 `local_data/secure` 密钥库。生产密钥库只在服务器维护，`local_data` 等运行目录通过 Docker 卷持续保留。
 
 本机脚本只会打包 Git 已跟踪的文件，已跟踪文件的本地修改可以直接发布；新建源码需要先执行 `git add 文件名`，避免项目目录里未纳入版本控制的私密文件被误传。
+
+如果服务器部署目录里已经混入历史遗留文件，先做 clean deploy dry-run：
+
+```bash
+DEPLOY_CLEAN=1 DEPLOY_CLEAN_DRY_RUN=1 scripts/deploy_server.sh
+```
+
+确认输出里只有应隔离的历史文件后，再执行真实清理部署：
+
+```bash
+DEPLOY_CLEAN=1 scripts/deploy_server.sh
+```
+
+clean deploy 会先保留 `.env`、`cache/`、`local_data/`、`logs/`、`reports/`、`sessions/`，把其他非白名单内容移动到 `DEPLOY_BACKUP_ROOT` 下带时间戳的备份目录，然后再同步当前 Git 跟踪文件并重建服务。这样可以把线上代码目录恢复到当前仓库形态，同时避免直接永久删除历史文件。
 
 ### 推送后自动部署
 

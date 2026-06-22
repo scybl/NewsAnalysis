@@ -22,6 +22,10 @@
         box-sizing: border-box;
       }
 
+      [hidden] {
+        display: none !important;
+      }
+
       body {
         min-height: 100vh;
         margin: 0;
@@ -112,6 +116,52 @@
         cursor: pointer;
       }
 
+      button.secondary {
+        width: 100%;
+        height: 40px;
+        margin-top: 10px;
+        border: 1px solid #cfd6df;
+        border-radius: 6px;
+        background: transparent;
+        color: #475467;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .admin-heading {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 0 2px;
+      }
+
+      .admin-heading > span:last-child {
+        min-width: 0;
+      }
+
+      .admin-heading strong {
+        display: block;
+        font-size: 17px;
+      }
+
+      .admin-heading span:last-child {
+        color: #667085;
+        font-size: 13px;
+      }
+
+      .admin-mark {
+        display: grid;
+        width: 38px;
+        height: 38px;
+        flex: 0 0 38px;
+        place-items: center;
+        border-radius: 6px;
+        background: #17202a;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
       button:disabled {
         cursor: not-allowed;
         opacity: 0.65;
@@ -157,14 +207,16 @@
       }
 
       html.theme-dark .tab,
-      html.theme-dark input {
+      html.theme-dark input,
+      html.theme-dark button.secondary {
         background: #151f2b;
         border-color: #344154;
         color: #e6edf3;
       }
 
       html.theme-dark .tab.active,
-      html.theme-dark button.submit {
+      html.theme-dark button.submit,
+      html.theme-dark .admin-mark {
         background: #e6edf3;
         border-color: #e6edf3;
         color: #0f141b;
@@ -184,9 +236,9 @@
   <body>
     <main>
       <h1>价值投机</h1>
-      <p>登录或使用邀请码创建账号</p>
+      <p id="pageSubtitle">登录或使用邀请码创建账号</p>
 
-      <div class="tabs" role="tablist" aria-label="认证方式">
+      <div class="tabs" id="authTabs" role="tablist" aria-label="认证方式">
         <button class="tab active" id="loginTab" type="button">登录</button>
         <button class="tab" id="registerTab" type="button">注册</button>
       </div>
@@ -201,6 +253,31 @@
           <input id="loginPassword" name="password" type="password" autocomplete="current-password" required />
         </label>
         <button class="submit" id="loginBtn" type="submit">登录</button>
+      </form>
+
+      <form id="adminLoginForm" hidden>
+        <div class="admin-heading">
+          <span class="admin-mark" aria-hidden="true">A</span>
+          <span>
+            <strong>管理员验证</strong>
+            <span>请输入真实管理员凭据与动态验证码</span>
+          </span>
+        </div>
+        <input id="adminChallenge" name="admin_challenge" type="hidden" />
+        <label>
+          <span>管理员账号</span>
+          <input id="adminUsername" name="username" autocomplete="username" value="admin" required />
+        </label>
+        <label>
+          <span>管理员密码</span>
+          <input id="adminPassword" name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <label>
+          <span>Authenticator 验证码</span>
+          <input id="adminOtp" name="otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" placeholder="6 位数字" required />
+        </label>
+        <button class="submit" id="adminLoginBtn" type="submit">验证并登录</button>
+        <button class="secondary" id="backToLoginBtn" type="button">返回普通登录</button>
       </form>
 
       <form id="registerForm" hidden>
@@ -227,7 +304,10 @@
     <script>
       const loginTab = document.querySelector("#loginTab");
       const registerTab = document.querySelector("#registerTab");
+      const authTabs = document.querySelector("#authTabs");
+      const pageSubtitle = document.querySelector("#pageSubtitle");
       const loginForm = document.querySelector("#loginForm");
+      const adminLoginForm = document.querySelector("#adminLoginForm");
       const registerForm = document.querySelector("#registerForm");
       const message = document.querySelector("#message");
 
@@ -235,9 +315,25 @@
         const isLogin = mode === "login";
         loginTab.classList.toggle("active", isLogin);
         registerTab.classList.toggle("active", !isLogin);
+        authTabs.hidden = false;
         loginForm.hidden = !isLogin;
+        adminLoginForm.hidden = true;
         registerForm.hidden = isLogin;
+        pageSubtitle.textContent = "登录或使用邀请码创建账号";
         message.textContent = "";
+      }
+
+      function showAdminLogin(challenge) {
+        authTabs.hidden = true;
+        loginForm.hidden = true;
+        registerForm.hidden = true;
+        adminLoginForm.hidden = false;
+        document.querySelector("#adminChallenge").value = challenge;
+        document.querySelector("#adminPassword").value = "";
+        document.querySelector("#adminOtp").value = "";
+        pageSubtitle.textContent = "管理员安全登录";
+        message.textContent = "";
+        document.querySelector("#adminPassword").focus();
       }
 
       async function submitJson(path, form, button) {
@@ -262,9 +358,39 @@
 
       loginTab.addEventListener("click", () => setMode("login"));
       registerTab.addEventListener("click", () => setMode("register"));
-      loginForm.addEventListener("submit", (event) => {
+      loginForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        const username = document.querySelector("#loginUsername").value;
+        const password = document.querySelector("#loginPassword").value;
+        if (username === "admin" && password === "admin") {
+          const button = document.querySelector("#loginBtn");
+          button.disabled = true;
+          message.textContent = "";
+          try {
+            const response = await fetch("/api/admin-login-entry", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ username, password }),
+            });
+            const payload = await response.json();
+            if (!payload.ok) throw new Error(payload.error || "管理员入口验证失败");
+            showAdminLogin(payload.admin_challenge);
+          } catch (err) {
+            message.textContent = err.message;
+          } finally {
+            button.disabled = false;
+          }
+          return;
+        }
         submitJson("/api/login", loginForm, document.querySelector("#loginBtn"));
+      });
+      adminLoginForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        submitJson("/api/login", adminLoginForm, document.querySelector("#adminLoginBtn"));
+      });
+      document.querySelector("#backToLoginBtn").addEventListener("click", () => {
+        loginForm.reset();
+        setMode("login");
       });
       registerForm.addEventListener("submit", (event) => {
         event.preventDefault();

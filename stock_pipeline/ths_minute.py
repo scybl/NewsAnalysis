@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import random
@@ -17,6 +18,8 @@ from typing import Any
 from .analysis_frameworks import build_all_analysis_dossiers
 from .config import PROJECT_ROOT, load_dotenv
 from .dossier import build_dossier
+from .minute_storage import build_minute_reference
+from .secret_store import secret_value
 from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 
 
@@ -171,15 +174,14 @@ def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, 
         succeeded_days += fetched["succeeded_days"]
         failed_days += fetched["failed_days"]
         failures.extend(fetched["failures"])
-    local_rows = _read_stock_rows(collection, ts_code, source="pytdx_history")
-    local = merge_local_dataset(ts_code, local_rows, {"source": "pytdx_history"}, dataset=PYTDX_HISTORY_DATASET)
-    all_dates = sorted({str(row.get("trade_date") or "") for row in local_rows if row.get("trade_date")})
+    local = merge_local_dataset(ts_code, collection, {"source": "pytdx_history"}, dataset=PYTDX_HISTORY_DATASET, source="pytdx_history")
+    reference = local.get("reference") or {}
     return {
         "ts_code": ts_code,
         "name": "",
         "source": "pytdx_history",
         "dataset": PYTDX_HISTORY_DATASET,
-        "trade_date": all_dates[-1] if all_dates else "",
+        "trade_date": reference.get("end_date", ""),
         "scope": "historical_minute_time_data",
         "history_supported": True,
         "requested_days": len(trade_dates),
@@ -188,13 +190,13 @@ def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, 
         "succeeded_days": succeeded_days,
         "failed_days": failed_days,
         "rows": rows_count,
-        "stored_rows": local.get("rows", len(local_rows)),
+        "stored_rows": local.get("rows", 0),
         "inserted": inserted,
         "updated": updated,
         "payload_inserted": 0,
         "local_merged": local["merged"],
         "local_path": local["path"],
-        "date_range": {"start": all_dates[0] if all_dates else "", "end": all_dates[-1] if all_dates else ""},
+        "date_range": {"start": reference.get("start_date", ""), "end": reference.get("end_date", "")},
         "ohlc_estimated": True,
         "amount_estimated": True,
         "message": "pytdx 历史分时已按交易日补抓；OHLC 和成交额由分时价量估算。",
@@ -212,7 +214,7 @@ def fetch_store_tdx_stock(ts_code: str, collection: Any, *, pages: int | str = 5
     if not rows:
         raise RuntimeError("通达信分钟 K 未返回数据。")
     inserted, updated = upsert_minute_rows(collection, rows)
-    local = merge_local_dataset(ts_code, _read_stock_rows(collection, ts_code, source="tdx"), {"source": "tdx"}, dataset=TDX_DATASET)
+    local = merge_local_dataset(ts_code, collection, {"source": "tdx"}, dataset=TDX_DATASET, source="tdx")
     dates = sorted({str(row.get("trade_date") or "") for row in rows if row.get("trade_date")})
     return {
         "ts_code": ts_code,
@@ -249,7 +251,7 @@ def fetch_store_ths_stock(ts_code: str, cfg: ThsMinuteConfig, collection: Any, p
     rows = normalize_minute_rows(ts_code, payload)
     inserted, updated = upsert_minute_rows(collection, rows)
     payload_inserted = upsert_payload(payload_collection, ts_code, payload)
-    local = merge_local_dataset(ts_code, _read_stock_rows(collection, ts_code, source="10jqka"), payload, dataset=THS_DATASET)
+    local = merge_local_dataset(ts_code, collection, payload, dataset=THS_DATASET, source="10jqka")
     return {
         "ts_code": ts_code,
         "name": payload.get("name", ""),
@@ -459,7 +461,7 @@ def _pytdx_servers() -> list[tuple[str, int]]:
 
 def _ensure_mootdx_importable() -> None:
     try:
-        import mootdx  # noqa: F401
+        importlib.import_module("mootdx")
         return
     except ImportError:
         pass
@@ -468,7 +470,7 @@ def _ensure_mootdx_importable() -> None:
 
         sys.path.insert(0, str(DEFAULT_MOOTDX_REPO))
         try:
-            import mootdx  # noqa: F401
+            importlib.import_module("mootdx")
             return
         except ImportError as exc:
             raise RuntimeError("mootdx 依赖未安装完整，请安装 pandas、tdxpy、prettytable、httpx。") from exc
@@ -684,16 +686,24 @@ def upsert_payload(collection: Any, ts_code: str, payload: dict[str, Any]) -> bo
     return result.upserted_id is not None
 
 
-def merge_local_dataset(ts_code: str, rows: list[dict[str, Any]], payload: dict[str, Any], *, dataset: str) -> dict[str, Any]:
+def merge_local_dataset(
+    ts_code: str,
+    collection: Any,
+    payload: dict[str, Any],
+    *,
+    dataset: str,
+    source: str,
+) -> dict[str, Any]:
     current_dir = PROJECT_ROOT / "local_data" / normalize_ts_code(ts_code) / "current"
     full_path = current_dir / "full_data.json"
     if not full_path.exists():
         return {"merged": False, "path": "", "reason": "本地 Tushare 资料包不存在"}
 
     full_data = read_json(full_path)
-    serializable_rows = _merge_rows(full_data.get("datasets", {}).get(dataset, []), [_local_row(row) for row in rows])
     datasets = full_data.setdefault("datasets", {})
-    datasets[dataset] = serializable_rows
+    datasets.pop(dataset, None)
+    reference = build_minute_reference(collection, ts_code, dataset=dataset, source=source)
+    full_data.setdefault("external_datasets", {})[dataset] = reference
     if dataset == TDX_DATASET:
         source_key = "tdx"
         note = "通达信历史分钟 K，补充 Tushare 分钟权限缺口。"
@@ -711,7 +721,9 @@ def merge_local_dataset(ts_code: str, rows: list[dict[str, Any]], payload: dict[
     }
     write_json(full_path, full_data)
     raw_dir = ensure_dir(current_dir / "raw")
-    write_json(raw_dir / f"{dataset}.json", {"fields": list(serializable_rows[0].keys()) if serializable_rows else [], "records": serializable_rows})
+    minute_raw_path = raw_dir / f"{dataset}.json"
+    if minute_raw_path.exists():
+        minute_raw_path.unlink()
     if dataset == THS_DATASET:
         write_json(raw_dir / "ths_market_time_payload.json", payload)
     dossier = build_dossier(full_data)
@@ -723,10 +735,10 @@ def merge_local_dataset(ts_code: str, rows: list[dict[str, Any]], payload: dict[
     if metadata_path.exists():
         metadata = read_json(metadata_path)
         rows_map = metadata.setdefault("dataset_rows", {})
-        rows_map[dataset] = len(serializable_rows)
+        rows_map[dataset] = reference["row_count"]
         metadata["market_minute_updated_at"] = timestamp()
         write_json(metadata_path, metadata)
-    return {"merged": True, "path": str(full_path), "rows": len(serializable_rows)}
+    return {"merged": True, "path": str(full_path), "rows": reference["row_count"], "reference": reference}
 
 
 def ths_market_code(code: str) -> str:
@@ -742,11 +754,6 @@ def _time_url(ts_code: str) -> str:
     return THS_TIME_URL_LATEST.format(market_code=market_code)
 
 
-def _read_stock_rows(collection: Any, ts_code: str, *, source: str) -> list[dict[str, Any]]:
-    rows = list(collection.find({"source": source, "ts_code": ts_code}, {"_id": 0}).sort([("trade_date", 1), ("minute", 1)]))
-    return rows
-
-
 def _existing_trade_dates(collection: Any, ts_code: str, *, source: str) -> set[str]:
     return {str(item) for item in collection.distinct("trade_date", {"source": source, "ts_code": ts_code}) if item}
 
@@ -758,16 +765,6 @@ def _local_daily_trade_dates(ts_code: str) -> list[str]:
     data = read_json(full_path)
     rows = data.get("datasets", {}).get("daily", [])
     return sorted({str(row.get("trade_date") or "") for row in rows if row.get("trade_date")})
-
-
-def _merge_rows(existing_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in existing_rows + new_rows:
-        trade_date = str(row.get("trade_date") or "")
-        minute = str(row.get("minute") or "")
-        if trade_date and minute:
-            merged[(trade_date, minute)] = row
-    return [merged[key] for key in sorted(merged)]
 
 
 def _ensure_indexes(collection: Any, pymongo: Any) -> None:
@@ -785,13 +782,13 @@ def _ensure_payload_indexes(collection: Any, pymongo: Any) -> None:
 
 
 def _mongo_uri(database: str) -> str:
-    direct_uri = os.getenv("MONGODB_URI") or os.getenv("MONGO_URI")
+    direct_uri = secret_value("mongo.uri", ("MONGODB_URI", "MONGO_URI"))
     if direct_uri:
         return direct_uri
     host = os.getenv("MONGO_HOST", "127.0.0.1")
     port = int(os.getenv("MONGO_PORT", "27017"))
-    user = os.getenv("MONGO_USER", "")
-    password = os.getenv("MONGO_PASSWORD", "")
+    user = secret_value("mongo.user", ("MONGO_USER",))
+    password = secret_value("mongo.password", ("MONGO_PASSWORD",))
     auth_source = os.getenv("MONGO_AUTHSOURCE", "admin")
     if user and password:
         encoded_user = urllib.parse.quote_plus(user)
@@ -866,18 +863,3 @@ def _near_zero(value: float | None) -> bool:
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _local_row(row: dict[str, Any]) -> dict[str, Any]:
-    item = dict(row)
-    for key in ("datetime", "fetched_at"):
-        value = item.get(key)
-        if isinstance(value, datetime):
-            if key == "datetime":
-                if value.tzinfo is None:
-                    value = value.replace(tzinfo=timezone.utc)
-                value = value.astimezone(CN_TZ)
-                item[key] = value.replace(tzinfo=None).isoformat()
-            else:
-                item[key] = value.isoformat()
-    return item

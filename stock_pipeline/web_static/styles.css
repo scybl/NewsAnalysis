@@ -1709,6 +1709,145 @@ body:has(.admin-shell) {
   grid-row: auto;
 }
 
+.archive-grid .archive-card-wide {
+  grid-column: 1 / -1;
+}
+
+.archive-search {
+  grid-template-columns: minmax(260px, 360px) auto;
+}
+
+.archive-search input {
+  height: 38px;
+  border: 1px solid #d0d5dd;
+  border-radius: 9px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: #17202a;
+  font-size: 13px;
+  outline: none;
+}
+
+.archive-search input:focus {
+  border-color: #2f6fed;
+  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.12);
+}
+
+.link-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  height: 38px;
+  border: 1px solid #17202a;
+  border-radius: 7px;
+  padding: 0 12px;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.agent-gateway-panel {
+  overflow: visible;
+}
+
+.agent-gateway-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+  gap: 16px;
+  padding: 18px;
+}
+
+.agent-token-console,
+.agent-audit-card {
+  grid-column: 1 / -1;
+}
+
+.agent-token-form {
+  grid-template-columns: minmax(160px, 1.2fr) minmax(100px, 0.7fr) minmax(90px, 0.45fr) minmax(110px, 0.55fr) auto;
+}
+
+.agent-scope-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  border-bottom: 1px solid #eef1f5;
+  padding: 12px 14px;
+  background: #ffffff;
+}
+
+.agent-scope-strip div {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.agent-scope-strip strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #17202a;
+  color: #ffffff;
+  font-size: 15px;
+}
+
+.agent-scope-strip span {
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.agent-endpoint-list {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+}
+
+.agent-endpoint-list div {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfd;
+}
+
+.agent-endpoint-list code {
+  color: #17202a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.agent-endpoint-list span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.agent-code-sample {
+  min-height: 268px;
+  margin: 0;
+  overflow: auto;
+  padding: 14px;
+  background: #101828;
+  color: #f8fafc;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.agent-code-sample code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .inline-admin-form {
   display: grid;
   grid-template-columns: minmax(130px, 1fr) auto auto;
@@ -1892,6 +2031,10 @@ body:has(.admin-shell) {
 
 .spider-log-card {
   grid-column: 2;
+}
+
+.spider-task-history-card {
+  grid-column: 1 / -1;
 }
 
 .spider-form {
@@ -2164,24 +2307,28 @@ body:has(.admin-shell) {
 .spider-state-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0;
+  gap: 1px;
+  border-top: 1px solid #eef1f5;
+  background: #eef1f5;
 }
 
 .spider-state-grid div {
   min-width: 0;
   border: 0;
-  border-right: 1px solid #eef1f5;
-  border-bottom: 1px solid #eef1f5;
   padding: 17px 16px;
   background: #ffffff;
 }
 
-.spider-state-grid div:nth-child(3n) {
-  border-right: 0;
+.spider-snapshot-state-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.spider-state-grid div:nth-last-child(-n + 2) {
-  border-bottom: 0;
+.daily-market-state-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.spider-snapshot-state-grid div:nth-child(5) {
+  grid-column: 1 / -1;
 }
 
 .spider-state-grid span {
@@ -2234,9 +2381,9 @@ body:has(.admin-shell) {
 .spider-source-tasks {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0;
+  gap: 1px;
   border-bottom: 1px solid #eef1f5;
-  background: #ffffff;
+  background: #eef1f5;
   padding: 0;
 }
 
@@ -2247,16 +2394,15 @@ body:has(.admin-shell) {
   min-height: 84px;
   align-content: center;
   border: 0;
-  border-right: 1px solid #eef1f5;
   border-radius: 0;
   padding: 14px;
-  background: transparent;
+  background: #ffffff;
   color: #344054;
   text-align: left;
 }
 
-.spider-task-card:last-child {
-  border-right: 0;
+.spider-task-card:nth-child(4n + 1):last-child {
+  grid-column: 1 / -1;
 }
 
 .spider-task-card span,
@@ -2547,10 +2693,18 @@ html.theme-dark .admin-panel,
 html.theme-dark .admin-card,
 html.theme-dark .admin-card-head,
 html.theme-dark .card-title-row,
-html.theme-dark .admin-kpis div,
-html.theme-dark .spider-state-grid div {
+html.theme-dark .admin-kpis div {
   background: #111821;
   border-color: #293445;
+}
+
+html.theme-dark .spider-state-grid {
+  border-color: #293445;
+  background: #293445;
+}
+
+html.theme-dark .spider-state-grid div {
+  background: #111821;
 }
 
 html.theme-dark .admin-brand,
@@ -2708,12 +2862,12 @@ html.theme-dark .spider-source-option input:checked + span::before {
 }
 
 html.theme-dark .spider-source-tasks {
-  background: #111821;
+  background: #293445;
   border-color: #293445;
 }
 
 html.theme-dark .spider-task-card {
-  background: transparent;
+  background: #111821;
   border-color: #293445;
   color: #d5dee8;
 }
@@ -2850,6 +3004,38 @@ html.theme-dark .spider-logs {
   color: #dce8f4;
 }
 
+html.theme-dark .link-action {
+  background: #528eff;
+  border-color: #528eff;
+  color: #07111f;
+}
+
+html.theme-dark .agent-scope-strip,
+html.theme-dark .agent-scope-strip div,
+html.theme-dark .agent-endpoint-list div {
+  background: #111821;
+  border-color: #293445;
+}
+
+html.theme-dark .agent-scope-strip strong {
+  background: #528eff;
+  color: #07111f;
+}
+
+html.theme-dark .agent-scope-strip span,
+html.theme-dark .agent-endpoint-list span {
+  color: #9aa7b5;
+}
+
+html.theme-dark .agent-endpoint-list code {
+  color: #dbeafe;
+}
+
+html.theme-dark .agent-code-sample {
+  background: #080d13;
+  color: #dce8f4;
+}
+
 @media (max-width: 960px) {
   .admin-shell {
     grid-template-columns: 1fr;
@@ -2890,7 +3076,9 @@ html.theme-dark .spider-logs {
   }
 
   .admin-grid,
-  .spider-layout {
+  .spider-layout,
+  .agent-gateway-grid,
+  .agent-token-form {
     grid-template-columns: 1fr;
   }
 
@@ -2957,9 +3145,7 @@ html.theme-dark .spider-logs {
   }
 
   .admin-kpis div,
-  .spider-state-grid div,
-  .spider-state-grid div:nth-child(3n),
-  .spider-state-grid div:nth-child(2n) {
+  .spider-state-grid div {
     border-right: 0;
   }
 

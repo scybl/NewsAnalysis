@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -15,11 +16,11 @@ from ..analysis_frameworks import get_analysis_framework
 from ..collector import StockDataCollector
 from ..deepseek_client import DeepSeekClient, DeepSeekError
 from ..dossier import build_dossier
+from ..minute_storage import minute_reference_row_counts
 from ..pattern_learning import build_similarity_learning
-from ..news_search import search_related_news
+from ..news_search import build_news_evidence_context, search_news_evidence
 from ..stock_storage import (
     LOCAL_DATA_DIR,
-    build_local_stock_payload,
     current_dir,
     stock_exists,
     sync_stock_data,
@@ -347,6 +348,33 @@ AGENT_SPECS: dict[str, dict[str, Any]] = {
     "thesis_cot_agent": {"role": "Thesis-CoT 投资论点分析师", "focus": "参考 FinRobot 的 Thesis-CoT Agent，综合前序证据形成可证伪的投资 thesis 和跟踪路径。", "slice_keys": ["value_basis", "valuation", "business_quality", "risk_flags", "decision_helper"]},
 }
 
+AGENT_CONTRACT_VERSION = "newsanalysis-agent-contract-v1"
+
+AGENT_SAFETY_CLASSES: dict[str, dict[str, Any]] = {
+    "R": {"label": "read", "description": "读取本地资料包、新闻证据、历史结论和运行上下文。"},
+    "B": {"label": "analysis", "description": "消耗模型额度生成结构化分析、反证和复核请求。"},
+    "F": {"label": "fetch_request", "description": "只提出补数/新闻检索请求，由后端审批后执行。"},
+}
+
+AGENT_OUTPUT_CONTRACT = {
+    "required_fields": [
+        "agent",
+        "mode",
+        "rating_hint",
+        "confidence",
+        "scores",
+        "key_findings",
+        "counter_evidence",
+        "evidence_gaps",
+        "reasoning_summary",
+        "watchlist",
+        "invalidating_signals",
+        "data_requests",
+    ],
+    "evidence_claim_fields": ["claim", "data_path", "strength"],
+    "allowed_strength": ["low", "medium", "high"],
+}
+
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 
@@ -365,6 +393,7 @@ class AgentVerdict(BaseModel):
     scores: dict[str, Any] = Field(default_factory=dict)
     key_findings: list[EvidenceClaim] = Field(default_factory=list)
     counter_evidence: list[EvidenceClaim] = Field(default_factory=list)
+    evidence_gaps: list[str] = Field(default_factory=list)
     reasoning_summary: str = ""
     watchlist: list[str] = Field(default_factory=list)
     invalidating_signals: list[str] = Field(default_factory=list)
@@ -497,11 +526,11 @@ class MultiAgentRunner:
         self._progress("hypotheses", f"已建立 {len(hypotheses.get('hypotheses', []))} 条初始假设。")
 
         analysis_dossier = read_json(base_dir / f"{framework.key}_dossier.json") if (base_dir / f"{framework.key}_dossier.json").exists() else {}
+        learning_context = self._build_learning_context(full_data, framework.key, run_dir)
         hidden_context = _hidden_condition_context(dossier, full_data)
-        news_context = search_related_news(_company_identity(dossier, full_data), limit=12, days=60)
+        news_context = build_news_evidence_context(_company_identity(dossier, full_data), learning_context)
         write_json(run_dir / "hidden_condition_context.json", hidden_context)
         write_json(run_dir / "news_context.json", news_context)
-        learning_context = self._build_learning_context(full_data, framework.key, run_dir)
         memory_context = _load_decision_memory(data_profile["ts_code"], base_dir)
         write_json(run_dir / "decision_memory_context.json", memory_context)
         if learning_context:
@@ -524,6 +553,10 @@ class MultiAgentRunner:
             opts.reuse_agent_cache,
         )
         agent_results = _validate_agent_results(agent_results)
+        agent_news_context = _resolve_agent_news_requests(agent_results, _company_identity(dossier, full_data))
+        if agent_news_context.get("requests"):
+            write_json(run_dir / "agent_requested_news_context.json", agent_news_context)
+            analysis_dossier = {**analysis_dossier, "agent_requested_news_context": agent_news_context}
         agents_dir = ensure_dir(run_dir / "agents")
         for result in agent_results:
             write_json(agents_dir / f"{result['agent']}.json", result)
@@ -743,11 +776,11 @@ class LangGraphMultiAgentRunner(MultiAgentRunner):
         hypotheses = _hypotheses(framework.key, mode)
         write_json(run_dir / "hypotheses.json", hypotheses)
         analysis_dossier = read_json(base_dir / f"{framework.key}_dossier.json") if (base_dir / f"{framework.key}_dossier.json").exists() else {}
+        learning_context = self._build_learning_context(full_data, framework.key, run_dir)
         hidden_context = _hidden_condition_context(dossier, full_data)
-        news_context = search_related_news(_company_identity(dossier, full_data), limit=12, days=60)
+        news_context = build_news_evidence_context(_company_identity(dossier, full_data), learning_context)
         write_json(run_dir / "hidden_condition_context.json", hidden_context)
         write_json(run_dir / "news_context.json", news_context)
-        learning_context = self._build_learning_context(full_data, framework.key, run_dir)
         memory_context = _load_decision_memory(data_profile["ts_code"], base_dir)
         write_json(run_dir / "decision_memory_context.json", memory_context)
         if learning_context:
@@ -863,6 +896,10 @@ class LangGraphMultiAgentRunner(MultiAgentRunner):
     def _finalize_graph_state(self, state: dict[str, Any]) -> dict[str, Any]:
         framework = state["framework"]
         agent_results = state["agent_results"]
+        agent_news_context = _resolve_agent_news_requests(agent_results, _company_identity(state["dossier"], state["full_data"]))
+        if agent_news_context.get("requests"):
+            write_json(state["run_dir"] / "agent_requested_news_context.json", agent_news_context)
+            state = {**state, "analysis_dossier": {**state["analysis_dossier"], "agent_requested_news_context": agent_news_context}}
         debate = _debate(agent_results, state["analysis_dossier"].get("decision_helper", {}))
         agent_data_requests = _collect_agent_data_requests(agent_results)
         confidence_trace = _confidence_trace(agent_results, debate, framework.key)
@@ -1044,6 +1081,8 @@ def _run_manifest(code: str, analysis_type: str, mode: dict[str, Any], run_id: s
         "enable_critic_review": mode.get("enable_critic_review", True),
         "enable_revision_round": mode.get("enable_revision_round", True),
         "context_profile": mode.get("context_profile", "focused"),
+        "agent_contract_version": AGENT_CONTRACT_VERSION,
+        "agent_safety_classes": sorted(AGENT_SAFETY_CLASSES),
     }
 
 
@@ -1053,10 +1092,12 @@ def _write_run_manifest(run_dir: Path, code: str, analysis_type: str, mode: dict
 
 def _data_fingerprint(full_data: dict[str, Any]) -> str:
     datasets = full_data.get("datasets", {})
+    external_rows = minute_reference_row_counts(full_data)
     payload = {
         "ts_code": full_data.get("ts_code"),
         "date_range": full_data.get("date_range", {}),
-        "dataset_rows": {name: len(rows) for name, rows in sorted(datasets.items())},
+        "dataset_rows": {**{name: len(rows) for name, rows in sorted(datasets.items())}, **external_rows},
+        "external_datasets": full_data.get("external_datasets", {}),
         "latest_rows": {
             name: rows[:3]
             for name, rows in sorted(datasets.items())
@@ -1205,7 +1246,10 @@ def _append_jsonl(path: Path, item: dict[str, Any]) -> None:
 
 def _data_profile(full_data: dict[str, Any], mode: dict[str, Any]) -> dict[str, Any]:
     datasets = full_data.get("datasets", {})
-    rows = {name: len(records) for name, records in datasets.items()}
+    rows = {
+        **{name: len(records) for name, records in datasets.items()},
+        **minute_reference_row_counts(full_data),
+    }
     missing_required = [name for name in mode["required_datasets"] if not rows.get(name)]
     missing_secondary = [name for name in mode["secondary_datasets"] if not rows.get(name)]
     return {
@@ -1230,12 +1274,13 @@ def _mode_context(analysis_type: str, mode: dict[str, Any], dossier: dict[str, A
 
 def _build_data_requests(analysis_type: str, mode: dict[str, Any], full_data: dict[str, Any]) -> list[dict[str, Any]]:
     datasets = full_data.get("datasets", {})
+    available = {**{name: len(records) for name, records in datasets.items()}, **minute_reference_row_counts(full_data)}
     requests = []
     for dataset in mode["required_datasets"]:
-        if not datasets.get(dataset):
+        if not available.get(dataset):
             requests.append(_data_request(analysis_type, dataset, "high", True))
     for dataset in mode["secondary_datasets"]:
-        if not datasets.get(dataset):
+        if not available.get(dataset):
             requests.append(_data_request(analysis_type, dataset, "medium", False))
     return requests
 
@@ -1642,11 +1687,12 @@ def _calibrate_agent_confidence(result: dict[str, Any]) -> dict[str, Any]:
     direction = _rating_direction(_text(item.get("rating_hint")))
     findings = item.get("key_findings") or item.get("findings") or []
     counters = item.get("counter_evidence") or []
+    evidence_gaps = item.get("evidence_gaps") or []
     data_requests = item.get("data_requests") or []
     scores = item.get("scores") if isinstance(item.get("scores"), dict) else {}
 
     opinion_strength = _opinion_strength(direction, scores, item.get("agent"))
-    evidence_confidence = _evidence_confidence(findings, counters, data_requests, scores, item)
+    evidence_confidence = _evidence_confidence(findings, counters, evidence_gaps, data_requests, scores, item)
     system_confidence = _clamp_float(evidence_confidence * 0.66 + opinion_strength * 0.26 + llm_confidence * 0.08)
     if item.get("llm_error"):
         system_confidence = min(system_confidence, 0.24)
@@ -1683,6 +1729,7 @@ def _opinion_strength(direction: dict[str, Any], scores: dict[str, Any], agent: 
 def _evidence_confidence(
     findings: list[Any],
     counters: list[Any],
+    evidence_gaps: list[Any],
     data_requests: list[Any],
     scores: dict[str, Any],
     result: dict[str, Any],
@@ -1690,6 +1737,7 @@ def _evidence_confidence(
     confidence = 0.38
     confidence += min(0.36, sum(_claim_strength_value(item) for item in findings))
     confidence -= min(0.28, sum(_claim_strength_value(item) * 0.85 for item in counters))
+    confidence -= min(0.18, 0.045 * len(evidence_gaps))
     confidence -= min(0.22, sum(_request_penalty(item) for item in data_requests))
     if result.get("schema_error"):
         confidence -= 0.16
@@ -1912,6 +1960,7 @@ def _agent_result(
         rating = "积极观察"
     findings = _findings_for_agent(agent, analysis_type, scores, data_profile, broker_result, fetch_result)
     counter = _counter_for_agent(agent, missing_required, risk_flags, broker_result)
+    evidence_gaps = _default_evidence_gaps(missing_required, broker_result, fetch_result)
     data_requests = list(broker_result.get("approved_requests", []))
     if agent == "moat_governance_agent":
         data_requests.extend(
@@ -1929,14 +1978,85 @@ def _agent_result(
         "scores": scores,
         "key_findings": findings,
         "counter_evidence": counter,
+        "evidence_gaps": evidence_gaps,
         "reasoning_summary": _reasoning_summary(agent, rating, findings, counter, confidence),
         "watchlist": _watchlist(analysis_type),
         "invalidating_signals": _invalidating_signals(analysis_type),
         "data_requests": data_requests,
+        "contract_version": AGENT_CONTRACT_VERSION,
+        "agent_contract": _agent_contract_for(agent, analysis_type),
     }
     if agent == "moat_governance_agent":
         result["domain_label"] = _moat_governance_label(result)
     return result
+
+
+def _agent_contract_for(agent: str, analysis_type: str) -> dict[str, Any]:
+    spec = AGENT_SPECS.get(agent, {"role": agent, "focus": "基于资料包进行专业分析。", "slice_keys": []})
+    return {
+        "version": AGENT_CONTRACT_VERSION,
+        "agent": agent,
+        "role": spec.get("role", agent),
+        "mode": analysis_type,
+        "safety_classes": ["R", "B", "F"],
+        "allowed_actions": [
+            "读取输入上下文中的本地资料、新闻证据、历史结论和同轮 agent 摘要。",
+            "输出结构化研究判断、反证、证据缺口、观察清单和证伪条件。",
+            "提出 data_requests 或新闻检索请求，但不自行执行外部抓取。",
+        ],
+        "forbidden_actions": [
+            "不得编造输入中不存在的财务、行情、新闻或行业数据。",
+            "不得把外部假设写成已验证事实。",
+            "不得输出确定性买卖指令、仓位命令或代替用户决策。",
+            "不得请求、泄露或推断用户 API key、系统 key、密码或会话。",
+        ],
+        "output_contract": AGENT_OUTPUT_CONTRACT,
+    }
+
+
+def _agent_prompt_contract(agent: str, analysis_type: str) -> dict[str, Any]:
+    contract = _agent_contract_for(agent, analysis_type)
+    return {
+        "version": contract["version"],
+        "safety_classes": contract["safety_classes"],
+        "allowed_actions": contract["allowed_actions"],
+        "forbidden_actions": contract["forbidden_actions"],
+        "required_output": AGENT_OUTPUT_CONTRACT,
+        "confidence_policy": [
+            "confidence 表示本 agent 结论在当前证据下的可采信度，不是收益概率。",
+            "缺少关键数据、没有反证、或证据路径为空时，confidence 必须主动下调。",
+            "高置信度必须同时有 key_findings 和 counter_evidence。",
+        ],
+    }
+
+
+def _default_evidence_gaps(
+    missing_required: list[str],
+    broker_result: dict[str, Any],
+    fetch_result: dict[str, Any],
+) -> list[str]:
+    gaps = [f"缺少关键数据集：{dataset}" for dataset in missing_required[:4]]
+    if broker_result.get("approved_requests") and not fetch_result.get("rebuilt"):
+        gaps.append("存在已批准补数请求，但资料包未重建或补数未完成。")
+    if fetch_result.get("fetch_errors"):
+        gaps.extend(_text_list(fetch_result.get("fetch_errors"), 3))
+    return gaps
+
+
+def _contract_quality_flags(result: dict[str, Any]) -> list[str]:
+    flags = []
+    findings = result.get("key_findings") if isinstance(result.get("key_findings"), list) else []
+    counters = result.get("counter_evidence") if isinstance(result.get("counter_evidence"), list) else []
+    confidence = _num(result.get("confidence")) or 0
+    if confidence >= 0.72 and not counters:
+        flags.append("高置信度缺少 counter_evidence。")
+    if not findings:
+        flags.append("缺少 key_findings。")
+    if any(isinstance(item, dict) and not _text(item.get("data_path")) for item in findings[:3]):
+        flags.append("部分 key_findings 缺少 data_path。")
+    if any(isinstance(item, dict) and _text(item.get("strength")).lower() not in {"low", "medium", "high"} for item in findings + counters):
+        flags.append("证据 strength 不在 low/medium/high 范围内。")
+    return flags
 
 
 def _llm_agent_result(
@@ -1962,6 +2082,7 @@ def _llm_agent_result(
         "agent": agent,
         "agent_role": spec["role"],
         "agent_focus": spec["focus"],
+        "agent_contract": _agent_prompt_contract(agent, analysis_type),
         "company": _compact_company(dossier.get("company", {})),
         "data_profile": _compact_data_profile(data_profile, mode),
         "data_requests": _compact_broker_result(broker_result, 5),
@@ -1973,6 +2094,8 @@ def _llm_agent_result(
         },
         "quantitative_checks": _limit_nested_records(_quantitative_checks(dossier, analysis_dossier), 10 if profile == "deep" else 6),
         "analysis_slice": _agent_analysis_slice(analysis_dossier, spec.get("slice_keys", [])),
+        "news_evidence": _compact_news_context(analysis_dossier.get("news_context", {}), profile),
+        "agent_requested_news_evidence": _compact_agent_requested_news(analysis_dossier.get("agent_requested_news_context", {}), profile),
         "learning_context": _compact_learning_context(analysis_dossier.get("learning_context", {}), profile),
         "prior_agent_results": _compact_agent_history(analysis_dossier.get("prior_agent_results", []), prior_limit),
         "current_stage": analysis_dossier.get("current_stage", ""),
@@ -1983,10 +2106,12 @@ def _llm_agent_result(
 
 你的职责边界：
 - {spec['focus']}
+- 你必须遵守输入中的 agent_contract：只做允许动作，禁止触碰 forbidden_actions。
 - 只基于输入资料判断，不编造缺失数据。
 - 主动指出反证、数据缺口和证伪条件。
 - 涉及资金流金额时，必须遵守输入中的 data_unit_notes 和 quantitative_checks，不得把万元口径误写成元/万元级结论。
 - 涉及猪价、能繁母猪、成本、行业供需等资料包外变量时，必须标记为外部假设或写入 data_requests，不得当作已验证证据。
+- 若输入 news_evidence 中有对应时间窗新闻，必须优先引用数据库新闻作为事件证据；若没有命中，必须说明缺少新闻支撑。
 - 必须区分好公司、好价格、好时机；遇到高成长高估值标的，要提示 PEG/Forward PE 可能造成估值幻觉。
 - 必须给出触发条件、证伪条件和复核点，不能把研究观点写成确定性投资指令。
 - 输出可审计的结构化推理摘要，不输出隐藏思维链。
@@ -2004,6 +2129,7 @@ def _llm_agent_result(
 - key_findings: 数组，每项含 claim/data_path/strength
 - counter_evidence: 数组，每项含 claim/data_path/strength
 - reasoning_summary: 一句话中文摘要，控制在 60 字内
+- evidence_gaps: 数组，列出会显著降低结论可信度的数据缺口或证据弱点
 - watchlist: 数组
 - invalidating_signals: 数组
 - data_requests: 数组，若需要补数据则写结构化请求，否则为空数组
@@ -2111,10 +2237,13 @@ def _normalize_llm_agent_result(parsed: dict[str, Any], fallback: dict[str, Any]
             "scores": parsed.get("scores") if isinstance(parsed.get("scores"), dict) else fallback["scores"],
             "key_findings": _evidence_list(parsed.get("key_findings"), fallback["key_findings"]),
             "counter_evidence": _evidence_list(parsed.get("counter_evidence"), fallback["counter_evidence"]),
+            "evidence_gaps": _text_list(parsed.get("evidence_gaps"), 8) or fallback.get("evidence_gaps", []),
             "reasoning_summary": _text(parsed.get("reasoning_summary") or fallback["reasoning_summary"]),
             "watchlist": _text_list(parsed.get("watchlist")) or fallback["watchlist"],
             "invalidating_signals": _text_list(parsed.get("invalidating_signals")) or fallback["invalidating_signals"],
             "data_requests": _data_request_list(parsed.get("data_requests")) or fallback.get("data_requests", []),
+            "contract_version": AGENT_CONTRACT_VERSION,
+            "agent_contract": fallback.get("agent_contract") or _agent_contract_for(_text(fallback["agent"]), _text(fallback["mode"])),
             "source": "llm_agent",
         }
     )
@@ -2291,6 +2420,111 @@ def _compact_learning_context(learning_context: dict[str, Any], profile: str) ->
     }
 
 
+def _compact_news_context(news_context: dict[str, Any], profile: str) -> dict[str, Any]:
+    if not isinstance(news_context, dict):
+        return {}
+    recent_limit = 3 if profile == "minimal" else 6 if profile == "focused" else 10
+    window_limit = 2 if profile == "minimal" else 4
+    per_window_limit = 2 if profile == "minimal" else 4
+    windows = []
+    for window in news_context.get("historical_windows", [])[:window_limit]:
+        if not isinstance(window, dict):
+            continue
+        windows.append(
+            {
+                "trade_date": window.get("trade_date"),
+                "date_range": {"start": window.get("start_date"), "end": window.get("end_date")},
+                "similarity": window.get("similarity"),
+                "outcome_class": window.get("outcome_class"),
+                "forward_returns": window.get("forward_returns", {}),
+                "items": _limit_nested_records(window.get("items", []), per_window_limit),
+                "total": window.get("total", 0),
+            }
+        )
+    return {
+        "enabled": bool(news_context.get("enabled")),
+        "error": _text(news_context.get("error")),
+        "keywords": _text_list(news_context.get("keywords", []), 16),
+        "recent": {
+            "date_range": (news_context.get("recent") or {}).get("date_range", {}),
+            "items": _limit_nested_records((news_context.get("recent") or {}).get("items", news_context.get("items", [])), recent_limit),
+            "total": (news_context.get("recent") or {}).get("total", 0),
+        },
+        "historical_windows": windows,
+        "instruction": _text(news_context.get("instruction")),
+    }
+
+
+def _compact_agent_requested_news(context: dict[str, Any], profile: str) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    request_limit = 2 if profile == "minimal" else 4
+    item_limit = 2 if profile == "minimal" else 4
+    requests = []
+    for request in context.get("requests", [])[:request_limit]:
+        if not isinstance(request, dict):
+            continue
+        requests.append(
+            {
+                "requested_by": request.get("requested_by"),
+                "keywords": request.get("keywords", []),
+                "date_range": request.get("date_range", {}),
+                "items": _limit_nested_records(request.get("items", []), item_limit),
+                "total": request.get("total", 0),
+                "error": request.get("error", ""),
+            }
+        )
+    return {"enabled": bool(context.get("enabled")), "requests": requests}
+
+
+def _resolve_agent_news_requests(agent_results: list[dict[str, Any]], company: dict[str, Any]) -> dict[str, Any]:
+    resolved = []
+    for result in agent_results:
+        agent = _text(result.get("agent"))
+        for request in _data_request_list(result.get("data_requests", [])):
+            if not _is_news_request(request):
+                continue
+            date_range = request.get("date_range") if isinstance(request.get("date_range"), dict) else {}
+            start_date = _text(date_range.get("start") or date_range.get("start_date") or request.get("start_date"))
+            end_date = _text(date_range.get("end") or date_range.get("end_date") or request.get("end_date"))
+            if not start_date and not end_date:
+                resolved.append({**request, "requested_by": agent, "status": "skipped", "error": "缺少 start_date/end_date，未执行新闻库检索。"})
+                continue
+            keywords = _request_keywords(request)
+            evidence = search_news_evidence(company, keywords=keywords or None, start_date=start_date, end_date=end_date, limit=int(_num(request.get("limit")) or 8))
+            resolved.append(
+                {
+                    "requested_by": agent,
+                    "dataset": _text(request.get("dataset") or request.get("request_type") or "news_evidence"),
+                    "need": _text(request.get("need") or request.get("reason")),
+                    "keywords": evidence.get("keywords", keywords),
+                    "date_range": evidence.get("date_range", {"start": start_date, "end": end_date}),
+                    "items": evidence.get("items", []),
+                    "total": evidence.get("total", 0),
+                    "error": evidence.get("error", ""),
+                    "status": "resolved" if evidence.get("enabled") else "failed",
+                }
+            )
+    return {"enabled": True, "requests": resolved}
+
+
+def _is_news_request(request: dict[str, Any]) -> bool:
+    text = " ".join(
+        _text(request.get(key))
+        for key in ("dataset", "request_type", "tool", "need", "reason")
+    ).lower()
+    return any(token in text for token in ("news", "新闻", "event", "事件", "catalyst", "催化"))
+
+
+def _request_keywords(request: dict[str, Any]) -> list[str]:
+    raw = request.get("keywords") or request.get("terms") or request.get("query") or request.get("q") or []
+    if isinstance(raw, str):
+        return [item.strip() for item in re.split(r"[,，\s]+", raw) if item.strip()]
+    if isinstance(raw, list):
+        return [_text(item) for item in raw if _text(item)]
+    return []
+
+
 def _compact_critic_context(review: dict[str, Any], profile: str) -> dict[str, Any]:
     if not isinstance(review, dict):
         return {}
@@ -2382,6 +2616,10 @@ def _apply_agent_guardrails(
     analysis_dossier: dict[str, Any],
 ) -> dict[str, Any]:
     guarded = dict(result)
+    agent = _text(guarded.get("agent"))
+    guarded.setdefault("contract_version", AGENT_CONTRACT_VERSION)
+    guarded.setdefault("agent_contract", _agent_contract_for(agent, analysis_type))
+    guarded.setdefault("evidence_gaps", [])
     if guarded.get("agent") == "moneyflow_agent":
         checks = _quantitative_checks(dossier, analysis_dossier).get("moneyflow", {})
         five_strength = checks.get("five_day_strength")
@@ -2412,6 +2650,7 @@ def _apply_agent_guardrails(
     if guarded.get("agent") == "moat_governance_agent":
         guarded["domain_label"] = _moat_governance_label(guarded)
     if _mentions_external_industry_assumption(guarded):
+        guarded.setdefault("evidence_gaps", []).append("使用了资料包外行业变量，需要后续数据或新闻证据校验。")
         guarded.setdefault("counter_evidence", []).append(
             {
                 "claim": "涉及猪价、能繁母猪、成本或行业供需等外部变量时，如资料包未包含对应数据，应视为外部假设而非已验证证据。",
@@ -2426,6 +2665,17 @@ def _apply_agent_guardrails(
                 "priority": "medium",
                 "blocking": False,
                 "reason": "agent 使用了资料包外行业周期变量，需要后续接入 Tushare 或外部数据源校验。",
+            }
+        )
+    quality_flags = _contract_quality_flags(guarded)
+    if quality_flags:
+        guarded["contract_quality_flags"] = quality_flags
+        guarded["confidence"] = _clamp_float((_num(guarded.get("confidence")) or 0.5) - min(0.16, 0.04 * len(quality_flags)))
+        guarded.setdefault("counter_evidence", []).append(
+            {
+                "claim": "agent 输出未完全满足运行时契约：" + "；".join(quality_flags[:3]),
+                "data_path": "agent_contract.quality_flags",
+                "strength": "medium",
             }
         )
     guarded["rating_direction"] = _rating_direction(_text(guarded.get("rating_hint")))
@@ -2460,7 +2710,7 @@ def _mentions_external_industry_assumption(result: dict[str, Any]) -> bool:
         {
             "summary": result.get("reasoning_summary"),
             "findings": result.get("key_findings"),
-            "watchlist": result.get("watchlist"),
+            "counter_evidence": result.get("counter_evidence"),
         },
         ensure_ascii=False,
         default=str,
@@ -2984,8 +3234,34 @@ def _final_report(
             if news_context.get("error"):
                 lines.append(f"- 新闻检索状态：{_text(news_context.get('error'))}")
             lines.append(f"- 检索关键词：{_join_text(news_context.get('keywords', []), '、', 12) or '无'}")
-            for item in news_context.get("items", [])[:6]:
+            recent = news_context.get("recent") or {}
+            recent_items = recent.get("items") or news_context.get("items", [])
+            if recent.get("date_range"):
+                lines.append(f"- 当前新闻窗口：{recent.get('date_range')}")
+            for item in recent_items[:6]:
                 lines.append(f"- {_text(item.get('time'))} {_text(item.get('title'))}（命中：{_join_text(item.get('matched_keywords', []), '、', 5) or '-'}）")
+            historical_windows = news_context.get("historical_windows", [])
+            if historical_windows:
+                lines.extend(["", "## 历史时间窗新闻证据"])
+                for window in historical_windows[:4]:
+                    lines.append(
+                        f"- 相似窗口 {window.get('trade_date')}（{window.get('start_date')} 至 {window.get('end_date')}，"
+                        f"相似度 {window.get('similarity')}，结局 {window.get('outcome_class') or '-'}，命中 {window.get('total', 0)} 篇）"
+                    )
+                    for item in (window.get("items") or [])[:3]:
+                        lines.append(f"  - {_text(item.get('time'))} {_text(item.get('title'))}（命中：{_join_text(item.get('matched_keywords', []), '、', 5) or '-'}）")
+        requested_news = analysis_context.get("agent_requested_news_context") or {}
+        if requested_news.get("requests"):
+            lines.extend(["", "## Agent 请求新闻补证据"])
+            for request in requested_news.get("requests", [])[:5]:
+                lines.append(
+                    f"- {_text(request.get('requested_by'))} 请求 {request.get('date_range', {})}，"
+                    f"命中 {request.get('total', 0)} 篇，状态 {_text(request.get('status'))}"
+                )
+                if request.get("error"):
+                    lines.append(f"  - 错误：{_text(request.get('error'))}")
+                for item in (request.get("items") or [])[:3]:
+                    lines.append(f"  - {_text(item.get('time'))} {_text(item.get('title'))}（命中：{_join_text(item.get('matched_keywords', []), '、', 5) or '-'}）")
     if decision_memory and decision_memory.get("entries"):
         lines.extend(["", "## 过往决策记忆"])
         lines.append(
@@ -3172,7 +3448,10 @@ def _update_metadata_after_rebuild(base_dir: Path, full_data: dict[str, Any], ch
     metadata = read_json(metadata_path) if metadata_path.exists() else {"ts_code": full_data.get("ts_code")}
     metadata["dynamic_fetch_updated_at"] = timestamp()
     metadata["dynamic_fetch_changed_datasets"] = changed
-    metadata["dataset_rows"] = {name: len(rows) for name, rows in full_data.get("datasets", {}).items()}
+    metadata["dataset_rows"] = {
+        **{name: len(rows) for name, rows in full_data.get("datasets", {}).items()},
+        **minute_reference_row_counts(full_data),
+    }
     metadata["fetch_errors"] = full_data.get("fetch_errors", []) + fetch_errors
     write_json(metadata_path, metadata)
 

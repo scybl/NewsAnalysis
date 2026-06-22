@@ -7,6 +7,7 @@ import urllib.parse
 from typing import Any
 
 from .config import PROJECT_ROOT, load_dotenv
+from .secret_store import secret_value
 
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -19,7 +20,7 @@ def query_news_library(params: dict[str, list[str]]) -> dict[str, Any]:
         return {"enabled": False, "items": [], "error": f"缺少 pymongo：{exc}"}
 
     page = _bounded_int(_first(params, "page"), 1, 1, 500)
-    page_size = _bounded_int(_first(params, "page_size"), 20, 5, 80)
+    page_size = _bounded_int(_first(params, "page_size"), 20, 1, 80)
     query_text = _first(params, "q").strip()
     publisher = _first(params, "publisher").strip()
     kind = _first(params, "type").strip()
@@ -76,12 +77,13 @@ def query_news_library(params: dict[str, list[str]]) -> dict[str, Any]:
 
 
 def _mongo_uri() -> str:
-    if os.getenv("MONGODB_URI"):
-        return os.getenv("MONGODB_URI", "")
+    direct_uri = secret_value("mongo.uri", ("MONGODB_URI", "MONGO_URI"))
+    if direct_uri:
+        return direct_uri
     host = os.getenv("MONGO_HOST", "localhost")
     port = int(os.getenv("MONGO_PORT", "27017"))
-    username = os.getenv("MONGO_USER", "")
-    password = os.getenv("MONGO_PASSWORD", "")
+    username = secret_value("mongo.user", ("MONGO_USER",))
+    password = secret_value("mongo.password", ("MONGO_PASSWORD",))
     auth_source = os.getenv("MONGO_AUTHSOURCE", "admin")
     if username and password:
         user = urllib.parse.quote_plus(username)
@@ -93,17 +95,19 @@ def _mongo_uri() -> str:
 def _build_filter(query_text: str, publisher: str, kind: str, days: int) -> dict[str, Any]:
     clauses: list[dict[str, Any]] = []
     if query_text:
-        pattern = re.escape(query_text)
-        clauses.append(
-            {
-                "$or": [
+        query_clauses = []
+        for term in query_text.split():
+            pattern = re.escape(term)
+            query_clauses.extend(
+                [
                     {"title": {"$regex": pattern, "$options": "i"}},
                     {"summary": {"$regex": pattern, "$options": "i"}},
                     {"content": {"$regex": pattern, "$options": "i"}},
                     {"source": {"$regex": pattern, "$options": "i"}},
                 ]
-            }
-        )
+            )
+        if query_clauses:
+            clauses.append({"$or": query_clauses})
     if publisher:
         clauses.append({"publisher": publisher})
     if kind:

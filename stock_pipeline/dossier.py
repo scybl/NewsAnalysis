@@ -3,6 +3,7 @@ from __future__ import annotations
 from statistics import mean
 from typing import Any
 
+from .minute_storage import minute_reference_row_counts, read_external_minute_datasets
 from .utils import limit_records, pick, sorted_records
 
 
@@ -11,6 +12,7 @@ DATE_FIELDS = ("trade_date", "ann_date", "end_date", "f_ann_date", "in_date")
 
 def build_dossier(full_data: dict[str, Any]) -> dict[str, Any]:
     datasets = full_data.get("datasets", {})
+    external_minutes = read_external_minute_datasets(full_data, limit=80)
     daily = sorted_records(datasets.get("daily", []), ("trade_date",))
     daily_basic = sorted_records(datasets.get("daily_basic", []), ("trade_date",))
     income = sorted_records(datasets.get("income", []), ("end_date", "ann_date"))
@@ -18,7 +20,12 @@ def build_dossier(full_data: dict[str, Any]) -> dict[str, Any]:
     industry = datasets.get("index_member_all", [])
     announcements = _filter_announcements(sorted_records(datasets.get("anns_d", []), ("ann_date",)))
     intraday_minutes = sorted_records(
-        datasets.get("tdx_intraday_minutes", []) or datasets.get("pytdx_history_minutes", []) or datasets.get("ths_intraday_minutes", []),
+        datasets.get("tdx_intraday_minutes", [])
+        or datasets.get("pytdx_history_minutes", [])
+        or datasets.get("ths_intraday_minutes", [])
+        or external_minutes.get("tdx_intraday_minutes", [])
+        or external_minutes.get("pytdx_history_minutes", [])
+        or external_minutes.get("ths_intraday_minutes", []),
         ("datetime", "minute", "trade_date"),
     )
 
@@ -77,7 +84,10 @@ def build_dossier(full_data: dict[str, Any]) -> dict[str, Any]:
         },
         "announcements": announcements,
         "data_quality": {
-            "dataset_rows": {name: len(rows) for name, rows in datasets.items()},
+            "dataset_rows": {
+                **{name: len(rows) for name, rows in datasets.items()},
+                **minute_reference_row_counts(full_data),
+            },
             "fetch_errors": full_data.get("fetch_errors", []),
         },
     }

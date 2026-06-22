@@ -10,6 +10,7 @@ from .analysis_frameworks import ANALYSIS_FRAMEWORKS, build_all_analysis_dossier
 from .config import PROJECT_ROOT
 from .dossier import build_dossier
 from .field_labels import build_table_datasets
+from .minute_storage import minute_reference_row_counts, read_external_minute_datasets
 from .tushare_client import TushareClient
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, today_yyyymmdd, write_json
 
@@ -112,9 +113,15 @@ def sync_stock_data(
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     ensure_dir(temp_dir)
+    existing_external_datasets: dict[str, Any] = {}
+    existing_full_path = target_dir / "full_data.json"
+    if existing_full_path.exists():
+        existing_external_datasets = read_json(existing_full_path).get("external_datasets") or {}
 
     try:
         full_data = StockDataCollector(client).collect(ts_code, temp_dir, years=years, full_history=full_history)
+        if existing_external_datasets:
+            full_data["external_datasets"] = existing_external_datasets
         _validate_full_data(full_data)
         dossier = build_dossier(full_data)
         analysis_dossiers = build_all_analysis_dossiers(dossier)
@@ -140,7 +147,10 @@ def sync_stock_data(
             "latest_snapshot": str(snapshot_path) if snapshot_path else "",
             "snapshots": list_snapshots(ts_code),
             "date_range": full_data.get("date_range", {}),
-            "dataset_rows": {name: len(rows) for name, rows in full_data.get("datasets", {}).items()},
+            "dataset_rows": {
+                **{name: len(rows) for name, rows in full_data.get("datasets", {}).items()},
+                **minute_reference_row_counts(full_data),
+            },
             "fetch_errors": full_data.get("fetch_errors", []),
         }
         write_json(base_dir / "metadata.json", metadata)
@@ -257,7 +267,10 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
             "current_dir": str(current_dir(ts_code)),
             "snapshots": list_snapshots(ts_code),
             "date_range": full_data.get("date_range", {}),
-            "dataset_rows": {name: len(rows) for name, rows in datasets.items()},
+            "dataset_rows": {
+                **{name: len(rows) for name, rows in datasets.items()},
+                **minute_reference_row_counts(full_data),
+            },
             "fetch_errors": fetch_errors,
             "daily_market_updated_at": timestamp(),
             "daily_market_target_date": date,
@@ -288,6 +301,15 @@ def build_local_stock_payload(code: str) -> dict[str, Any]:
     full_data = read_json(full_path)
     metadata_path = base_dir / "metadata.json"
     metadata = read_json(metadata_path) if metadata_path.exists() else {}
+    table_datasets = build_table_datasets(full_data.get("datasets", {}))
+    external_rows = read_external_minute_datasets(full_data, limit=4000)
+    external_counts = minute_reference_row_counts(full_data)
+    for item in build_table_datasets(external_rows):
+        item["row_count"] = external_counts.get(item["key"], len(item["records"]))
+        item["loaded_row_count"] = len(item["records"])
+        item["storage"] = "mongodb"
+        table_datasets.append(item)
+    table_datasets.sort(key=lambda item: (item["row_count"] == 0, item["label"]))
     return {
         "ok": True,
         "ts_code": ts_code,
@@ -300,7 +322,7 @@ def build_local_stock_payload(code: str) -> dict[str, Any]:
         "analysis_results": list_analysis_results(ts_code),
         "metadata": metadata,
         "date_range": full_data.get("date_range", {}),
-        "datasets": build_table_datasets(full_data.get("datasets", {})),
+        "datasets": table_datasets,
         "fetch_errors": full_data.get("fetch_errors", []),
     }
 
@@ -399,7 +421,10 @@ def restore_snapshot(code: str, snapshot_name: str) -> dict[str, Any]:
         "restored_from_snapshot": snapshot_name,
         "snapshots": list_snapshots(ts_code),
         "date_range": full_data.get("date_range", {}),
-        "dataset_rows": {name: len(rows) for name, rows in full_data.get("datasets", {}).items()},
+        "dataset_rows": {
+            **{name: len(rows) for name, rows in full_data.get("datasets", {}).items()},
+            **minute_reference_row_counts(full_data),
+        },
         "fetch_errors": full_data.get("fetch_errors", []),
     }
     write_json(stock_dir(ts_code) / "metadata.json", metadata)

@@ -28,6 +28,14 @@
             <span class="admin-nav-icon">A</span>
             <span>账户管理</span>
           </a>
+          <a href="/admin-agent.html">
+            <span class="admin-nav-icon">G</span>
+            <span>Agent Gateway</span>
+          </a>
+          <a href="/admin-archives.html">
+            <span class="admin-nav-icon">R</span>
+            <span>归档账号</span>
+          </a>
           <a class="active" href="/admin-spider.html">
             <span class="admin-nav-icon">S</span>
             <span>爬虫控制</span>
@@ -111,7 +119,7 @@
                 <span>全部爬虫</span>
               </div>
               <div id="spiderSourceTasks" class="spider-source-tasks"></div>
-              <div class="spider-state-grid">
+              <div class="spider-state-grid spider-snapshot-state-grid">
                 <div><span>状态</span><strong id="spiderStateText">-</strong></div>
                 <div><span>模式</span><strong id="spiderModeText">-</strong></div>
                 <div><span>来源</span><strong id="spiderSourceText">-</strong></div>
@@ -121,13 +129,13 @@
             </section>
             <section class="admin-card daily-market-card">
               <div class="admin-card-head">
-                <h4>每日行情</h4>
+                <h4>每日股票数据</h4>
                 <span id="dailyMarketStatus">未启用</span>
               </div>
               <div class="spider-form">
                 <label class="field-wide check-row">
                   <input id="dailyMarketEnabled" type="checkbox" />
-                  <span>每日自动更新已有股票</span>
+                  <span>每日自动刷新股票列表及已有股票行情</span>
                 </label>
                 <label>
                   <span>北京时间</span>
@@ -138,8 +146,9 @@
                   <button id="runDailyMarketNowBtn" type="button">立即执行</button>
                 </div>
               </div>
-              <div class="spider-state-grid">
-                <div><span>股票数</span><strong id="dailyMarketStockCount">-</strong></div>
+              <div class="spider-state-grid daily-market-state-grid">
+                <div><span>已有股票</span><strong id="dailyMarketStockCount">-</strong></div>
+                <div><span>基础列表</span><strong id="dailyStockListCount">-</strong></div>
                 <div><span>上次日期</span><strong id="dailyMarketLastDate">-</strong></div>
                 <div><span>更新</span><strong id="dailyMarketUpdated">-</strong></div>
                 <div><span>跳过</span><strong id="dailyMarketSkipped">-</strong></div>
@@ -152,10 +161,19 @@
               </div>
               <pre id="spiderLogs" class="spider-logs">暂无日志</pre>
             </section>
+            <section class="admin-card spider-task-history-card">
+              <div class="admin-card-head">
+                <h4>运行记录</h4>
+                <span>定时与手动任务，服务重启后保留</span>
+              </div>
+              <div class="admin-table-wrap">
+                <table id="adminTasksTable"></table>
+              </div>
+            </section>
           </div>
         </section>
       </section>
     </main>
-    <script src="/admin.js?v=daily-market-20260617"></script>
+    <script src="/admin.js?v=task-history-20260619"></script>
   </body>
 </html>

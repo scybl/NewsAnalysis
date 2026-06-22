@@ -6,13 +6,19 @@
 
 SSH隧道会在程序启动时自动建立，程序结束时自动关闭，避免了外部PowerShell窗口断开导致的问题。
 
-## 环境变量配置
+## 配置
 
-请在Guardian目录下创建`.env`文件，包含以下配置：
+敏感信息不要写入 `.env`。请在项目根目录用加密密钥库保存：
+
+```bash
+.venv/bin/python -m stock_pipeline secrets set guardian.api_key
+.venv/bin/python -m stock_pipeline secrets set mongo.password
+```
+
+非敏感端点信息可以继续放在运行环境中：
 
 ```env
 # Guardian API 配置
-GUARDIAN_API_KEY=<guardian-api-key>
 GUARDIAN_BASE_URL=https://content.guardianapis.com
 GUARDIAN_START_PAGE=1
 GUARDIAN_END_PAGE=1
@@ -29,7 +35,6 @@ MONGO_PORT=37017
 MONGO_DB=news
 MONGO_COLLECTION=articles
 MONGO_USER=admin
-MONGO_PASSWORD=<mongo-password>
 MONGO_AUTHSOURCE=admin
 ```
 

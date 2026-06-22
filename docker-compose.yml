@@ -5,8 +5,14 @@ services:
     restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-Rich@2026}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_root_password
+    secrets:
+      - mongo_root_password
     ports:
       - "27017:27017"
     volumes:
       - ./local_data/mongo:/data/db
+
+secrets:
+  mongo_root_password:
+    file: ./local_data/secure/mongo_root_password.txt

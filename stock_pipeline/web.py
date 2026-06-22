@@ -23,14 +23,14 @@ from cryptography.fernet import Fernet, InvalidToken
 from .analyst import StockAnalyst, session_path_for
 from .agents import LangGraphMultiAgentRunner, MultiAgentRunner, list_agent_runs, read_agent_run
 from .agents.multi_agent import MultiAgentOptions
+from .agent_jobs import PersistentAgentJobStore
 from .analysis_frameworks import get_analysis_framework, list_analysis_frameworks
-from .collector import StockDataCollector
 from .config import PROJECT_ROOT, get_settings
 from .deepseek_client import DeepSeekClient, DeepSeekError
-from .dossier import build_dossier
-from .field_labels import build_table_datasets
 from .news_library import query_news_library
 from .news_search import search_related_news
+from .minute_storage import minute_reference_row_counts
+from .secret_store import get_secret_store, urlsafe_password
 from .stock_search import StockSearchIndex
 from .stock_storage import (
     analysis_dossier_path,
@@ -49,6 +49,7 @@ from .stock_storage import (
 from .ths_minute import build_config as build_ths_minute_config
 from .ths_minute import fetch_and_store_minutes
 from .tushare_client import TushareClient, TushareError
+from .totp import verify_totp
 from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, today_yyyymmdd, write_json
 
 
@@ -62,13 +63,41 @@ SPIDER_SOURCES = (
     {"id": "bloomberg_articles", "name": "Bloomberg 正文", "description": "读取 URL 队列并抓正文，需要 Chrome 登录态", "disabled": True, "disabled_reason": "暂时关闭，等待后续稳定性优化"},
 )
 BILLABLE_API_PATHS = {
-    "/api/refresh",
     "/api/sync-stock-data",
     "/api/analyze",
     "/api/multi-agent-analyze",
 }
 USER_KEY_NAMES = {"tushare", "deepseek"}
 SYSTEM_KEY_NAMES = {"deepseek"}
+DATA_FETCH_ACTIONS = {
+    "/api/sync-stock-data": "同步股票资料包（Tushare 多接口）",
+    "/api/sync-ths-market-data": "补抓分钟行情（外部行情源/MongoDB）",
+    "/api/analyze": "生成分析前的数据同步与模型调用",
+    "/api/multi-agent-analyze": "多 Agent 分析前的数据同步与模型调用",
+    "/api/admin/spider/start": "启动新闻/行情爬虫",
+    "/api/admin/daily-market-scheduler:run_now": "立即执行每日股票数据更新",
+}
+AGENT_TOKEN_PREFIX = "na_agent_"
+AGENT_ALLOWED_SCOPES = {"R", "B"}
+AGENT_SCOPE_LABELS = {
+    "R": "读取本地股票、新闻、报告和任务状态",
+    "B": "提交模型消耗型多 Agent 分析任务",
+}
+
+
+def _hash_agent_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _parse_agent_scopes(raw) -> list[str]:
+    if isinstance(raw, str):
+        values = [item.strip().upper() for item in raw.split(",")]
+    elif isinstance(raw, list):
+        values = [str(item).strip().upper() for item in raw]
+    else:
+        values = ["R"]
+    scopes = sorted({scope for scope in values if scope in AGENT_ALLOWED_SCOPES})
+    return scopes or ["R"]
 
 
 class StockWebApp:
@@ -85,18 +114,24 @@ class StockWebApp:
         self.sessions: dict[str, dict] = {}
         self.active_session_by_user: dict[str, str] = {}
         self.session_lock = threading.Lock()
+        self.admin_login_challenges: dict[str, float] = {}
+        self.admin_login_challenge_lock = threading.Lock()
         self.session_ttl_seconds = 60 * 60 * 12
         self.auth_secret = self.settings.web_session_secret or secrets.token_urlsafe(32)
-        key_secret = self.settings.web_key_encryption_secret or self.settings.web_session_secret or self.settings.web_password
-        self.key_cipher = ApiKeyCipher(key_secret)
-        self.user_store = UserStore(PROJECT_ROOT / "local_data" / "web_users.json", self.key_cipher)
+        self.key_cipher = ApiKeyCipher(self.settings.web_key_encryption_secret)
+        self.user_store = UserStore(
+            PROJECT_ROOT / "local_data" / "web_users.json",
+            self.key_cipher,
+            admin_username=self.settings.web_username,
+        )
         self.invite_codes = {code.strip() for code in self.settings.web_invite_codes.split(",") if code.strip()}
         self.user_store.seed_invites(self.invite_codes, ttl_seconds=self.settings.web_invite_ttl_seconds, created_by="env")
-        self.task_registry = TaskRegistry()
+        self.task_registry = TaskRegistry(PROJECT_ROOT / "local_data" / "admin_tasks.json")
         self.daily_market_scheduler = DailyMarketScheduler(self, PROJECT_ROOT / "local_data" / "daily_market_scheduler.json", self.task_registry)
         self.spider_controller = SpiderController(PROJECT_ROOT, self.task_registry)
-        self.multi_agent_jobs: dict[str, dict] = {}
-        self.multi_agent_jobs_lock = threading.Lock()
+        self.agent_job_store = PersistentAgentJobStore(PROJECT_ROOT / "local_data" / "agent_jobs.json")
+        self.agent_rate_lock = threading.Lock()
+        self.agent_rate_state: dict[str, list[float]] = {}
 
     def _build_multi_agent_result(self, payload: dict, progress_callback=None) -> dict:
         ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
@@ -132,14 +167,16 @@ class StockWebApp:
             "progress": [{"time": now, "stage": "queued", "message": "后台任务已创建，等待开始运行。", "details": {}}],
             "result": None,
             "error": "",
+            "agent_token_id": payload.get("_agent_token_id", ""),
+            "created_epoch": time.time(),
+            "updated_epoch": time.time(),
         }
-        with self.multi_agent_jobs_lock:
-            self.multi_agent_jobs[job_id] = job
+        self.agent_job_store.create(job)
         self.task_registry.create_task(
             job_id,
             "multi_agent",
             f"多 Agent 分析 {payload.get('ts_code') or payload.get('code') or ''}",
-            metadata={"analysis_type": payload.get("analysis_type") or "value_speculation"},
+            metadata={"analysis_type": payload.get("analysis_type") or "value_speculation", "agent_token_id": payload.get("_agent_token_id", "")},
         )
         thread = threading.Thread(target=self._run_multi_agent_job, args=(job_id, payload), daemon=True)
         thread.start()
@@ -165,31 +202,39 @@ class StockWebApp:
         result: dict | None = None,
         error: str | None = None,
     ) -> None:
-        with self.multi_agent_jobs_lock:
-            job = self.multi_agent_jobs.get(job_id)
-            if not job:
-                return
-            job["updated_at"] = timestamp()
-            if status:
-                job["status"] = status
-            if result is not None:
-                job["result"] = result
-            if error is not None:
-                job["error"] = error
-            if event:
-                item = {"time": event.get("time") or timestamp(), "stage": event.get("stage") or "progress", "message": event.get("message") or "", "details": event.get("details") or {}}
-                job.setdefault("progress", []).append(item)
+        job = self.agent_job_store.update(job_id, status=status, event=event, result=result, error=error)
+        if not job:
+            return
         if status:
             self.task_registry.update_task(job_id, status=status, error=error, result=result)
         if event:
             self.task_registry.add_event(job_id, event.get("stage") or "progress", event.get("message") or "", event.get("details") or {})
 
     def _read_multi_agent_job(self, job_id: str) -> dict:
-        with self.multi_agent_jobs_lock:
-            job = self.multi_agent_jobs.get(job_id)
-            if not job:
-                raise FileNotFoundError(f"找不到多 Agent 后台任务：{job_id}")
-            return json.loads(json.dumps(job, ensure_ascii=False, default=str))
+        job = self.agent_job_store.get(job_id)
+        if not job:
+            raise FileNotFoundError(f"找不到多 Agent 后台任务：{job_id}")
+        return job
+
+    def agent_rate_allowed(self, token: dict) -> bool:
+        token_id = str(token.get("id") or token.get("token_prefix") or "")
+        limit = max(1, int(token.get("rate_limit_per_min") or 60))
+        now = time.time()
+        window_start = now - 60
+        with self.agent_rate_lock:
+            bucket = [item for item in self.agent_rate_state.get(token_id, []) if item >= window_start]
+            if len(bucket) >= limit:
+                self.agent_rate_state[token_id] = bucket
+                return False
+            bucket.append(now)
+            self.agent_rate_state[token_id] = bucket
+            return True
+
+    def agent_idempotency_get(self, token_id: str, route: str, key: str) -> dict | None:
+        return self.agent_job_store.idempotency_get(token_id, route, key)
+
+    def agent_idempotency_put(self, token_id: str, route: str, key: str, response: dict) -> None:
+        self.agent_job_store.idempotency_put(token_id, route, key, response)
 
     def _completed_multi_agent_job(self, result: dict, message: str) -> dict:
         job_id = uuid.uuid4().hex
@@ -207,9 +252,11 @@ class StockWebApp:
             ],
             "result": result,
             "error": "",
+            "agent_token_id": "",
+            "created_epoch": time.time(),
+            "updated_epoch": time.time(),
         }
-        with self.multi_agent_jobs_lock:
-            self.multi_agent_jobs[job_id] = job
+        self.agent_job_store.create(job)
         self.task_registry.create_task(job_id, "multi_agent_cache", "复用共享多 Agent 分析", metadata={"cache_hit": True})
         self.task_registry.update_task(job_id, status="succeeded", result=result)
         self.task_registry.add_event(job_id, "cache", message, {"cache_hit": True})
@@ -235,6 +282,7 @@ class StockWebApp:
             },
             "spider": {"status": spider.get("status", "idle"), "pid": spider.get("pid")},
             "tasks": {"count": len(self.task_registry.list_tasks(500))},
+            "agent_jobs": {"count": len(self.agent_job_store.list(limit=200))},
         }
 
     def _recent_analysis_result(self, ts_code: str, analysis_type: str) -> dict | None:
@@ -307,10 +355,12 @@ class StockWebApp:
             return ""
         full_data = read_json(path)
         datasets = full_data.get("datasets", {})
+        external_rows = minute_reference_row_counts(full_data)
         payload = {
             "ts_code": full_data.get("ts_code"),
             "date_range": full_data.get("date_range", {}),
-            "dataset_rows": {name: len(rows) for name, rows in sorted(datasets.items())},
+            "dataset_rows": {**{name: len(rows) for name, rows in sorted(datasets.items())}, **external_rows},
+            "external_datasets": full_data.get("external_datasets", {}),
             "latest_rows": {name: rows[:3] for name, rows in sorted(datasets.items()) if isinstance(rows, list) and rows},
             "fetch_errors": full_data.get("fetch_errors", []),
         }
@@ -348,6 +398,36 @@ class StockWebApp:
         if value in (None, "", "all", "full", "history"):
             return None, True
         return int(value), False
+
+    def _create_admin_login_challenge(self) -> str:
+        challenge = secrets.token_urlsafe(32)
+        now = time.time()
+        with self.admin_login_challenge_lock:
+            self.admin_login_challenges = {
+                token: expires_at
+                for token, expires_at in self.admin_login_challenges.items()
+                if expires_at > now
+            }
+            if len(self.admin_login_challenges) >= 1024:
+                oldest = min(self.admin_login_challenges, key=self.admin_login_challenges.get)
+                self.admin_login_challenges.pop(oldest, None)
+            self.admin_login_challenges[challenge] = now + 300
+        return challenge
+
+    def _valid_admin_login_challenge(self, challenge: str) -> bool:
+        if not challenge:
+            return False
+        now = time.time()
+        with self.admin_login_challenge_lock:
+            expires_at = self.admin_login_challenges.get(challenge, 0)
+            if expires_at <= now:
+                self.admin_login_challenges.pop(challenge, None)
+                return False
+            return True
+
+    def _consume_admin_login_challenge(self, challenge: str) -> None:
+        with self.admin_login_challenge_lock:
+            self.admin_login_challenges.pop(challenge, None)
 
     def _replace_user_session(self, token: str, account: dict) -> None:
         username = account["username"]
@@ -407,12 +487,15 @@ class StockWebApp:
                 print(f"{self.address_string()} - {format % args}")
 
             def end_headers(self) -> None:
-                if not self.path.startswith("/api/"):
+                if not getattr(self, "path", "").startswith("/api/"):
                     self.send_header("Cache-Control", "no-store, max-age=0")
                 super().end_headers()
 
             def do_GET(self) -> None:
                 parsed = urlparse(self.path)
+                if parsed.path.startswith("/api/agent/v1/"):
+                    self._handle_agent_get(parsed)
+                    return
                 if parsed.path in ("/login", "/login.html"):
                     if self._is_authenticated():
                         self._redirect("/")
@@ -443,13 +526,6 @@ class StockWebApp:
                     query = parse_qs(parsed.query).get("q", [""])[0]
                     self._json({"items": app.index.search(query)})
                     return
-                if parsed.path == "/api/refresh":
-                    if not self._consume_billable_budget(parsed.path):
-                        return
-                    app.index.stocks(refresh=True)
-                    self._record_billable_usage(parsed.path)
-                    self._json({"ok": True})
-                    return
                 if parsed.path == "/api/analysis-frameworks":
                     self._json({"ok": True, "items": list_analysis_frameworks()})
                     return
@@ -465,6 +541,12 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._json({"ok": True, **app.user_store.admin_overview(), "demo": self._demo_state()})
+                    return
+                if parsed.path == "/api/admin/archives":
+                    if not self._require_admin():
+                        return
+                    query = parse_qs(parsed.query)
+                    self._json({"ok": True, **app.user_store.admin_archives(query.get("q", [""])[0])})
                     return
                 if parsed.path == "/api/admin/spider/status":
                     if not self._require_admin():
@@ -493,6 +575,11 @@ class StockWebApp:
                         return
                     self._json({"ok": True, **query_news_library(parse_qs(parsed.query))})
                     return
+                if parsed.path == "/api/admin/agent-tokens":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, "items": app.user_store.list_agent_tokens()})
+                    return
                 if parsed.path == "/api/user/api-keys":
                     session = self._current_session()
                     if not session:
@@ -504,8 +591,14 @@ class StockWebApp:
 
             def do_POST(self) -> None:
                 parsed = urlparse(self.path)
+                if parsed.path.startswith("/api/agent/v1/"):
+                    self._handle_agent_post(parsed)
+                    return
                 if parsed.path == "/api/login":
                     self._handle_login()
+                    return
+                if parsed.path == "/api/admin-login-entry":
+                    self._handle_admin_login_entry()
                     return
                 if parsed.path == "/api/register":
                     self._handle_register()
@@ -532,6 +625,16 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._handle_admin_system_api_key()
+                    return
+                if parsed.path == "/api/admin/agent-token":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_agent_token()
+                    return
+                if parsed.path == "/api/admin/agent-token/revoke":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_agent_token_revoke()
                     return
                 if parsed.path == "/api/admin/user-access":
                     if not self._require_admin():
@@ -612,13 +715,28 @@ class StockWebApp:
                     payload = self._read_json()
                     username = str(payload.get("username") or "")
                     password = str(payload.get("password") or "")
-                    account = self._authenticate(username, password)
+                    one_time_code = str(payload.get("otp") or payload.get("totp") or payload.get("one_time_code") or "")
+                    admin_challenge = str(payload.get("admin_challenge") or "")
+                    account = self._authenticate(username, password, one_time_code, admin_challenge)
                     if not account:
                         self._json({"ok": False, "error": "账号或密码错误"}, status=401)
                         return
+                    if account.get("role") == "admin":
+                        app._consume_admin_login_challenge(admin_challenge)
                     self._login_account(account)
+                except PermissionError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=401)
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_admin_login_entry(self) -> None:
+                payload = self._read_json()
+                username = str(payload.get("username") or "")
+                password = str(payload.get("password") or "")
+                if not (secrets.compare_digest(username, "admin") and secrets.compare_digest(password, "admin")):
+                    self._json({"ok": False, "error": "管理员入口凭据错误"}, status=401)
+                    return
+                self._json({"ok": True, "admin_challenge": app._create_admin_login_challenge()})
 
             def _handle_register(self) -> None:
                 try:
@@ -665,6 +783,8 @@ class StockWebApp:
             def _handle_multi_agent_analyze(self) -> None:
                 try:
                     payload = self._read_json()
+                    if not self._require_data_fetch_approval("/api/multi-agent-analyze", payload):
+                        return
                     ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
                     analysis_type = str(payload.get("analysis_type") or "value_speculation")
                     deepseek_client = self._deepseek_for_session(require=True)
@@ -799,6 +919,30 @@ class StockWebApp:
                 except (ValueError, PermissionError, RuntimeError) as exc:
                     self._json({"ok": False, "error": str(exc)}, status=400)
 
+            def _handle_admin_agent_token(self) -> None:
+                payload = self._read_json()
+                session = self._current_session() or {}
+                try:
+                    token = app.user_store.issue_agent_token(
+                        name=str(payload.get("name") or "agent"),
+                        scopes=payload.get("scopes") or ["R"],
+                        created_by=session.get("username") or "admin",
+                        expires_in_days=int(payload.get("expires_in_days") or 30),
+                        rate_limit_per_min=int(payload.get("rate_limit_per_min") or 60),
+                    )
+                    self._json({"ok": True, "agent_token": token, "warning": "token 明文只返回这一次，请保存到安全位置。"})
+                except (TypeError, ValueError) as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+
+            def _handle_admin_agent_token_revoke(self) -> None:
+                payload = self._read_json()
+                session = self._current_session() or {}
+                try:
+                    item = app.user_store.revoke_agent_token(str(payload.get("id") or ""), session.get("username") or "admin")
+                    self._json({"ok": True, "agent_token": item})
+                except KeyError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=404)
+
             def _handle_admin_user_access(self) -> None:
                 payload = self._read_json()
                 username = str(payload.get("username") or "").strip()
@@ -815,12 +959,18 @@ class StockWebApp:
                         self._json({"ok": True, "access": access, **app.user_store.admin_overview()})
                         return
                     if action == "disable":
-                        app.user_store.admin_set_disabled(username, True, session.get("username") or "admin")
+                        days = int(payload.get("days") or 0)
+                        app.user_store.admin_set_disabled(username, True, session.get("username") or "admin", days=days)
                         app._remove_sessions_for_user(username)
                         self._json({"ok": True, **app.user_store.admin_overview()})
                         return
                     if action == "enable":
                         app.user_store.admin_set_disabled(username, False, session.get("username") or "admin")
+                        self._json({"ok": True, **app.user_store.admin_overview()})
+                        return
+                    if action == "archive":
+                        app.user_store.admin_archive_account(username, session.get("username") or "admin", str(payload.get("reason") or ""))
+                        app._remove_sessions_for_user(username)
                         self._json({"ok": True, **app.user_store.admin_overview()})
                         return
                     self._json({"ok": False, "error": "未知用户操作。"}, status=400)
@@ -886,6 +1036,8 @@ class StockWebApp:
 
             def _handle_admin_spider_start(self) -> None:
                 payload = self._read_json()
+                if not self._require_data_fetch_approval("/api/admin/spider/start", payload):
+                    return
                 try:
                     result = app.spider_controller.start(payload)
                     self._json({"ok": True, **result})
@@ -899,6 +1051,8 @@ class StockWebApp:
                 action = str(payload.get("action") or "save").strip()
                 try:
                     if action == "run_now":
+                        if not self._require_data_fetch_approval("/api/admin/daily-market-scheduler:run_now", payload):
+                            return
                         self._json({"ok": True, **app.daily_market_scheduler.run_now()})
                         return
                     if action == "save":
@@ -906,13 +1060,15 @@ class StockWebApp:
                         schedule_time = str(payload.get("time") or "21:30").strip()
                         self._json({"ok": True, **app.daily_market_scheduler.configure(enabled=enabled, schedule_time=schedule_time)})
                         return
-                    self._json({"ok": False, "error": "未知每日行情调度操作。"}, status=400)
+                    self._json({"ok": False, "error": "未知每日股票数据调度操作。"}, status=400)
                 except (ValueError, RuntimeError) as exc:
                     self._json({"ok": False, "error": str(exc)}, status=400)
 
             def _handle_analyze(self) -> None:
                 try:
                     payload = self._read_json()
+                    if not self._require_data_fetch_approval("/api/analyze", payload):
+                        return
                     ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
                     framework = get_analysis_framework(str(payload.get("analysis_type") or "value_speculation"))
                     years, full_history = self._parse_history_scope(payload)
@@ -1004,6 +1160,8 @@ class StockWebApp:
             def _handle_sync_stock_data(self) -> None:
                 try:
                     payload = self._read_json()
+                    if not self._require_data_fetch_approval("/api/sync-stock-data", payload):
+                        return
                     ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
                     years, full_history = self._parse_history_scope(payload)
                     tushare_client = self._tushare_for_session()
@@ -1038,6 +1196,8 @@ class StockWebApp:
             def _handle_sync_ths_market_data(self) -> None:
                 try:
                     payload = self._read_json()
+                    if not self._require_data_fetch_approval("/api/sync-ths-market-data", payload):
+                        return
                     ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
                     result = fetch_and_store_minutes(
                         [ts_code],
@@ -1072,6 +1232,180 @@ class StockWebApp:
                     self._json(build_local_stock_payload(ts_code))
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
                     self._json({"ok": False, "error": str(exc)}, status=404)
+
+            def _handle_agent_get(self, parsed) -> None:
+                path = parsed.path
+                if path == "/api/agent/v1/health":
+                    payload = app.health_snapshot()
+                    payload["agent_gateway"] = {"ok": True, "version": "v1", "scopes": AGENT_SCOPE_LABELS}
+                    self._json(payload)
+                    return
+                if path == "/api/agent/v1/openapi.json":
+                    self._json(read_json(STATIC_DIR / "agent-openapi.json"))
+                    return
+                token = self._require_agent_scope("R", parsed)
+                if not token:
+                    return
+                query = parse_qs(parsed.query)
+                try:
+                    if path == "/api/agent/v1/whoami":
+                        self._agent_json(token, {"ok": True, "token": token, "scopes": token.get("scopes", [])}, "R")
+                        return
+                    if path == "/api/agent/v1/stocks/search":
+                        q = query.get("q", [""])[0]
+                        self._agent_json(token, {"ok": True, "items": app.index.search(q)}, "R")
+                        return
+                    prefix = "/api/agent/v1/stocks/"
+                    if path.startswith(prefix):
+                        rest = path[len(prefix):].strip("/")
+                        code, _, action = rest.partition("/")
+                        ts_code = normalize_ts_code(code)
+                        if action == "status":
+                            self._agent_json(token, {"ok": True, **stock_status(ts_code)}, "R")
+                            return
+                        if action == "data":
+                            self._agent_json(token, build_local_stock_payload(ts_code), "R")
+                            return
+                    if path == "/api/agent/v1/jobs":
+                        limit = max(1, min(200, int(query.get("limit", ["50"])[0] or 50)))
+                        items = app.agent_job_store.list(token_id=str(token.get("id") or ""), limit=limit)
+                        self._agent_json(token, {"ok": True, "items": items, "count": len(items)}, "R")
+                        return
+                    jobs_prefix = "/api/agent/v1/jobs/"
+                    if path.startswith(jobs_prefix):
+                        remainder = path[len(jobs_prefix):].strip("/")
+                        if remainder.endswith("/stream"):
+                            job_id = remainder[: -len("/stream")].strip("/")
+                            job = app._read_multi_agent_job(job_id)
+                            owner = str(job.get("agent_token_id") or "")
+                            if owner and owner != str(token.get("id") or ""):
+                                app.user_store.record_agent_audit(token, path, "GET", "R", 403, {"reason": "job_owner_mismatch"})
+                                self._json({"ok": False, "error": "无权读取该 Agent 任务。"}, status=403)
+                                return
+                            self._stream_agent_job(token, job_id)
+                            return
+                        job_id = remainder
+                        job = app._read_multi_agent_job(job_id)
+                        owner = str(job.get("agent_token_id") or "")
+                        if owner and owner != str(token.get("id") or ""):
+                            app.user_store.record_agent_audit(token, path, "GET", "R", 403, {"reason": "job_owner_mismatch"})
+                            self._json({"ok": False, "error": "无权读取该 Agent 任务。"}, status=403)
+                            return
+                        self._agent_json(token, job, "R")
+                        return
+                    self._agent_json(token, {"ok": False, "error": "Agent endpoint not found"}, "R", status=404)
+                except Exception as exc:  # noqa: BLE001 - readable agent error
+                    app.user_store.record_agent_audit(token, path, "GET", "R", 500, {"error": str(exc)})
+                    self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_agent_post(self, parsed) -> None:
+                path = parsed.path
+                if path != "/api/agent/v1/analysis-jobs":
+                    token = self._require_agent_scope("R", parsed)
+                    if token:
+                        self._agent_json(token, {"ok": False, "error": "Agent endpoint not found"}, "R", status=404)
+                    return
+                token = self._require_agent_scope("B", parsed)
+                if not token:
+                    return
+                idempotency_key = str(self.headers.get("Idempotency-Key") or "").strip()
+                if not idempotency_key:
+                    app.user_store.record_agent_audit(token, path, "POST", "B", 428, {"reason": "missing_idempotency_key"})
+                    self._json({"ok": False, "error": "提交分析任务必须提供 Idempotency-Key。"}, status=428)
+                    return
+                replay = app.agent_idempotency_get(str(token.get("id") or ""), path, idempotency_key)
+                if replay:
+                    self._agent_json(token, {**replay, "duplicate": True}, "B", status=202)
+                    return
+                try:
+                    payload = self._read_json()
+                    ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
+                    analysis_type = get_analysis_framework(str(payload.get("analysis_type") or "value_speculation")).key
+                    system_key = app.user_store.decrypted_system_api_keys().get("deepseek", "")
+                    if not system_key:
+                        app.user_store.record_agent_audit(token, path, "POST", "B", 428, {"reason": "missing_system_deepseek"})
+                        self._json({"ok": False, "error": "系统 DeepSeek key 未配置，无法启动 Agent 分析任务。"}, status=428)
+                        return
+                    job_payload = {
+                        **payload,
+                        "ts_code": ts_code,
+                        "analysis_type": analysis_type,
+                        "allow_dynamic_fetch": False,
+                        "async": True,
+                        "_agent_token_id": token.get("id", ""),
+                        "_deepseek_client": DeepSeekClient(system_key, app.settings.deepseek_base_url, model=app.settings.deepseek_model),
+                    }
+                    result = app._start_multi_agent_job(job_payload)
+                    result = {**result, "idempotency_key": idempotency_key, "agent_token_prefix": token.get("token_prefix", "")}
+                    app.agent_idempotency_put(str(token.get("id") or ""), path, idempotency_key, result)
+                    self._agent_json(token, result, "B", status=202)
+                except Exception as exc:  # noqa: BLE001 - readable agent error
+                    app.user_store.record_agent_audit(token, path, "POST", "B", 500, {"error": str(exc)})
+                    self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _agent_json(self, token: dict, payload: dict, scope: str, status: int = 200) -> None:
+                app.user_store.record_agent_audit(token, self.path, self.command, scope, status, {})
+                self._json(payload, status=status)
+
+            def _stream_agent_job(self, token: dict, job_id: str) -> None:
+                app.user_store.record_agent_audit(token, self.path, "GET", "R", 200, {"job_id": job_id, "transport": "sse"})
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, no-store")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                last_progress_count = 0
+                last_ping = time.monotonic()
+                deadline = time.monotonic() + 300
+                try:
+                    initial = app._read_multi_agent_job(job_id)
+                    self._write_sse("snapshot", initial)
+                    last_progress_count = len(initial.get("progress") or [])
+                    while time.monotonic() < deadline:
+                        job = app._read_multi_agent_job(job_id)
+                        progress = job.get("progress") or []
+                        for event in progress[last_progress_count:]:
+                            self._write_sse("progress", event)
+                        last_progress_count = len(progress)
+                        if job.get("status") in {"succeeded", "failed", "cancelled", "stopped"}:
+                            self._write_sse("result", job)
+                            return
+                        if time.monotonic() - last_ping >= 15:
+                            self._write_sse("ping", {"job_id": job_id, "time": timestamp()})
+                            last_ping = time.monotonic()
+                        time.sleep(1)
+                    self._write_sse("timeout", {"job_id": job_id, "status": "timeout"})
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+
+            def _write_sse(self, event: str, payload: dict) -> None:
+                body = json.dumps(payload, ensure_ascii=False, default=str)
+                self.wfile.write(f"event: {event}\ndata: {body}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
+            def _require_agent_scope(self, scope: str, parsed) -> dict | None:
+                raw_token = self._bearer_token()
+                token = app.user_store.verify_agent_token(raw_token)
+                if not token:
+                    app.user_store.record_agent_audit(None, parsed.path, self.command, scope, 401, {"reason": "invalid_or_missing_token"})
+                    self._json({"ok": False, "error": "Agent token 无效或已过期。"}, status=401)
+                    return None
+                if scope not in set(token.get("scopes") or []):
+                    app.user_store.record_agent_audit(token, parsed.path, self.command, scope, 403, {"reason": "scope_denied"})
+                    self._json({"ok": False, "error": f"Agent token 缺少 {scope} scope。"}, status=403)
+                    return None
+                if not app.agent_rate_allowed(token):
+                    app.user_store.record_agent_audit(token, parsed.path, self.command, scope, 429, {"reason": "rate_limited"})
+                    self._json({"ok": False, "error": "Agent token 请求过于频繁。"}, status=429)
+                    return None
+                return token
+
+            def _bearer_token(self) -> str:
+                header = self.headers.get("Authorization", "")
+                parts = header.split()
+                if len(parts) == 2 and parts[0].lower() == "bearer":
+                    return parts[1]
+                return ""
 
             def _read_json(self) -> dict:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -1198,8 +1532,22 @@ class StockWebApp:
                     errors.extend(validation["errors"])
                 return {"checks": checks, "errors": errors}
 
-            def _authenticate(self, username: str, password: str) -> dict | None:
+            def _authenticate(
+                self,
+                username: str,
+                password: str,
+                one_time_code: str = "",
+                admin_challenge: str = "",
+            ) -> dict | None:
                 if secrets.compare_digest(username, app.settings.web_username) and secrets.compare_digest(password, app.settings.web_password):
+                    if not app._valid_admin_login_challenge(admin_challenge):
+                        raise PermissionError("请先通过管理员入口验证。")
+                    totp_secret = get_secret_store().get("web.admin_totp_secret")
+                    if totp_secret:
+                        if not verify_totp(totp_secret, one_time_code):
+                            raise PermissionError("管理员一次性验证码错误或已过期。")
+                    else:
+                        raise PermissionError("管理员 Authenticator 尚未配置，请先运行 `.venv/bin/python -m stock_pipeline secrets setup-admin-totp`。")
                     return {"username": app.settings.web_username, "role": "admin"}
                 if app.user_store.verify_demo_account(username, password):
                     return {"username": username, "role": "demo", "managed_demo": True}
@@ -1265,6 +1613,36 @@ class StockWebApp:
                     return False
                 return self._check_demo_budget(path, session)
 
+            def _require_data_fetch_approval(self, action: str, payload) -> bool:
+                if not app.settings.data_fetch_approval_required:
+                    return True
+                approved = False
+                if isinstance(payload, dict):
+                    approved = payload.get("approved") is True or str(payload.get("approved") or "").lower() in {"1", "true", "yes"}
+                else:
+                    values = payload.get("approved", []) if hasattr(payload, "get") else []
+                    approved = any(str(item).lower() in {"1", "true", "yes"} for item in values)
+                if not approved:
+                    label = DATA_FETCH_ACTIONS.get(action, action)
+                    self._json(
+                        {
+                            "ok": False,
+                            "approval_required": True,
+                            "approval_action": action,
+                            "error": f"需要审批后才能执行：{label}",
+                        },
+                        status=428,
+                    )
+                    return False
+                session = self._current_session() or {}
+                app.user_store.record_audit_event(
+                    session.get("username") or "anonymous",
+                    "data_fetch_approved",
+                    DATA_FETCH_ACTIONS.get(action, action),
+                    {"action": action},
+                )
+                return True
+
             def _record_billable_usage(self, path: str) -> None:
                 session = self._current_session()
                 if session:
@@ -1321,10 +1699,12 @@ def serve_web(host: str = "127.0.0.1", port: int = 8765) -> None:
 
 
 class TaskRegistry:
-    def __init__(self, max_items: int = 200):
+    def __init__(self, path: Path | None = None, max_items: int = 200):
+        self.path = path
         self.max_items = max_items
         self.lock = threading.Lock()
-        self.tasks: dict[str, dict] = {}
+        self.tasks: dict[str, dict] = self._load_tasks()
+        self._mark_interrupted_tasks()
 
     def create_task(self, task_id: str, kind: str, title: str, metadata: dict | None = None) -> dict:
         now = timestamp()
@@ -1347,6 +1727,7 @@ class TaskRegistry:
         with self.lock:
             self.tasks[task_id] = task
             self._trim_locked()
+            self._write_locked()
             return json.loads(json.dumps(task, ensure_ascii=False, default=str))
 
     def update_task(self, task_id: str, status: str | None = None, error: str | None = None, result: dict | None = None, metadata: dict | None = None) -> None:
@@ -1366,6 +1747,7 @@ class TaskRegistry:
                 task.setdefault("metadata", {}).update(metadata)
             if result:
                 task["result_summary"] = self._summarize_result(result)
+            self._write_locked()
 
     def add_event(self, task_id: str, stage: str, message: str, details: dict | None = None) -> None:
         with self.lock:
@@ -1378,6 +1760,7 @@ class TaskRegistry:
             events.append({"time": timestamp(), "stage": stage or "progress", "message": message or "", "details": details or {}})
             if len(events) > 80:
                 task["events"] = events[-80:]
+            self._write_locked()
 
     def list_tasks(self, limit: int = 80) -> list[dict]:
         with self.lock:
@@ -1393,6 +1776,48 @@ class TaskRegistry:
             if task_id not in keep:
                 self.tasks.pop(task_id, None)
 
+    def _load_tasks(self) -> dict[str, dict]:
+        if not self.path or not self.path.exists():
+            return {}
+        try:
+            payload = read_json(self.path)
+            items = payload.get("tasks", []) if isinstance(payload, dict) else payload
+            return {
+                str(item.get("task_id")): item
+                for item in items
+                if isinstance(item, dict) and item.get("task_id")
+            }
+        except Exception:
+            return {}
+
+    def _mark_interrupted_tasks(self) -> None:
+        changed = False
+        now = timestamp()
+        now_epoch = time.time()
+        for task in self.tasks.values():
+            if task.get("status") not in {"queued", "running", "stopping"}:
+                continue
+            task["status"] = "failed"
+            task["updated_at"] = now
+            task["updated_epoch"] = now_epoch
+            task["finished_at"] = now
+            task["error"] = "服务重启，任务执行状态已中断。"
+            task.setdefault("events", []).append(
+                {"time": now, "stage": "failed", "message": "服务重启，任务执行状态已中断。", "details": {}}
+            )
+            changed = True
+        if changed and self.path:
+            ensure_dir(self.path.parent)
+            write_json(self.path, {"version": 1, "tasks": list(self.tasks.values())})
+            os.chmod(self.path, 0o600)
+
+    def _write_locked(self) -> None:
+        if not self.path:
+            return
+        ensure_dir(self.path.parent)
+        write_json(self.path, {"version": 1, "tasks": list(self.tasks.values())})
+        os.chmod(self.path, 0o600)
+
     def _summarize_result(self, result: dict) -> dict:
         return {
             "ts_code": result.get("ts_code", ""),
@@ -1405,6 +1830,8 @@ class TaskRegistry:
             "skipped": result.get("skipped", ""),
             "no_data": result.get("no_data", ""),
             "failed": result.get("failed", ""),
+            "stock_list_count": result.get("stock_list_count", ""),
+            "trigger": result.get("trigger", ""),
         }
 
 
@@ -1446,6 +1873,7 @@ class DailyMarketScheduler:
                 "last_result": config.get("last_result") or {},
                 "running": running,
                 "stock_count": len(list_local_stock_codes()),
+                "stock_list_count": (config.get("last_result") or {}).get("stock_list_count"),
             }
         }
 
@@ -1471,7 +1899,7 @@ class DailyMarketScheduler:
     def _start_run(self, trigger: str) -> dict:
         with self.lock:
             if self.worker and self.worker.is_alive():
-                raise RuntimeError("每日行情更新任务正在运行。")
+                raise RuntimeError("每日股票数据更新任务正在运行。")
             task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
             target_date = today_yyyymmdd()
             self.config["last_task_id"] = task_id
@@ -1479,11 +1907,11 @@ class DailyMarketScheduler:
         self.task_registry.create_task(
             task_id,
             "daily_market",
-            "每日行情增量更新",
+            "每日股票数据更新",
             metadata={"trigger": trigger, "target_date": target_date},
         )
         self.task_registry.update_task(task_id, status="running")
-        self.task_registry.add_event(task_id, "running", "开始检查本地已有股票的当日行情。", {"target_date": target_date})
+        self.task_registry.add_event(task_id, "running", "开始刷新股票基础列表。", {"target_date": target_date})
         self.worker = threading.Thread(target=self._run_task, args=(task_id, target_date, trigger), name=f"daily-market-{target_date}", daemon=True)
         self.worker.start()
         return self.status()
@@ -1495,13 +1923,21 @@ class DailyMarketScheduler:
                 self.app.settings.tushare_base_url,
                 pause=self.app.settings.tushare_pause_seconds,
             )
+            stock_list = self.app.index.stocks(refresh=True)
+            self.task_registry.add_event(
+                task_id,
+                "running",
+                f"股票基础列表刷新完成，共 {len(stock_list)} 只。",
+                {"stock_list_count": len(stock_list)},
+            )
             result = sync_daily_market_for_existing_stocks(client, target_date=target_date)
+            result["stock_list_count"] = len(stock_list)
             result["trigger"] = trigger
             self.task_registry.update_task(task_id, status="succeeded", result=result)
             self.task_registry.add_event(
                 task_id,
                 "succeeded",
-                f"每日行情更新完成：更新 {result.get('updated')}，跳过 {result.get('skipped')}，无数据 {result.get('no_data')}，失败 {result.get('failed')}。",
+                f"每日股票数据更新完成：列表 {result.get('stock_list_count')}，行情更新 {result.get('updated')}，跳过 {result.get('skipped')}，无数据 {result.get('no_data')}，失败 {result.get('failed')}。",
                 result,
             )
             with self.lock:
@@ -1512,7 +1948,7 @@ class DailyMarketScheduler:
                 self._write_config_locked()
         except Exception as exc:  # noqa: BLE001 - report task failure
             self.task_registry.update_task(task_id, status="failed", error=str(exc))
-            self.task_registry.add_event(task_id, "failed", "每日行情更新失败。", {"error": str(exc)})
+            self.task_registry.add_event(task_id, "failed", "每日股票数据更新失败。", {"error": str(exc)})
             with self.lock:
                 self.config["last_error"] = str(exc)
                 self._write_config_locked()
@@ -1581,6 +2017,7 @@ class SpiderController:
             log_file = self.logs_dir / f"admin-spider-{source}-{job_id}.log"
             ensure_dir(log_file.parent)
             env = dict(os.environ)
+            self._inject_secret_env(env)
             env["SPIDER_NO_CONSOLE_LOG"] = "1"
             cmd, cwd, source_label = self._build_command(
                 source=source,
@@ -1630,7 +2067,7 @@ class SpiderController:
                     job_id,
                     "spider",
                     f"{source_label}爬虫",
-                    metadata={"source": source, "types": selected_types, "stock_code": stock_code, "max_pages": max_pages, "new_only": new_only},
+                    metadata={"trigger": "manual", "source": source, "types": selected_types, "stock_code": stock_code, "max_pages": max_pages, "new_only": new_only},
                 )
                 self.task_registry.update_task(job_id, status="running")
                 self.task_registry.add_event(job_id, "running", "爬虫进程已启动。", {"pid": process.pid, "log_file": str(log_file)})
@@ -1779,6 +2216,23 @@ class SpiderController:
 
         raise ValueError("未知爬虫数据源。")
 
+    def _inject_secret_env(self, env: dict) -> None:
+        store = get_secret_store()
+        mappings = {
+            "GUARDIAN_API_KEY": "guardian.api_key",
+            "MONGODB_URI": "mongo.uri",
+            "MONGO_USER": "mongo.user",
+            "MONGO_PASSWORD": "mongo.password",
+            "PROXY_USERNAME": "proxy.username",
+            "PROXY_PASSWORD": "proxy.password",
+        }
+        for env_name, secret_name in mappings.items():
+            value = store.get(secret_name)
+            if value:
+                env[env_name] = value
+        if env.get("MONGO_PASSWORD") and not env.get("MONGO_PASSWORD_URI"):
+            env["MONGO_PASSWORD_URI"] = urlsafe_password(env["MONGO_PASSWORD"])
+
     def _refresh_locked(self) -> None:
         for source, process in list(self.processes.items()):
             current = self.currents.get(source)
@@ -1890,7 +2344,7 @@ class SpiderController:
 class ApiKeyCipher:
     def __init__(self, secret: str):
         if not secret:
-            raise RuntimeError("缺少 API key 加密密钥，请设置 STOCK_WEB_KEY_ENCRYPTION_SECRET。")
+            raise RuntimeError("缺少 API key 加密密钥，请运行 stock_pipeline secrets migrate-env 或让系统生成本地 master.key。")
         digest = hashlib.sha256(secret.encode("utf-8")).digest()
         self.fernet = Fernet(base64.urlsafe_b64encode(digest))
 
@@ -1905,11 +2359,108 @@ class ApiKeyCipher:
 
 
 class UserStore:
-    def __init__(self, path: Path, key_cipher: ApiKeyCipher):
+    def __init__(self, path: Path, key_cipher: ApiKeyCipher, admin_username: str = "admin"):
         self.path = path
         self.key_cipher = key_cipher
+        self.admin_username = admin_username or "admin"
         self.lock = threading.Lock()
         ensure_dir(path.parent)
+        self._lock_down_file()
+
+    def issue_agent_token(
+        self,
+        *,
+        name: str,
+        scopes,
+        created_by: str,
+        expires_in_days: int = 30,
+        rate_limit_per_min: int = 60,
+    ) -> dict:
+        name = (name or "agent").strip()[:80]
+        scope_list = _parse_agent_scopes(scopes)
+        expires_in_days = max(1, min(365, int(expires_in_days or 30)))
+        rate_limit_per_min = max(1, min(600, int(rate_limit_per_min or 60)))
+        raw_token = AGENT_TOKEN_PREFIX + secrets.token_urlsafe(32).rstrip("=")
+        token_id = uuid.uuid4().hex
+        token_prefix = raw_token[: len(AGENT_TOKEN_PREFIX) + 8]
+        item = {
+            "id": token_id,
+            "name": name,
+            "token_prefix": token_prefix,
+            "token_hash": _hash_agent_token(raw_token),
+            "scopes": scope_list,
+            "status": "active",
+            "created_by": created_by or "admin",
+            "created_at": timestamp(),
+            "expires_at": time.time() + expires_in_days * 86400,
+            "last_used_at": "",
+            "rate_limit_per_min": rate_limit_per_min,
+        }
+        with self.lock:
+            data = self._read()
+            data.setdefault("agent_tokens", {})[token_id] = item
+            self._audit(data, created_by or "admin", "agent_token_issued", token_prefix, {"scopes": scope_list, "name": name})
+            self._write(data)
+        public = self._public_agent_token(item)
+        public["token"] = raw_token
+        return public
+
+    def list_agent_tokens(self) -> list[dict]:
+        with self.lock:
+            data = self._read()
+            items = list(data.get("agent_tokens", {}).values())
+        return [self._public_agent_token(item) for item in sorted(items, key=lambda item: item.get("created_at", ""), reverse=True)]
+
+    def revoke_agent_token(self, token_id: str, actor: str) -> dict:
+        with self.lock:
+            data = self._read()
+            item = data.get("agent_tokens", {}).get(token_id)
+            if not item:
+                raise KeyError("找不到 Agent token。")
+            item["status"] = "revoked"
+            item["revoked_at"] = timestamp()
+            item["revoked_by"] = actor or "admin"
+            self._audit(data, actor or "admin", "agent_token_revoked", item.get("token_prefix", token_id), {})
+            self._write(data)
+            return self._public_agent_token(item)
+
+    def verify_agent_token(self, raw_token: str) -> dict | None:
+        if not raw_token or not raw_token.startswith(AGENT_TOKEN_PREFIX):
+            return None
+        token_hash = _hash_agent_token(raw_token)
+        now = time.time()
+        with self.lock:
+            data = self._read()
+            for item in data.get("agent_tokens", {}).values():
+                if not hmac.compare_digest(str(item.get("token_hash") or ""), token_hash):
+                    continue
+                if item.get("status") != "active" or float(item.get("expires_at") or 0) <= now:
+                    return None
+                item["last_used_at"] = timestamp()
+                self._write(data)
+                return self._public_agent_token(item)
+        return None
+
+    def record_agent_audit(self, token: dict | None, route: str, method: str, scope: str, status_code: int, details: dict | None = None) -> None:
+        with self.lock:
+            data = self._read()
+            logs = data.setdefault("agent_audit_logs", [])
+            logs.append(
+                {
+                    "time": timestamp(),
+                    "token_id": (token or {}).get("id", ""),
+                    "token_prefix": (token or {}).get("token_prefix", ""),
+                    "agent_name": (token or {}).get("name", ""),
+                    "route": route,
+                    "method": method,
+                    "scope": scope,
+                    "status_code": status_code,
+                    "details": details or {},
+                }
+            )
+            if len(logs) > 500:
+                data["agent_audit_logs"] = logs[-500:]
+            self._write(data)
 
     def create_user(self, username: str, password: str, invite_code: str) -> tuple[bool, str]:
         with self.lock:
@@ -2048,10 +2599,17 @@ class UserStore:
 
     def verify_user(self, username: str, password: str) -> bool:
         with self.lock:
-            user = self._read().get("users", {}).get(username)
-        if not user or user.get("disabled"):
-            return False
-        return self._verify_password(password, user.get("password", ""))
+            data = self._read()
+            user = data.get("users", {}).get(username)
+            if not user:
+                return False
+            disabled, changed = self._refresh_disabled_state(user)
+            if changed:
+                self._audit(data, "system", "auto_enable_user", username, {})
+                self._write(data)
+            if disabled:
+                return False
+            return self._verify_password(password, user.get("password", ""))
 
     def user_access_state(self, username: str, data: dict | None = None) -> dict:
         data = data or self._read()
@@ -2059,7 +2617,8 @@ class UserStore:
             return {"tier": "", "is_vip": False, "vip_until": 0, "vip_until_text": ""}
         user = data.get("users", {}).get(username)
         if not user:
-            return {"tier": "admin" if username else "", "is_vip": True, "vip_until": 0, "vip_until_text": ""}
+            is_admin = secrets.compare_digest(username, self.admin_username)
+            return {"tier": "admin" if is_admin else "", "is_vip": is_admin, "vip_until": 0, "vip_until_text": ""}
         vip_until = float(user.get("vip_until") or 0)
         is_vip = vip_until > time.time()
         return {
@@ -2211,10 +2770,12 @@ class UserStore:
     def admin_grant_vip(self, username: str, days: int, actor: str) -> dict:
         now = time.time()
         with self.lock:
+            self._assert_manageable_user(username)
             data = self._read()
             user = data.get("users", {}).get(username)
             if not user:
                 raise KeyError("找不到用户。")
+            self._assert_manageable_user(username, user)
             base = max(now, float(user.get("vip_until") or 0))
             user["vip_until"] = base + max(1, int(days)) * 86400
             user["tier"] = "vip"
@@ -2224,25 +2785,111 @@ class UserStore:
 
     def admin_revoke_vip(self, username: str, actor: str) -> dict:
         with self.lock:
+            self._assert_manageable_user(username)
             data = self._read()
             user = data.get("users", {}).get(username)
             if not user:
                 raise KeyError("找不到用户。")
+            self._assert_manageable_user(username, user)
             user["vip_until"] = 0
             user["tier"] = "user"
             self._audit(data, actor, "revoke_vip", username, {})
             self._write(data)
             return self.user_access_state(username, data=data)
 
-    def admin_set_disabled(self, username: str, disabled: bool, actor: str) -> None:
+    def admin_set_disabled(self, username: str, disabled: bool, actor: str, days: int = 0) -> None:
         with self.lock:
+            self._assert_manageable_user(username)
             data = self._read()
             user = data.get("users", {}).get(username)
             if not user:
                 raise KeyError("找不到用户。")
+            self._assert_manageable_user(username, user)
             user["disabled"] = bool(disabled)
-            self._audit(data, actor, "disable_user" if disabled else "enable_user", username, {})
+            details = {}
+            if disabled:
+                if days < 1 or days > 3650:
+                    raise ValueError("封禁天数必须在 1-3650 天之间。")
+                disabled_until = time.time() + days * 86400
+                user["disabled_until"] = disabled_until
+                user["disabled_at"] = timestamp()
+                user["disabled_by"] = actor
+                details = {"days": days, "disabled_until": disabled_until}
+            else:
+                user.pop("disabled_until", None)
+                user.pop("disabled_at", None)
+                user.pop("disabled_by", None)
+            self._audit(data, actor, "disable_user" if disabled else "enable_user", username, details)
             self._write(data)
+
+    def _assert_manageable_user(self, username: str, user: dict | None = None) -> None:
+        role = str((user or {}).get("role") or (user or {}).get("tier") or "")
+        if secrets.compare_digest(username, self.admin_username) or role == "admin":
+            raise PermissionError("最高管理员账号不能修改权限、禁用或归档。")
+
+    def _refresh_disabled_state(self, user: dict, now: float | None = None) -> tuple[bool, bool]:
+        now = time.time() if now is None else now
+        disabled = bool(user.get("disabled"))
+        disabled_until = float(user.get("disabled_until") or 0)
+        if disabled and disabled_until and disabled_until <= now:
+            user["disabled"] = False
+            user.pop("disabled_until", None)
+            user.pop("disabled_at", None)
+            user.pop("disabled_by", None)
+            return False, True
+        if not disabled and disabled_until:
+            user.pop("disabled_until", None)
+            user.pop("disabled_at", None)
+            user.pop("disabled_by", None)
+            return False, True
+        return disabled, False
+
+    def admin_archive_account(self, username: str, actor: str, reason: str = "") -> dict:
+        if not username:
+            raise ValueError("缺少账号。")
+        with self.lock:
+            self._assert_manageable_user(username)
+            data = self._read()
+            users = data.setdefault("users", {})
+            demo_accounts = data.setdefault("demo_accounts", {})
+            if username in users:
+                user = users[username]
+                role = user.get("role") or user.get("tier") or "user"
+                self._assert_manageable_user(username, user)
+                archived = data.setdefault("archived_users", {})
+                user = users.pop(username)
+                user["archived_at"] = timestamp()
+                user["archived_by"] = actor
+                user["archive_reason"] = reason.strip()
+                user["disabled"] = True
+                archived[username] = {
+                    "account": user,
+                    "usage": data.get("usage", {}).get(username, {}),
+                    "archived_at": user["archived_at"],
+                    "archived_by": actor,
+                    "reason": reason.strip(),
+                }
+                self._audit(data, actor, "archive_user", username, {"reason": reason.strip()})
+                self._write(data)
+                return {"kind": "user", "username": username}
+            if username in demo_accounts:
+                account = demo_accounts.pop(username)
+                account["archived_at"] = timestamp()
+                account["archived_by"] = actor
+                account["archive_reason"] = reason.strip()
+                account["disabled"] = True
+                archived = data.setdefault("archived_demo_accounts", {})
+                archived[username] = {
+                    "account": account,
+                    "usage": data.get("usage", {}).get(username, {}),
+                    "archived_at": account["archived_at"],
+                    "archived_by": actor,
+                    "reason": reason.strip(),
+                }
+                self._audit(data, actor, "archive_demo_account", username, {"reason": reason.strip()})
+                self._write(data)
+                return {"kind": "demo", "username": username}
+            raise KeyError("找不到用户或测试账号。")
 
     def admin_reset_demo_budget(self, username: str, actor: str) -> dict:
         now = time.time()
@@ -2304,6 +2951,12 @@ class UserStore:
             by_path[path] = int(by_path.get(path) or 0) + 1
             self._write(data)
 
+    def record_audit_event(self, actor: str, action: str, target: str, details: dict | None = None) -> None:
+        with self.lock:
+            data = self._read()
+            self._audit(data, actor or "anonymous", action, target, details or {})
+            self._write(data)
+
     def _billable_usage_view(self, user_usage: dict) -> dict:
         by_path = {
             path: int(count or 0)
@@ -2319,8 +2972,17 @@ class UserStore:
     def admin_overview(self) -> dict:
         with self.lock:
             data = self._read()
+            changed = False
+            for username, user in data.get("users", {}).items():
+                _, user_changed = self._refresh_disabled_state(user)
+                if user_changed:
+                    self._audit(data, "system", "auto_enable_user", username, {})
+                    changed = True
+            if changed:
+                self._write(data)
         users = []
         usage = data.get("usage", {})
+        archived_names = set(data.get("archived_users", {})) | set(data.get("archived_demo_accounts", {}))
         for username, user in sorted(data.get("users", {}).items()):
             user_usage = usage.get(username, {})
             billable_usage = self._billable_usage_view(user_usage)
@@ -2334,6 +2996,9 @@ class UserStore:
                     "vip_until_text": access.get("vip_until_text", ""),
                     "api_keys": self.user_api_key_state(username, data=data),
                     "disabled": bool(user.get("disabled")),
+                    "disabled_until": float(user.get("disabled_until") or 0),
+                    "disabled_until_text": self._format_expiry(float(user.get("disabled_until") or 0)),
+                    "protected": secrets.compare_digest(username, self.admin_username) or access["tier"] == "admin",
                     "usage_total": billable_usage["total"],
                     "last_request_at": billable_usage["last_request_at"],
                     "by_path": billable_usage["by_path"],
@@ -2342,6 +3007,8 @@ class UserStore:
         for username, user_usage in sorted(usage.items()):
             if any(item["username"] == username for item in users):
                 continue
+            if username in archived_names:
+                continue
             billable_usage = self._billable_usage_view(user_usage)
             users.append(
                 {
@@ -2349,6 +3016,10 @@ class UserStore:
                     "role": user_usage.get("role", ""),
                     "created_at": "",
                     "invite_code": "",
+                    "protected": secrets.compare_digest(username, self.admin_username) or user_usage.get("role") == "admin",
+                    "disabled": False,
+                    "disabled_until": 0,
+                    "disabled_until_text": "",
                     "usage_total": billable_usage["total"],
                     "last_request_at": billable_usage["last_request_at"],
                     "by_path": billable_usage["by_path"],
@@ -2363,25 +3034,68 @@ class UserStore:
                 self._public_demo_account(account)
                 for account in sorted(data.get("demo_accounts", {}).values(), key=lambda item: item.get("created_at", ""), reverse=True)
             ],
+            "agent_tokens": self.list_agent_tokens(),
+            "archived_users_count": len(data.get("archived_users", {})),
+            "archived_demo_accounts_count": len(data.get("archived_demo_accounts", {})),
             "audit_logs": list(reversed(data.get("audit_logs", [])[-80:])),
+            "agent_audit_logs": list(reversed(data.get("agent_audit_logs", [])[-80:])),
+        }
+
+    def admin_archives(self, query: str = "") -> dict:
+        needle = query.strip().lower()
+        with self.lock:
+            data = self._read()
+        users = [
+            self._public_archived_account(username, item, kind="user")
+            for username, item in sorted(data.get("archived_users", {}).items(), key=lambda pair: pair[1].get("archived_at", ""), reverse=True)
+        ]
+        demo_accounts = [
+            self._public_archived_account(username, item, kind="demo")
+            for username, item in sorted(data.get("archived_demo_accounts", {}).items(), key=lambda pair: pair[1].get("archived_at", ""), reverse=True)
+        ]
+        if needle:
+            users = [item for item in users if self._archive_matches(item, needle)]
+            demo_accounts = [item for item in demo_accounts if self._archive_matches(item, needle)]
+        return {
+            "query": query,
+            "users": users,
+            "demo_accounts": demo_accounts,
+            "counts": {
+                "users": len(users),
+                "demo_accounts": len(demo_accounts),
+                "total": len(users) + len(demo_accounts),
+            },
         }
 
     def _read(self) -> dict:
         if not self.path.exists():
-            return {"users": {}, "used_invites": {}, "invites": {}, "usage": {}, "demo_accounts": {}, "vip_codes": {}, "system_api_keys": {}, "audit_logs": []}
+            return {"users": {}, "used_invites": {}, "invites": {}, "usage": {}, "demo_accounts": {}, "archived_users": {}, "archived_demo_accounts": {}, "vip_codes": {}, "system_api_keys": {}, "agent_tokens": {}, "audit_logs": [], "agent_audit_logs": []}
         data = read_json(self.path)
         data.setdefault("users", {})
         data.setdefault("used_invites", {})
         data.setdefault("invites", {})
         data.setdefault("usage", {})
         data.setdefault("demo_accounts", {})
+        data.setdefault("archived_users", {})
+        data.setdefault("archived_demo_accounts", {})
         data.setdefault("vip_codes", {})
         data.setdefault("system_api_keys", {})
+        data.setdefault("agent_tokens", {})
         data.setdefault("audit_logs", [])
+        data.setdefault("agent_audit_logs", [])
         return data
 
     def _write(self, data: dict) -> None:
-        write_json(self.path, data)
+        ensure_dir(self.path.parent)
+        tmp_path = self.path.with_name(f".{self.path.name}.tmp")
+        tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, self.path)
+        self._lock_down_file()
+
+    def _lock_down_file(self) -> None:
+        if self.path.exists():
+            os.chmod(self.path, 0o600)
 
     def _hash_password(self, password: str) -> str:
         salt = os.urandom(16)
@@ -2468,6 +3182,58 @@ class UserStore:
             "resets_in_seconds": resets_in,
             "disabled": bool(account.get("disabled")),
         }
+
+    def _public_agent_token(self, item: dict) -> dict:
+        expires_at = float(item.get("expires_at") or 0)
+        return {
+            "id": item.get("id", ""),
+            "name": item.get("name", ""),
+            "token_prefix": item.get("token_prefix", ""),
+            "scopes": _parse_agent_scopes(item.get("scopes")),
+            "scope_labels": {scope: AGENT_SCOPE_LABELS.get(scope, scope) for scope in _parse_agent_scopes(item.get("scopes"))},
+            "status": item.get("status", "active"),
+            "created_by": item.get("created_by", ""),
+            "created_at": item.get("created_at", ""),
+            "expires_at": expires_at,
+            "expires_at_text": self._format_expiry(expires_at),
+            "last_used_at": item.get("last_used_at", ""),
+            "rate_limit_per_min": int(item.get("rate_limit_per_min") or 60),
+        }
+
+    def _public_archived_account(self, username: str, item: dict, kind: str) -> dict:
+        account = item.get("account") or {}
+        usage = item.get("usage") or {}
+        billable_usage = self._billable_usage_view(usage)
+        api_keys = {}
+        if kind == "user":
+            keys = account.get("api_keys") or {}
+            api_keys = {
+                name: {"configured": bool(value.get("ciphertext")), "updated_at": value.get("updated_at", "")}
+                for name, value in keys.items()
+                if isinstance(value, dict)
+            }
+        return {
+            "username": username,
+            "kind": kind,
+            "archived_at": item.get("archived_at", account.get("archived_at", "")),
+            "archived_by": item.get("archived_by", account.get("archived_by", "")),
+            "reason": item.get("reason", account.get("archive_reason", "")),
+            "created_at": account.get("created_at", ""),
+            "created_by": account.get("created_by", ""),
+            "role": account.get("role") or account.get("tier") or ("demo" if kind == "demo" else "user"),
+            "invite_code": account.get("invite_code", ""),
+            "api_keys": api_keys,
+            "usage_total": billable_usage["total"],
+            "last_request_at": billable_usage["last_request_at"],
+            "by_path": billable_usage["by_path"],
+        }
+
+    def _archive_matches(self, item: dict, needle: str) -> bool:
+        haystack = " ".join(
+            str(item.get(field, ""))
+            for field in ("username", "kind", "archived_at", "archived_by", "reason", "created_at", "created_by", "role", "invite_code")
+        ).lower()
+        return needle in haystack
 
     def _audit(self, data: dict, actor: str, action: str, target: str, details: dict) -> None:
         logs = data.setdefault("audit_logs", [])

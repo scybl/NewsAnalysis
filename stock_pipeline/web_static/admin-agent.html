@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Gateway - 价值投机分析</title>
+    <script>
+      try {
+        if (localStorage.getItem("stockTheme") === "dark") {
+          document.documentElement.classList.add("theme-dark");
+        }
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=agent-gateway-20260620-v1" />
+  </head>
+  <body>
+    <main class="admin-page admin-shell">
+      <aside class="admin-sidebar">
+        <a class="admin-brand" href="/">
+          <span class="admin-brand-mark">VA</span>
+          <span>
+            <strong>价值投机分析</strong>
+            <small>Admin Console</small>
+          </span>
+        </a>
+        <nav class="admin-nav" aria-label="后台导航">
+          <a href="/admin-accounts.html">
+            <span class="admin-nav-icon">A</span>
+            <span>账户管理</span>
+          </a>
+          <a class="active" href="/admin-agent.html">
+            <span class="admin-nav-icon">G</span>
+            <span>Agent Gateway</span>
+          </a>
+          <a href="/admin-archives.html">
+            <span class="admin-nav-icon">R</span>
+            <span>归档账号</span>
+          </a>
+          <a href="/admin-spider.html">
+            <span class="admin-nav-icon">S</span>
+            <span>爬虫控制</span>
+          </a>
+          <a href="/admin-news.html">
+            <span class="admin-nav-icon">N</span>
+            <span>新闻数据</span>
+          </a>
+        </nav>
+        <div class="admin-sidebar-footer">
+          <a class="admin-footer-link" href="/">
+            <span class="admin-nav-icon">H</span>
+            <span>返回分析</span>
+          </a>
+          <div class="admin-footer-actions">
+            <button id="themeToggleBtn" type="button">深色模式</button>
+            <button id="logoutBtn" type="button">退出登录</button>
+          </div>
+        </div>
+      </aside>
+
+      <section class="admin-workspace">
+        <header class="admin-page-head agent-gateway-hero">
+          <div>
+            <span class="admin-kicker">AGENT GATEWAY</span>
+            <h1>机器协作入口</h1>
+            <p>为 Codex、MCP 和自动化脚本签发最小权限 token，读取本地资料并提交可审计的多 Agent 分析任务。</p>
+          </div>
+          <div class="admin-actions">
+            <a class="primary-action link-action" href="/admin-accounts.html">账户总览</a>
+          </div>
+        </header>
+
+        <section class="admin-panel agent-gateway-panel">
+          <div class="admin-kpis agent-gateway-kpis">
+            <div><span>Gateway</span><strong id="agentGatewayStatus">v1</strong></div>
+            <div><span>Active Tokens</span><strong id="agentTokenActiveCount">-</strong></div>
+            <div><span>Scope</span><strong>R / B</strong></div>
+            <div><span>Audit</span><strong id="agentAuditCount">-</strong></div>
+          </div>
+          <div id="adminSummary" class="admin-summary">正在读取 Agent Gateway 状态...</div>
+
+          <div class="agent-gateway-grid">
+            <section class="admin-card agent-token-console">
+              <div class="admin-card-head">
+                <h4>签发 Agent Token</h4>
+                <span>明文只返回一次</span>
+              </div>
+              <div class="inline-admin-form agent-token-form">
+                <label>
+                  <span>名称</span>
+                  <input id="agentTokenNameInput" type="text" value="codex-agent" />
+                </label>
+                <label>
+                  <span>Scope</span>
+                  <input id="agentTokenScopesInput" type="text" value="R,B" />
+                </label>
+                <label>
+                  <span>有效天数</span>
+                  <input id="agentTokenDaysInput" type="number" min="1" max="365" value="30" />
+                </label>
+                <label>
+                  <span>每分钟限制</span>
+                  <input id="agentTokenRateInput" type="number" min="1" max="600" value="60" />
+                </label>
+                <button id="createAgentTokenBtn" class="primary-action" type="button">生成 Token</button>
+              </div>
+              <div class="agent-scope-strip">
+                <div><strong>R</strong><span>读取本地股票、报告和任务状态</span></div>
+                <div><strong>B</strong><span>提交模型消耗型多 Agent 分析任务</span></div>
+              </div>
+              <div class="admin-table-wrap">
+                <table id="adminAgentTokensTable"></table>
+              </div>
+            </section>
+
+            <section class="admin-card agent-endpoint-card">
+              <div class="admin-card-head">
+                <h4>Agent API</h4>
+                <span>/api/agent/v1</span>
+              </div>
+              <div class="agent-endpoint-list">
+                <div><code>GET /health</code><span>公开健康检查</span></div>
+                <div><code>GET /whoami</code><span>验证 token 和 scope</span></div>
+                <div><code>GET /stocks/search?q=000001</code><span>股票检索</span></div>
+                <div><code>GET /stocks/{code}/data</code><span>读取本地资料包</span></div>
+                <div><code>POST /analysis-jobs</code><span>提交异步多 Agent 任务</span></div>
+                <div><code>GET /jobs</code><span>列出当前 token 的任务</span></div>
+                <div><code>GET /jobs/{job_id}</code><span>轮询任务结果</span></div>
+                <div><code>GET /jobs/{job_id}/stream</code><span>SSE 实时进度</span></div>
+                <div><code>GET /openapi.json</code><span>机器可读接口合约</span></div>
+              </div>
+            </section>
+
+            <section class="admin-card agent-command-card">
+              <div class="admin-card-head">
+                <h4>调用示例</h4>
+                <span>curl / MCP 包装入口</span>
+              </div>
+              <pre class="agent-code-sample"><code>curl -H "Authorization: Bearer na_agent_xxx" \
+  http://127.0.0.1:8765/api/agent/v1/whoami
+
+curl -X POST http://127.0.0.1:8765/api/agent/v1/analysis-jobs \
+  -H "Authorization: Bearer na_agent_xxx" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 000001-value-001" \
+  -d '{"ts_code":"000001.SZ","analysis_type":"value_speculation"}'</code></pre>
+            </section>
+
+            <section class="admin-card agent-command-card">
+              <div class="admin-card-head">
+                <h4>MCP 配置</h4>
+                <span>本地 stdio</span>
+              </div>
+              <pre class="agent-code-sample"><code>{
+  "mcpServers": {
+    "newsanalysis": {
+      "command": "/absolute/path/to/mcp_server/.venv/bin/newsanalysis-mcp",
+      "env": {
+        "NEWSANALYSIS_BASE_URL": "http://127.0.0.1:8765",
+        "NEWSANALYSIS_AGENT_TOKEN": "na_agent_xxx"
+      }
+    }
+  }
+}</code></pre>
+            </section>
+
+            <section class="admin-card agent-audit-card">
+              <div class="admin-card-head">
+                <h4>Agent 审计</h4>
+                <span>最近调用</span>
+              </div>
+              <div class="admin-table-wrap">
+                <table id="adminAgentAuditTable"></table>
+              </div>
+            </section>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="/admin.js?v=agent-gateway-20260620-v1"></script>
+  </body>
+</html>
