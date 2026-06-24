@@ -57,8 +57,6 @@ def get_settings(require_deepseek: bool = False) -> Settings:
     load_dotenv()
     secret_store = get_secret_store()
     tushare_token = secret_value("tushare.api_token", ("TUSHARE_TOKEN", "TUSHARE_API"))
-    if not tushare_token:
-        raise RuntimeError("缺少 Tushare token，请运行 `.venv/bin/python -m stock_pipeline secrets set tushare.api_token`，不要再写入 .env。")
     if require_deepseek:
         deepseek_token = secret_store.get("deepseek.api_key")
         if not deepseek_token:

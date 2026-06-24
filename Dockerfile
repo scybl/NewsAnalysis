@@ -9,6 +9,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN sed -i \
+        -e 's|http://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g' \
+        -e 's|http://deb.debian.org/debian-security|https://mirrors.aliyun.com/debian-security|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends chromium chromium-driver \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN python -m pip install --retries 8 --timeout 120 --upgrade pip setuptools wheel \
     && python -m pip install --retries 8 --timeout 120 --no-build-isolation -r requirements.txt

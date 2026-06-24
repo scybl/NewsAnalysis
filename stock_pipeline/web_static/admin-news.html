@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>新闻数据 - 价值投机分析</title>
+    <title>数据源 - 价值投机分析</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -28,9 +28,9 @@
             <span class="admin-nav-icon">A</span>
             <span>账户管理</span>
           </a>
-          <a href="/admin-agent.html">
+          <a class="admin-nav-unavailable" aria-disabled="true" title="Agent Gateway 调试中，暂不可用">
             <span class="admin-nav-icon">G</span>
-            <span>Agent Gateway</span>
+            <span>Agent Gateway · 调试中</span>
           </a>
           <a href="/admin-archives.html">
             <span class="admin-nav-icon">R</span>
@@ -42,7 +42,11 @@
           </a>
           <a class="active" href="/admin-news.html">
             <span class="admin-nav-icon">N</span>
-            <span>新闻数据</span>
+            <span>数据源</span>
+          </a>
+          <a href="/admin-kaipanla.html">
+            <span class="admin-nav-icon">K</span>
+            <span>开盘啦</span>
           </a>
         </nav>
         <div class="admin-sidebar-footer">
@@ -60,9 +64,9 @@
       <section class="admin-workspace">
         <header class="admin-page-head">
           <div>
-            <span class="admin-kicker">NEWS LIBRARY</span>
-            <h1>新闻数据</h1>
-            <p id="newsMeta">读取 MongoDB 新闻库。</p>
+            <span class="admin-kicker">DATA LIBRARY</span>
+            <h1>数据源</h1>
+            <p id="newsMeta">查看本地股票资料包和已爬新闻库。</p>
           </div>
           <div class="admin-actions">
             <button id="newsExportBtn" type="button">导出当前页</button>
@@ -71,6 +75,71 @@
         </header>
 
         <section class="admin-panel news-panel">
+          <section class="admin-card data-source-card">
+            <div class="admin-card-head">
+              <h4>数据源中心</h4>
+              <span id="dataSourceMeta">正在读取数据源...</span>
+            </div>
+            <div id="dataSourceStats" class="admin-kpis news-kpis"></div>
+            <div id="dataSourceProviders" class="data-source-provider-grid"></div>
+          </section>
+
+          <section class="admin-card standard-data-card">
+            <div class="admin-card-head">
+              <h4>标准数据类型</h4>
+              <span>分析层只读取这些统一类型</span>
+            </div>
+            <div class="admin-table-wrap">
+              <table id="standardDataTable"></table>
+            </div>
+          </section>
+
+          <section class="admin-card stock-data-card">
+            <div class="admin-card-head">
+              <h4>本地股票数据</h4>
+              <span id="stockDataMeta">正在读取本地资料包...</span>
+            </div>
+            <div id="stockDataStats" class="admin-kpis news-kpis"></div>
+            <div class="news-filter-grid stock-data-filter-grid">
+              <label class="news-search-field">
+                <span>搜索股票</span>
+                <input id="stockDataSearchInput" type="search" placeholder="代码、名称、行业" />
+              </label>
+              <label>
+                <span>排序</span>
+                <select id="stockDataSortSelect">
+                  <option value="updated_at" selected>最近更新</option>
+                  <option value="ts_code">股票代码</option>
+                  <option value="dataset_count">数据集数量</option>
+                  <option value="minute_rows">分钟行数</option>
+                </select>
+              </label>
+            </div>
+            <div class="admin-table-wrap stock-data-table-wrap">
+              <table id="stockDataTable"></table>
+            </div>
+          </section>
+
+          <section class="admin-card kaipanla-card">
+            <div class="admin-card-head">
+              <h4>开盘啦数据源</h4>
+              <span id="kaipanlaMeta">正在读取功能列表...</span>
+            </div>
+            <div class="news-filter-grid kaipanla-control-grid">
+              <label class="news-search-field">
+                <span>功能</span>
+                <select id="kaipanlaFeatureSelect"></select>
+              </label>
+              <button id="kaipanlaValidateBtn" type="button">验证集成</button>
+              <button id="kaipanlaRunBtn" class="primary-action" type="button">运行</button>
+            </div>
+            <label class="kaipanla-param-field">
+              <span>参数 JSON</span>
+              <textarea id="kaipanlaParamsInput" rows="5" spellcheck="false"></textarea>
+            </label>
+            <pre id="kaipanlaOutput" class="agent-code-sample kaipanla-output">等待运行。</pre>
+          </section>
+
           <div id="newsStats" class="admin-kpis news-kpis"></div>
           <div id="newsDistribution" class="news-distribution"></div>
 

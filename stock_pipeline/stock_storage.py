@@ -54,6 +54,53 @@ def list_local_stock_codes() -> list[str]:
     return codes
 
 
+def list_local_stock_summaries() -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for ts_code in list_local_stock_codes():
+        base_dir = stock_dir(ts_code)
+        metadata_path = base_dir / "metadata.json"
+        full_path = current_dir(ts_code) / "full_data.json"
+        metadata = read_json(metadata_path) if metadata_path.exists() else {}
+        full_data = read_json(full_path) if full_path.exists() else {}
+        stock_basic = _first_record(full_data.get("datasets", {}).get("stock_basic", []))
+        dataset_rows = metadata.get("dataset_rows") or {}
+        date_range = metadata.get("date_range") or full_data.get("date_range") or {}
+        minute_rows = sum(
+            int(count or 0)
+            for name, count in dataset_rows.items()
+            if "minute" in str(name).lower()
+        )
+        items.append(
+            {
+                "ts_code": ts_code,
+                "name": stock_basic.get("name") or stock_basic.get("fullname") or "",
+                "industry": stock_basic.get("industry") or "",
+                "market": stock_basic.get("market") or stock_basic.get("exchange") or "",
+                "updated_at": metadata.get("updated_at") or "",
+                "daily_market_updated_at": metadata.get("daily_market_updated_at") or "",
+                "latest_daily_date": metadata.get("latest_daily_date") or "",
+                "date_range": date_range,
+                "dataset_count": len(dataset_rows),
+                "dataset_rows": dataset_rows,
+                "minute_rows": minute_rows,
+                "fetch_error_count": len(metadata.get("fetch_errors") or []),
+                "snapshot_count": len(metadata.get("snapshots") or []),
+                "local_dir": str(current_dir(ts_code)),
+            }
+        )
+    items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    total_dataset_rows = sum(
+        sum(int(count or 0) for count in item.get("dataset_rows", {}).values())
+        for item in items
+    )
+    return {
+        "items": items,
+        "count": len(items),
+        "total_dataset_rows": total_dataset_rows,
+        "total_minute_rows": sum(int(item.get("minute_rows") or 0) for item in items),
+    }
+
+
 def stock_status(code: str) -> dict[str, Any]:
     ts_code = normalize_ts_code(code)
     ensure_current_layout(ts_code)
@@ -340,6 +387,12 @@ def _write_stock_outputs(ts_code: str, full_data: dict[str, Any]) -> None:
 def _latest_trade_date(records: list[dict[str, Any]]) -> str:
     dates = [str(row.get("trade_date") or "") for row in records if row.get("trade_date")]
     return max(dates) if dates else ""
+
+
+def _first_record(records: Any) -> dict[str, Any]:
+    if isinstance(records, list) and records and isinstance(records[0], dict):
+        return records[0]
+    return {}
 
 
 def _merge_trade_date_rows(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -13,7 +13,7 @@
     </script>
     <link rel="stylesheet" href="/styles.css?v=agent-gateway-20260620-v1" />
   </head>
-  <body>
+  <body data-agent-gateway-disabled="true">
     <main class="admin-page admin-shell">
       <aside class="admin-sidebar">
         <a class="admin-brand" href="/">
@@ -28,9 +28,9 @@
             <span class="admin-nav-icon">A</span>
             <span>账户管理</span>
           </a>
-          <a class="active" href="/admin-agent.html">
+          <a class="active admin-nav-unavailable" aria-disabled="true" title="Agent Gateway 调试中，暂不可用">
             <span class="admin-nav-icon">G</span>
-            <span>Agent Gateway</span>
+            <span>Agent Gateway · 调试中</span>
           </a>
           <a href="/admin-archives.html">
             <span class="admin-nav-icon">R</span>
@@ -42,7 +42,11 @@
           </a>
           <a href="/admin-news.html">
             <span class="admin-nav-icon">N</span>
-            <span>新闻数据</span>
+            <span>数据源</span>
+          </a>
+          <a href="/admin-kaipanla.html">
+            <span class="admin-nav-icon">K</span>
+            <span>开盘啦</span>
           </a>
         </nav>
         <div class="admin-sidebar-footer">
@@ -62,7 +66,7 @@
           <div>
             <span class="admin-kicker">AGENT GATEWAY</span>
             <h1>机器协作入口</h1>
-            <p>为 Codex、MCP 和自动化脚本签发最小权限 token，读取本地资料并提交可审计的多 Agent 分析任务。</p>
+            <p>Agent Gateway 需要更多调试，当前暂停签发 token 和机器调用。</p>
           </div>
           <div class="admin-actions">
             <a class="primary-action link-action" href="/admin-accounts.html">账户总览</a>
@@ -70,38 +74,42 @@
         </header>
 
         <section class="admin-panel agent-gateway-panel">
+          <div class="agent-unavailable-banner">
+            <strong>调试中，暂不可用</strong>
+            <span>保留页面用于后续调试，但当前不会签发 Agent token，也不会开放 /api/agent/v1 机器调用。</span>
+          </div>
           <div class="admin-kpis agent-gateway-kpis">
-            <div><span>Gateway</span><strong id="agentGatewayStatus">v1</strong></div>
+            <div><span>Gateway</span><strong id="agentGatewayStatus">调试中</strong></div>
             <div><span>Active Tokens</span><strong id="agentTokenActiveCount">-</strong></div>
-            <div><span>Scope</span><strong>R / B</strong></div>
+            <div><span>Scope</span><strong>暂停</strong></div>
             <div><span>Audit</span><strong id="agentAuditCount">-</strong></div>
           </div>
-          <div id="adminSummary" class="admin-summary">正在读取 Agent Gateway 状态...</div>
+          <div id="adminSummary" class="admin-summary">Agent Gateway 正在调试中，暂不可用。</div>
 
           <div class="agent-gateway-grid">
-            <section class="admin-card agent-token-console">
+            <section class="admin-card agent-token-console agent-unavailable-card">
               <div class="admin-card-head">
                 <h4>签发 Agent Token</h4>
-                <span>明文只返回一次</span>
+                <span>暂停签发</span>
               </div>
               <div class="inline-admin-form agent-token-form">
                 <label>
                   <span>名称</span>
-                  <input id="agentTokenNameInput" type="text" value="codex-agent" />
+                  <input id="agentTokenNameInput" type="text" value="codex-agent" disabled />
                 </label>
                 <label>
                   <span>Scope</span>
-                  <input id="agentTokenScopesInput" type="text" value="R,B" />
+                  <input id="agentTokenScopesInput" type="text" value="R,B" disabled />
                 </label>
                 <label>
                   <span>有效天数</span>
-                  <input id="agentTokenDaysInput" type="number" min="1" max="365" value="30" />
+                  <input id="agentTokenDaysInput" type="number" min="1" max="365" value="30" disabled />
                 </label>
                 <label>
                   <span>每分钟限制</span>
-                  <input id="agentTokenRateInput" type="number" min="1" max="600" value="60" />
+                  <input id="agentTokenRateInput" type="number" min="1" max="600" value="60" disabled />
                 </label>
-                <button id="createAgentTokenBtn" class="primary-action" type="button">生成 Token</button>
+                <button id="createAgentTokenBtn" class="primary-action" type="button" disabled>生成 Token</button>
               </div>
               <div class="agent-scope-strip">
                 <div><strong>R</strong><span>读取本地股票、报告和任务状态</span></div>
@@ -115,7 +123,7 @@
             <section class="admin-card agent-endpoint-card">
               <div class="admin-card-head">
                 <h4>Agent API</h4>
-                <span>/api/agent/v1</span>
+                <span>暂停开放</span>
               </div>
               <div class="agent-endpoint-list">
                 <div><code>GET /health</code><span>公开健康检查</span></div>

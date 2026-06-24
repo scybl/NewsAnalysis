@@ -18,6 +18,7 @@ const adminAgentAuditTable = document.querySelector("#adminAgentAuditTable");
 const agentGatewayStatus = document.querySelector("#agentGatewayStatus");
 const agentTokenActiveCount = document.querySelector("#agentTokenActiveCount");
 const agentAuditCount = document.querySelector("#agentAuditCount");
+const AGENT_GATEWAY_AVAILABLE = false;
 const adminSummary = document.querySelector("#adminSummary");
 const adminUsersTable = document.querySelector("#adminUsersTable");
 const adminInvitesTable = document.querySelector("#adminInvitesTable");
@@ -203,6 +204,10 @@ deleteSystemDeepSeekBtn?.addEventListener("click", async () => {
 });
 
 createAgentTokenBtn?.addEventListener("click", async () => {
+  if (!AGENT_GATEWAY_AVAILABLE) {
+    adminSummary.textContent = "Agent Gateway 正在调试中，暂不可用。";
+    return;
+  }
   createAgentTokenBtn.disabled = true;
   try {
     const response = await fetch("/api/admin/agent-token", {
@@ -357,9 +362,9 @@ async function loadAdminOverview() {
     renderAdminDemoAccounts(demoAccounts);
     renderAdminAudit(payload.audit_logs || []);
     await loadAdminTasks();
-    if (agentGatewayStatus) agentGatewayStatus.textContent = "v1";
-    if (agentTokenActiveCount) agentTokenActiveCount.textContent = String((payload.agent_tokens || []).filter((item) => item.status === "active").length);
-    if (agentAuditCount) agentAuditCount.textContent = String((payload.agent_audit_logs || []).length);
+    if (agentGatewayStatus) agentGatewayStatus.textContent = AGENT_GATEWAY_AVAILABLE ? "v1" : "调试中";
+    if (agentTokenActiveCount) agentTokenActiveCount.textContent = AGENT_GATEWAY_AVAILABLE ? String((payload.agent_tokens || []).filter((item) => item.status === "active").length) : "-";
+    if (agentAuditCount) agentAuditCount.textContent = AGENT_GATEWAY_AVAILABLE ? String((payload.agent_audit_logs || []).length) : "-";
     if (adminUserCount) adminUserCount.textContent = String((payload.users || []).length);
     if (adminInviteCount) adminInviteCount.textContent = String(invites.filter((item) => item.status === "active").length);
     if (adminVipCodeCount) adminVipCodeCount.textContent = String(vipCodes.filter((item) => item.status === "active").length);
@@ -390,7 +395,7 @@ function renderAdminAgentTokens(tokens) {
       <td>${escapeHtml(String(token.rate_limit_per_min || "-"))}</td>
       <td>${escapeHtml(token.last_used_at || "-")}</td>
       <td>
-        <button type="button" data-agent-token-revoke="${escapeHtml(token.id || "")}" ${token.status === "revoked" ? "disabled" : ""}>撤销</button>
+        <button type="button" data-agent-token-revoke="${escapeHtml(token.id || "")}" ${!AGENT_GATEWAY_AVAILABLE || token.status === "revoked" ? "disabled" : ""}>撤销</button>
       </td>
     </tr>
   `).join("");
@@ -423,6 +428,10 @@ function renderAdminAgentAudit(logs) {
 
 async function revokeAgentToken(id) {
   if (!id) return;
+  if (!AGENT_GATEWAY_AVAILABLE) {
+    adminSummary.textContent = "Agent Gateway 正在调试中，暂不可用。";
+    return;
+  }
   if (!window.confirm("确定撤销这个 Agent token？撤销后使用该 token 的 MCP/Codex 调用会立即失败。")) return;
   adminSummary.textContent = "正在撤销 Agent token...";
   try {
@@ -623,6 +632,7 @@ function renderAdminTasks(tasks) {
 function taskKindLabel(kind) {
   return ({
     daily_market: "股票数据",
+    kaipanla: "开盘啦",
     spider: "爬虫",
     multi_agent: "多 Agent",
     multi_agent_cache: "分析缓存",
@@ -640,6 +650,9 @@ function taskSummary(task) {
   const result = task.result_summary || {};
   if (task.kind === "daily_market") {
     return `列表 ${result.stock_list_count ?? "-"} · 更新 ${result.updated ?? "-"} · 跳过 ${result.skipped ?? "-"} · 失败 ${result.failed ?? "-"}`;
+  }
+  if (task.kind === "kaipanla") {
+    return `功能 ${result.total ?? "-"} · 成功 ${result.succeeded ?? "-"} · 失败 ${result.failed ?? "-"}`;
   }
   if (result.rating_hint) return result.rating_hint;
   const events = Array.isArray(task.events) ? task.events : [];

@@ -13,6 +13,21 @@ const newsResetBtn = document.querySelector("#newsResetBtn");
 const newsPrevBtn = document.querySelector("#newsPrevBtn");
 const newsNextBtn = document.querySelector("#newsNextBtn");
 const newsPageInfo = document.querySelector("#newsPageInfo");
+const stockDataMeta = document.querySelector("#stockDataMeta");
+const stockDataStats = document.querySelector("#stockDataStats");
+const stockDataTable = document.querySelector("#stockDataTable");
+const stockDataSearchInput = document.querySelector("#stockDataSearchInput");
+const stockDataSortSelect = document.querySelector("#stockDataSortSelect");
+const dataSourceMeta = document.querySelector("#dataSourceMeta");
+const dataSourceStats = document.querySelector("#dataSourceStats");
+const dataSourceProviders = document.querySelector("#dataSourceProviders");
+const standardDataTable = document.querySelector("#standardDataTable");
+const kaipanlaMeta = document.querySelector("#kaipanlaMeta");
+const kaipanlaFeatureSelect = document.querySelector("#kaipanlaFeatureSelect");
+const kaipanlaParamsInput = document.querySelector("#kaipanlaParamsInput");
+const kaipanlaValidateBtn = document.querySelector("#kaipanlaValidateBtn");
+const kaipanlaRunBtn = document.querySelector("#kaipanlaRunBtn");
+const kaipanlaOutput = document.querySelector("#kaipanlaOutput");
 
 const state = {
   page: 1,
@@ -22,15 +37,42 @@ const state = {
   items: [],
 };
 
+const stockState = {
+  items: [],
+  filteredItems: [],
+  count: 0,
+  totalDatasetRows: 0,
+  totalMinuteRows: 0,
+};
+
+const kaipanlaState = {
+  features: [],
+};
+
+const dataSourceState = {
+  providers: [],
+  types: [],
+  coverage: {},
+  summary: {},
+};
+
 let searchTimer = null;
+let stockSearchTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
+  loadDataSources();
+  loadStockData();
+  loadKaipanlaFeatures();
   loadNews();
 });
 
 function bindEvents() {
-  newsRefreshBtn?.addEventListener("click", () => loadNews());
+  newsRefreshBtn?.addEventListener("click", () => {
+    loadDataSources();
+    loadStockData();
+    loadNews();
+  });
   newsExportBtn?.addEventListener("click", () => exportCurrentPage());
   newsResetBtn?.addEventListener("click", () => {
     newsSearchInput.value = "";
@@ -66,6 +108,321 @@ function bindEvents() {
       loadNews();
     }, 280);
   });
+  stockDataSearchInput?.addEventListener("input", () => {
+    window.clearTimeout(stockSearchTimer);
+    stockSearchTimer = window.setTimeout(renderStockData, 160);
+  });
+  stockDataSortSelect?.addEventListener("change", renderStockData);
+  kaipanlaFeatureSelect?.addEventListener("change", syncKaipanlaParams);
+  kaipanlaValidateBtn?.addEventListener("click", validateKaipanlaIntegration);
+  kaipanlaRunBtn?.addEventListener("click", runKaipanlaFeature);
+}
+
+async function loadDataSources() {
+  if (!dataSourceMeta) return;
+  dataSourceMeta.textContent = "正在读取数据源...";
+  try {
+    const response = await fetch("/api/admin/data-sources");
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || "读取数据源失败");
+    }
+    dataSourceState.providers = payload.providers || [];
+    dataSourceState.types = payload.types || [];
+    dataSourceState.coverage = payload.coverage || {};
+    dataSourceState.summary = payload.summary || {};
+    renderDataSources();
+    dataSourceMeta.textContent = `已注册 ${dataSourceState.summary.provider_count || 0} 个来源，${dataSourceState.summary.standard_type_count || 0} 类标准数据`;
+  } catch (error) {
+    dataSourceMeta.textContent = `读取失败：${error.message}`;
+    if (dataSourceProviders) dataSourceProviders.innerHTML = `<div class="news-empty is-error">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderDataSources() {
+  renderDataSourceStats();
+  renderProviderGrid();
+  renderStandardDataTable();
+}
+
+function renderDataSourceStats() {
+  if (!dataSourceStats) return;
+  const summary = dataSourceState.summary || {};
+  const coverage = dataSourceState.coverage || {};
+  const cards = [
+    ["活跃来源", summary.active_count ?? 0, "当前可用于新数据"],
+    ["封存来源", summary.archived_count ?? 0, "保留旧数据，不默认抓取"],
+    ["本地股票", coverage.local_stock_count ?? 0, "local_data/current"],
+    ["开盘啦记录", coverage.kaipanla_record_count ?? 0, `${coverage.kaipanla_recorded_features || 0} 类功能已有记录`],
+  ];
+  dataSourceStats.innerHTML = cards
+    .map(
+      ([label, value, note]) => `
+        <div>
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(String(value))}</strong>
+          <p>${escapeHtml(note)}</p>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function renderProviderGrid() {
+  if (!dataSourceProviders) return;
+  dataSourceProviders.innerHTML = dataSourceState.providers
+    .map((provider) => {
+      const status = provider.status || "unknown";
+      const statusText = {
+        active: "启用",
+        archived: "封存",
+        planned: "待接入",
+        disabled: "停用",
+      }[status] || status;
+      const capabilities = (provider.capabilities || []).slice(0, 5).join(" / ");
+      return `
+        <article class="data-source-provider ${escapeAttr(`is-${status}`)}">
+          <div>
+            <span class="data-source-status">${escapeHtml(statusText)}</span>
+            <h5>${escapeHtml(provider.label || provider.key)}</h5>
+            <p>${escapeHtml(provider.description || "")}</p>
+          </div>
+          <dl>
+            <div><dt>配置</dt><dd>${provider.configured ? "已具备" : "未配置"}</dd></div>
+            <div><dt>优先级</dt><dd>${escapeHtml(String(provider.priority || "-"))}</dd></div>
+          </dl>
+          <small>${escapeHtml(capabilities || "暂无能力映射")}</small>
+          ${provider.limitations ? `<em>${escapeHtml(provider.limitations)}</em>` : ""}
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderStandardDataTable() {
+  if (!standardDataTable) return;
+  const rows = dataSourceState.types || [];
+  if (!rows.length) {
+    standardDataTable.innerHTML = `<tbody><tr><td class="news-empty">暂无标准数据类型。</td></tr></tbody>`;
+    return;
+  }
+  standardDataTable.innerHTML = `
+    <thead>
+      <tr>
+        <th>类型</th>
+        <th>分类</th>
+        <th>主来源</th>
+        <th>优先级</th>
+        <th>状态</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.map(renderStandardDataRow).join("")}
+    </tbody>
+  `;
+}
+
+function renderStandardDataRow(item) {
+  const status = item.needs_provider ? "缺少活跃来源" : "可用";
+  const primary = item.primary_provider || "-";
+  return `
+    <tr>
+      <td>
+        <strong>${escapeHtml(item.label || item.key)}</strong>
+        <p>${escapeHtml(item.description || "")}</p>
+      </td>
+      <td>${escapeHtml(item.category || "-")}</td>
+      <td><code>${escapeHtml(primary)}</code></td>
+      <td>${escapeHtml((item.priority || []).join(" > ") || "-")}</td>
+      <td><span class="data-type-status ${item.needs_provider ? "is-missing" : "is-ok"}">${escapeHtml(status)}</span></td>
+    </tr>
+  `;
+}
+
+async function loadStockData() {
+  if (!stockDataMeta || !stockDataTable) return;
+  stockDataMeta.textContent = "正在读取本地资料包...";
+  try {
+    const response = await fetch("/api/admin/data-library");
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || "读取本地数据失败");
+    }
+    stockState.items = payload.items || [];
+    stockState.count = payload.count || 0;
+    stockState.totalDatasetRows = payload.total_dataset_rows || 0;
+    stockState.totalMinuteRows = payload.total_minute_rows || 0;
+    renderStockData();
+    renderStockStats();
+    stockDataMeta.textContent = `已同步 ${stockState.count} 只股票资料包`;
+  } catch (error) {
+    stockState.items = [];
+    stockState.filteredItems = [];
+    stockDataMeta.textContent = `读取失败：${error.message}`;
+    stockDataTable.innerHTML = `<tbody><tr><td class="news-empty is-error">${escapeHtml(error.message)}</td></tr></tbody>`;
+    renderStockStats();
+  }
+}
+
+function renderStockStats() {
+  if (!stockDataStats) return;
+  const latest = stockState.items[0]?.updated_at || "-";
+  const cards = [
+    ["股票资料包", stockState.count, "local_data/current"],
+    ["数据集总行数", formatNumber(stockState.totalDatasetRows), "按 metadata 统计"],
+    ["分钟行情行数", formatNumber(stockState.totalMinuteRows), "MongoDB 引用"],
+    ["最近更新", latest, "按 updated_at 排序"],
+  ];
+  stockDataStats.innerHTML = cards
+    .map(
+      ([label, value, note]) => `
+        <div>
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(String(value))}</strong>
+          <p>${escapeHtml(note)}</p>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function renderStockData() {
+  if (!stockDataTable) return;
+  const query = (stockDataSearchInput?.value || "").trim().toLowerCase();
+  const sortKey = stockDataSortSelect?.value || "updated_at";
+  const items = stockState.items
+    .filter((item) => {
+      if (!query) return true;
+      return [item.ts_code, item.name, item.industry, item.market]
+        .some((value) => String(value || "").toLowerCase().includes(query));
+    })
+    .sort((left, right) => compareStockRows(left, right, sortKey));
+  stockState.filteredItems = items;
+  if (!items.length) {
+    stockDataTable.innerHTML = `<tbody><tr><td class="news-empty">当前条件下没有本地股票资料包。</td></tr></tbody>`;
+    return;
+  }
+  stockDataTable.innerHTML = `
+    <thead>
+      <tr>
+        <th>股票</th>
+        <th>行业 / 市场</th>
+        <th>更新时间</th>
+        <th>日期范围</th>
+        <th>数据集</th>
+        <th>分钟行数</th>
+        <th>异常</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${items.map(renderStockRow).join("")}
+    </tbody>
+  `;
+}
+
+function renderStockRow(item) {
+  const dateRange = item.date_range || {};
+  const rangeText = [dateRange.start_date, dateRange.end_date].filter(Boolean).join(" - ") || "-";
+  return `
+    <tr>
+      <td>
+        <strong>${escapeHtml(item.name || "-")}</strong>
+        <code>${escapeHtml(item.ts_code || "-")}</code>
+      </td>
+      <td>${escapeHtml([item.industry, item.market].filter(Boolean).join(" / ") || "-")}</td>
+      <td>${escapeHtml(item.updated_at || "-")}</td>
+      <td>${escapeHtml(rangeText)}</td>
+      <td>${escapeHtml(String(item.dataset_count || 0))}</td>
+      <td>${escapeHtml(formatNumber(item.minute_rows || 0))}</td>
+      <td>${escapeHtml(String(item.fetch_error_count || 0))}</td>
+    </tr>
+  `;
+}
+
+function compareStockRows(left, right, key) {
+  if (key === "ts_code") return String(left.ts_code || "").localeCompare(String(right.ts_code || ""));
+  if (key === "dataset_count" || key === "minute_rows") {
+    return Number(right[key] || 0) - Number(left[key] || 0);
+  }
+  return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+}
+
+async function loadKaipanlaFeatures() {
+  if (!kaipanlaFeatureSelect) return;
+  kaipanlaMeta.textContent = "正在读取功能列表...";
+  try {
+    const response = await fetch("/api/admin/kaipanla/features");
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || "读取开盘啦功能失败");
+    }
+    kaipanlaState.features = payload.items || [];
+    kaipanlaFeatureSelect.innerHTML = kaipanlaState.features
+      .map((item) => `<option value="${escapeAttr(item.key)}">${escapeHtml(item.category)} · ${escapeHtml(item.label)}</option>`)
+      .join("");
+    syncKaipanlaParams();
+    kaipanlaMeta.textContent = `已集成 ${kaipanlaState.features.length} 个功能`;
+  } catch (error) {
+    kaipanlaMeta.textContent = `读取失败：${error.message}`;
+    kaipanlaOutput.textContent = error.message;
+  }
+}
+
+function syncKaipanlaParams() {
+  const feature = selectedKaipanlaFeature();
+  if (!feature || !kaipanlaParamsInput) return;
+  kaipanlaParamsInput.value = JSON.stringify(feature.default_params || {}, null, 2);
+  kaipanlaOutput.textContent = `${feature.description || ""}${feature.requires ? `\n需要：${feature.requires}` : ""}`;
+}
+
+async function validateKaipanlaIntegration() {
+  if (!kaipanlaOutput) return;
+  kaipanlaValidateBtn.disabled = true;
+  kaipanlaOutput.textContent = "正在验证开盘啦功能映射...";
+  try {
+    const response = await fetch("/api/admin/kaipanla/validate");
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || "验证失败");
+    }
+    kaipanlaOutput.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    kaipanlaOutput.textContent = `验证失败：${error.message}`;
+  } finally {
+    kaipanlaValidateBtn.disabled = false;
+  }
+}
+
+async function runKaipanlaFeature() {
+  const feature = selectedKaipanlaFeature();
+  if (!feature || !kaipanlaOutput) return;
+  kaipanlaRunBtn.disabled = true;
+  kaipanlaOutput.textContent = `正在运行 ${feature.label}...`;
+  try {
+    const params = JSON.parse(kaipanlaParamsInput.value || "{}");
+    if (!params || Array.isArray(params) || typeof params !== "object") {
+      throw new Error("参数必须是 JSON object");
+    }
+    const response = await fetch("/api/admin/kaipanla/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feature: feature.key, params }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || "运行失败");
+    }
+    kaipanlaOutput.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    kaipanlaOutput.textContent = `运行失败：${error.message}`;
+  } finally {
+    kaipanlaRunBtn.disabled = false;
+  }
+}
+
+function selectedKaipanlaFeature() {
+  const key = kaipanlaFeatureSelect?.value || "";
+  return kaipanlaState.features.find((item) => item.key === key) || null;
 }
 
 async function loadNews() {
@@ -241,6 +598,10 @@ function exportCurrentPage() {
 
 function csvCell(value) {
   return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString("zh-CN");
 }
 
 function escapeHtml(value) {

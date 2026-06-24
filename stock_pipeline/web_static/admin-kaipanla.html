@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>开盘啦数据 - 价值投机分析</title>
+    <script>
+      try {
+        if (localStorage.getItem("stockTheme") === "dark") {
+          document.documentElement.classList.add("theme-dark");
+        }
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=admin-kaipanla-20260624-v1" />
+  </head>
+  <body>
+    <main class="admin-page admin-shell">
+      <aside class="admin-sidebar">
+        <a class="admin-brand" href="/">
+          <span class="admin-brand-mark">VA</span>
+          <span>
+            <strong>价值投机分析</strong>
+            <small>Admin Console</small>
+          </span>
+        </a>
+        <nav class="admin-nav" aria-label="后台导航">
+          <a href="/admin-accounts.html"><span class="admin-nav-icon">A</span><span>账户管理</span></a>
+          <a class="admin-nav-unavailable" aria-disabled="true" title="Agent Gateway 调试中，暂不可用"><span class="admin-nav-icon">G</span><span>Agent Gateway · 调试中</span></a>
+          <a href="/admin-archives.html"><span class="admin-nav-icon">R</span><span>归档账号</span></a>
+          <a href="/admin-spider.html"><span class="admin-nav-icon">S</span><span>爬虫控制</span></a>
+          <a href="/admin-news.html"><span class="admin-nav-icon">N</span><span>数据源</span></a>
+          <a class="active" href="/admin-kaipanla.html"><span class="admin-nav-icon">K</span><span>开盘啦</span></a>
+        </nav>
+        <div class="admin-sidebar-footer">
+          <a class="admin-footer-link" href="/"><span class="admin-nav-icon">H</span><span>返回分析</span></a>
+          <div class="admin-footer-actions">
+            <button id="themeToggleBtn" type="button">深色模式</button>
+            <button id="logoutBtn" type="button">退出登录</button>
+          </div>
+        </div>
+      </aside>
+
+      <section class="admin-workspace">
+        <header class="admin-page-head">
+          <div>
+            <span class="admin-kicker">KAIPANLA</span>
+            <h1>开盘啦数据</h1>
+            <p id="kaipanlaStatus">读取开盘啦配置...</p>
+          </div>
+          <div class="admin-actions">
+            <button id="kaipanlaRunNowBtn" type="button">立即抓取</button>
+            <button id="kaipanlaSaveBtn" class="primary-action" type="button">保存定时</button>
+          </div>
+        </header>
+
+        <section class="admin-panel news-panel">
+          <section class="admin-card">
+            <div class="admin-card-head">
+              <h4>定时抓取</h4>
+              <span id="kaipanlaScheduleMeta">未启用</span>
+            </div>
+            <div class="spider-state-grid daily-market-state-grid">
+              <div><span>状态</span><strong id="kaipanlaStateText">-</strong></div>
+              <div><span>时间</span><strong id="kaipanlaTimeText">-</strong></div>
+              <div><span>功能数</span><strong id="kaipanlaFeatureCount">-</strong></div>
+              <div><span>上次日期</span><strong id="kaipanlaLastDate">-</strong></div>
+              <div><span>成功 / 失败</span><strong id="kaipanlaLastResult">-</strong></div>
+            </div>
+            <div class="inline-admin-form kaipanla-schedule-form">
+              <label>
+                <span>启用</span>
+                <select id="kaipanlaEnabled">
+                  <option value="1">启用</option>
+                  <option value="0">停用</option>
+                </select>
+              </label>
+              <label>
+                <span>每日时间</span>
+                <input id="kaipanlaTime" type="time" value="21:45" />
+              </label>
+            </div>
+          </section>
+
+          <section class="admin-card">
+            <div class="admin-card-head">
+              <h4>抓取功能</h4>
+              <span id="kaipanlaFeatureMeta">读取中</span>
+            </div>
+            <div id="kaipanlaFeatureGrid" class="kaipanla-feature-grid"></div>
+          </section>
+
+          <section class="admin-card">
+            <div class="admin-card-head">
+              <h4>参数</h4>
+              <span id="kaipanlaParamMeta">选择功能后编辑</span>
+            </div>
+            <div class="news-filter-grid stock-data-filter-grid">
+              <label class="news-search-field">
+                <span>当前功能</span>
+                <select id="kaipanlaParamFeatureSelect"></select>
+              </label>
+            </div>
+            <label class="kaipanla-param-field">
+              <span>参数 JSON</span>
+              <textarea id="kaipanlaParamsInput" rows="8" spellcheck="false"></textarea>
+            </label>
+          </section>
+
+          <section class="admin-card">
+            <div class="admin-card-head">
+              <h4>本地记录</h4>
+              <span id="kaipanlaRecordMeta">最近抓取</span>
+            </div>
+            <div class="admin-table-wrap stock-data-table-wrap">
+              <table id="kaipanlaRecordsTable"></table>
+            </div>
+          </section>
+
+          <section class="admin-card">
+            <div class="admin-card-head">
+              <h4>输出</h4>
+              <span>任务 / 记录详情</span>
+            </div>
+            <pre id="kaipanlaOutput" class="agent-code-sample kaipanla-output">等待操作。</pre>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="/admin.js?v=admin-unified-20260616-v1"></script>
+    <script src="/admin-kaipanla.js?v=admin-kaipanla-20260624-v1"></script>
+  </body>
+</html>

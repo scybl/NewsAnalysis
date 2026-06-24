@@ -21,6 +21,10 @@ class StockSearchIndex:
             self._stocks = read_json(self.cache_path)
             return self._stocks
 
+        if not getattr(self.client, "token", "") or _tushare_archived():
+            self._stocks = _local_stock_rows()
+            return self._stocks
+
         rows = []
         for status in ("L", "P", "D"):
             result = self.client.query(
@@ -85,3 +89,39 @@ def _score(q: str, symbol: str, ts_code: str, name: str, pinyin: str, initials: 
     if q in pinyin or q in initials:
         return 9
     return None
+
+
+def _local_stock_rows() -> list[dict[str, Any]]:
+    try:
+        from .stock_storage import list_local_stock_summaries
+    except Exception:
+        return []
+    rows = []
+    for item in list_local_stock_summaries().get("items", []):
+        ts_code = str(item.get("ts_code") or "")
+        symbol = ts_code.split(".")[0]
+        name = str(item.get("name") or "")
+        full_pinyin, initials = pinyin_tokens(name)
+        rows.append(
+            {
+                "ts_code": ts_code,
+                "symbol": symbol,
+                "name": name,
+                "industry": item.get("industry", ""),
+                "market": item.get("market", ""),
+                "list_status": "L",
+                "pinyin": full_pinyin,
+                "initials": initials,
+                "source": "local_cache",
+            }
+        )
+    return rows
+
+
+def _tushare_archived() -> bool:
+    try:
+        from .data_sources import provider_available
+
+        return not provider_available("tushare")
+    except Exception:
+        return False

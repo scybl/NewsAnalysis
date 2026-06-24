@@ -60,7 +60,7 @@ class StockDataCollector:
         dossier = {
             "ts_code": ts_code,
             "date_range": {"start_date": start_date, "end_date": end_date, "full_history": use_full_history},
-            "source": "Tushare Pro",
+            "source": getattr(self.client, "source_name", "Tushare Pro"),
             "datasets": raw,
             "fetch_errors": errors,
         }

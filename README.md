@@ -84,7 +84,7 @@ scripts/run_web.sh
 
 LangGraph 模式会把每次最终结论写入 `local_data/{ts_code}/current/decision_memory.jsonl` 和 `local_data/agent_memory/global_decisions.jsonl`。下一次分析同一只股票或其他股票时，会读取最近几条决策记忆作为复盘上下文；这只保存分析结论摘要和运行 ID，不保存任何用户 API key。
 
-管理员后台新增 **Agent Gateway** 页面，可签发与浏览器会话隔离的 `na_agent_...` token。当前开放：
+管理员后台保留 **Agent Gateway** 调试页，但该入口当前暂停使用，不签发新的 `na_agent_...` token，`/api/agent/v1` 机器调用也会返回暂不可用。原设计权限为：
 
 - `R`：读取本地股票、资料包和 Agent 任务。
 - `B`：提交消耗系统 DeepSeek 额度的异步多 Agent 分析任务。
@@ -126,6 +126,24 @@ scripts/spider_dry_run.sh
 ```
 
 `stock_pipeline news crawl/search` 是旧 MySQL 新闻入口，当前建议使用 `spider/` 和上面的脚本抓取新闻。后续可再把 `stock_pipeline` 的新闻读取也统一迁到 MongoDB。
+
+### 数据源中心
+
+管理员后台“数据源”页是统一的数据资产入口：上方展示本地缓存、开盘啦、同花顺、东方财富、AkShare 和 Tushare 的状态，下方按标准数据类型归并为股票基础信息、日行情、分钟行情、涨停/连板、龙虎榜、板块、市场情绪、资金流、新闻、财务摘要和估值指标。
+
+Tushare 现在默认处于 `archived` 封存状态：本地历史资料包仍可读取，但新同步、每日股票数据更新和搜索索引刷新不会默认调用 Tushare。股票资料包同步会优先使用东方财富 provider 生成兼容的 `full_data.datasets`，覆盖股票基础信息、日/周/月行情、估值快照、涨跌停估算、利润表、资产负债表、现金流量表、财务指标和行业归属。东方财富 K 线接口异常时会使用腾讯 K 线作为行情兜底，并在记录中标记 `source=tencent_fallback`。
+
+### 开盘啦数据源
+
+仓库已集成 `out_repo/kaipanla-crawler` 的全部公开功能，入口为：
+
+```bash
+python -m stock_pipeline kaipanla list
+python -m stock_pipeline kaipanla validate
+python -m stock_pipeline kaipanla run daily_data --params '{"end_date":"2026-01-16"}'
+```
+
+管理员后台“数据源”页也提供开盘啦功能选择、参数 JSON 和运行结果查看。当前集成覆盖交易日完整数据、百日新高、连板梯队、板块排行/强度/资金、实时情绪、指数/个股/板块分时、板块新闻、龙虎榜、ETF、竞价 tick 等公开方法。个别功能可能依赖后续配置，例如 Selenium/Chrome 或开盘啦侧 Token/Cookie；这些功能会保留入口，便于后续补权限后继续调试。
 
 ## 服务器部署
 

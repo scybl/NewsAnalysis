@@ -78,6 +78,7 @@ let loadedDatasets = [];
 let activeDataset = null;
 let currentPage = 1;
 let syncToken = 0;
+let selectedHasDailyData = false;
 let viewMode = "table";
 let lineWindow = { start: 0, end: 0, total: 0 };
 let lineDrag = null;
@@ -359,6 +360,8 @@ loadDataBtn.addEventListener("click", async () => {
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || "读取失败");
     loadedDatasets = payload.datasets || [];
+    selectedHasDailyData = datasetsHaveDailyRows(loadedDatasets, payload.metadata?.dataset_rows || {});
+    syncMinuteButtonState();
     renderStockMetricsFromDatasets(loadedDatasets);
     renderDatasetOptions();
     dataMeta.textContent = `本地目录：${payload.local_dir}`;
@@ -650,6 +653,7 @@ function renderResults(items) {
 
 function selectStock(item) {
   selected = item;
+  selectedHasDailyData = false;
   selectedTitle.textContent = `${item.name}（${item.ts_code}）`;
   selectedMeta.textContent = [item.industry, item.area, item.market, item.list_date && `上市日 ${item.list_date}`].filter(Boolean).join(" · ");
   resetStockMetrics();
@@ -657,7 +661,7 @@ function selectStock(item) {
   analyzeBtn.disabled = true;
   multiAgentBtn.disabled = false;
   updateDataBtn.disabled = false;
-  if (updateThsMarketBtn) updateThsMarketBtn.disabled = false;
+  syncMinuteButtonState();
   loadDataBtn.disabled = false;
   analysisHistorySelect.disabled = false;
   scorePanel.hidden = true;
@@ -699,6 +703,8 @@ async function syncSelectedData(options = {}) {
     if (!payload.ok) throw new Error(payload.error || "更新失败");
     if (token !== syncToken) return;
     loadedDatasets = payload.datasets || [];
+    selectedHasDailyData = datasetsHaveDailyRows(loadedDatasets, payload.metadata?.dataset_rows || {});
+    syncMinuteButtonState();
     renderStockMetricsFromDatasets(loadedDatasets);
     const meta = payload.metadata || {};
     const snapshotCount = meta.snapshots?.length || 0;
@@ -716,7 +722,7 @@ async function syncSelectedData(options = {}) {
   } finally {
     if (token === syncToken) {
       updateDataBtn.disabled = false;
-      if (updateThsMarketBtn) updateThsMarketBtn.disabled = false;
+      syncMinuteButtonState();
       loadDataBtn.disabled = false;
       multiAgentBtn.disabled = false;
       analysisHistorySelect.disabled = false;
@@ -746,6 +752,8 @@ async function syncSelectedThsMarketData() {
     const payload = await readApiPayload(response, "分钟行情更新失败");
     if (token !== syncToken) return;
     loadedDatasets = payload.datasets || loadedDatasets || [];
+    selectedHasDailyData = datasetsHaveDailyRows(loadedDatasets, payload.metadata?.dataset_rows || {});
+    syncMinuteButtonState();
     renderStockMetricsFromDatasets(loadedDatasets);
     const result = payload.market_result?.results?.[0] || {};
     const localText = result.local_merged ? `MongoDB 引用已写入资料包：${result.local_path}` : "本地 Tushare 资料包尚不存在，分钟数据已写入 MongoDB。";
@@ -769,7 +777,7 @@ async function syncSelectedThsMarketData() {
   } finally {
     if (token === syncToken) {
       updateDataBtn.disabled = false;
-      if (updateThsMarketBtn) updateThsMarketBtn.disabled = false;
+      syncMinuteButtonState();
       loadDataBtn.disabled = false;
       multiAgentBtn.disabled = false;
       analysisHistorySelect.disabled = false;
@@ -1380,8 +1388,12 @@ async function checkSelectedStatus() {
     if (token !== syncToken) return;
     if (payload.exists) {
       const snapshotCount = payload.metadata?.snapshots?.length || 0;
+      selectedHasDailyData = Number(payload.metadata?.dataset_rows?.daily || 0) > 0;
+      syncMinuteButtonState();
       output.textContent = `本地已有 ${selected.name}（${selected.ts_code}）的数据。\n上次更新时间：${formatUpdateTime(payload.updated_at)}\n距离现在：${payload.age_text}\n当前数据目录：${payload.local_dir}\n历史快照：${snapshotCount} 个\n\n你可以直接点击“读取数据”查看表格，点击“读取分析”加载已生成报告，也可以点击“更新数据”保存新版本并归档旧版本。`;
     } else {
+      selectedHasDailyData = false;
+      syncMinuteButtonState();
       output.textContent = `${selected.name}（${selected.ts_code}）本地还没有更新过。\n\n请点击“更新数据”抓取并保存本地数据；更新后再点击“读取数据”查看中文表格。`;
     }
   } catch (error) {
@@ -1389,6 +1401,20 @@ async function checkSelectedStatus() {
       output.textContent = `读取本地状态失败：${error.message}`;
     }
   }
+}
+
+function syncMinuteButtonState() {
+  if (!updateThsMarketBtn) return;
+  updateThsMarketBtn.disabled = !selected || !selectedHasDailyData;
+  updateThsMarketBtn.title = selectedHasDailyData
+    ? "补抓分钟行情"
+    : "请先点击“更新 Tushare”，生成 daily 交易日列表";
+}
+
+function datasetsHaveDailyRows(datasets, datasetRows = {}) {
+  if (Number(datasetRows.daily || 0) > 0) return true;
+  const daily = (datasets || []).find((item) => item.key === "daily");
+  return Boolean(daily && (daily.row_count || daily.records?.length));
 }
 
 function formatUpdateTime(value) {

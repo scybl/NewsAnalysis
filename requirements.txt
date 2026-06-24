@@ -1,5 +1,6 @@
 pypinyin>=0.53.0
 requests
+selenium>=4.20.0
 lxml
 beautifulsoup4
 pymysql

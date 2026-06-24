@@ -26,7 +26,10 @@ from .agents.multi_agent import MultiAgentOptions
 from .agent_jobs import PersistentAgentJobStore
 from .analysis_frameworks import get_analysis_framework, list_analysis_frameworks
 from .config import PROJECT_ROOT, get_settings
+from .data_sources import configure_data_sources, data_source_snapshot, provider_available, provider_status
 from .deepseek_client import DeepSeekClient, DeepSeekError
+from .eastmoney_client import EastmoneyClient
+from .kaipanla import KAIPANLA_FEATURES, list_kaipanla_features, list_kaipanla_records, read_kaipanla_record, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
 from .news_library import query_news_library
 from .news_search import search_related_news
 from .minute_storage import minute_reference_row_counts
@@ -40,6 +43,7 @@ from .stock_storage import (
     current_dir,
     list_analysis_results,
     list_local_stock_codes,
+    list_local_stock_summaries,
     read_analysis_result,
     stock_exists,
     stock_status,
@@ -54,6 +58,7 @@ from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, t
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
+AGENT_GATEWAY_AVAILABLE = False
 SPIDER_TYPES = ("财经要闻", "宏观经济", "产经新闻", "国际财经", "金融市场", "公司新闻", "区域经济", "财经评论", "财经人物")
 SPIDER_SOURCES = (
     {"id": "ths", "name": "同花顺", "description": "中文财经新闻分类抓取"},
@@ -70,12 +75,13 @@ BILLABLE_API_PATHS = {
 USER_KEY_NAMES = {"tushare", "deepseek"}
 SYSTEM_KEY_NAMES = {"deepseek"}
 DATA_FETCH_ACTIONS = {
-    "/api/sync-stock-data": "同步股票资料包（Tushare 多接口）",
+    "/api/sync-stock-data": "同步股票资料包（东方财富默认，Tushare 封存回退）",
     "/api/sync-ths-market-data": "补抓分钟行情（外部行情源/MongoDB）",
     "/api/analyze": "生成分析前的数据同步与模型调用",
     "/api/multi-agent-analyze": "多 Agent 分析前的数据同步与模型调用",
     "/api/admin/spider/start": "启动新闻/行情爬虫",
     "/api/admin/daily-market-scheduler:run_now": "立即执行每日股票数据更新",
+    "/api/admin/kaipanla/scheduler:run_now": "立即执行开盘啦数据抓取",
 }
 AGENT_TOKEN_PREFIX = "na_agent_"
 AGENT_ALLOWED_SCOPES = {"R", "B"}
@@ -111,6 +117,7 @@ class StockWebApp:
             pause=self.settings.tushare_pause_seconds,
         )
         self.index = StockSearchIndex(self.tushare, PROJECT_ROOT / "cache" / "stocks.json")
+        self.sessions_path = PROJECT_ROOT / "local_data" / "web_sessions.json"
         self.sessions: dict[str, dict] = {}
         self.active_session_by_user: dict[str, str] = {}
         self.session_lock = threading.Lock()
@@ -118,6 +125,7 @@ class StockWebApp:
         self.admin_login_challenge_lock = threading.Lock()
         self.session_ttl_seconds = 60 * 60 * 12
         self.auth_secret = self.settings.web_session_secret or secrets.token_urlsafe(32)
+        self._load_sessions()
         self.key_cipher = ApiKeyCipher(self.settings.web_key_encryption_secret)
         self.user_store = UserStore(
             PROJECT_ROOT / "local_data" / "web_users.json",
@@ -128,6 +136,7 @@ class StockWebApp:
         self.user_store.seed_invites(self.invite_codes, ttl_seconds=self.settings.web_invite_ttl_seconds, created_by="env")
         self.task_registry = TaskRegistry(PROJECT_ROOT / "local_data" / "admin_tasks.json")
         self.daily_market_scheduler = DailyMarketScheduler(self, PROJECT_ROOT / "local_data" / "daily_market_scheduler.json", self.task_registry)
+        self.kaipanla_scheduler = KaipanlaScheduler(PROJECT_ROOT / "local_data" / "kaipanla_scheduler.json", self.task_registry)
         self.spider_controller = SpiderController(PROJECT_ROOT, self.task_registry)
         self.agent_job_store = PersistentAgentJobStore(PROJECT_ROOT / "local_data" / "agent_jobs.json")
         self.agent_rate_lock = threading.Lock()
@@ -271,11 +280,13 @@ class StockWebApp:
             "web": {"host": self.host, "port": self.port},
             "config": {
                 "tushare_configured": bool(self.settings.tushare_token),
+                "tushare_status": provider_status("tushare"),
                 "deepseek_configured": self.user_store.system_api_key_state().get("deepseek", {}).get("configured", False),
                 "stock_agent_engine": self.settings.stock_agent_engine,
                 "stock_agent_template": self.settings.stock_agent_template,
                 "stock_analysis_refresh_ttl_seconds": self.settings.stock_analysis_refresh_ttl_seconds,
             },
+            "data_sources": data_source_snapshot(self.settings).get("summary", {}),
             "storage": {
                 "local_data_exists": (PROJECT_ROOT / "local_data").exists(),
                 "web_user_store_exists": self.user_store.path.exists(),
@@ -442,6 +453,7 @@ class StockWebApp:
                 "expires_at": time.time() + self.session_ttl_seconds,
             }
             self.active_session_by_user[username] = token
+            self._write_sessions_locked()
 
     def _session_for_token(self, token: str) -> dict | None:
         with self.session_lock:
@@ -454,6 +466,7 @@ class StockWebApp:
                 return None
             if session.get("expires_at", 0) < time.time():
                 self._remove_session_locked(token, session)
+                self._write_sessions_locked()
                 return None
             session["expires_at"] = time.time() + self.session_ttl_seconds
             return dict(session)
@@ -461,12 +474,14 @@ class StockWebApp:
     def _remove_session(self, token: str) -> None:
         with self.session_lock:
             self._remove_session_locked(token, self.sessions.get(token))
+            self._write_sessions_locked()
 
     def _remove_sessions_for_user(self, username: str) -> None:
         with self.session_lock:
             for token, session in list(self.sessions.items()):
                 if session.get("username") == username:
                     self._remove_session_locked(token, session)
+            self._write_sessions_locked()
 
     def _remove_session_locked(self, token: str, session: dict | None) -> None:
         if not session:
@@ -475,6 +490,45 @@ class StockWebApp:
         username = session.get("username", "")
         if username and self.active_session_by_user.get(username) == token:
             self.active_session_by_user.pop(username, None)
+
+    def _load_sessions(self) -> None:
+        if not self.sessions_path.exists():
+            return
+        now = time.time()
+        try:
+            payload = read_json(self.sessions_path)
+        except (OSError, ValueError, TypeError):
+            return
+        items = payload.get("sessions", {}) if isinstance(payload, dict) else {}
+        if not isinstance(items, dict):
+            return
+        for token, session in items.items():
+            if not isinstance(token, str) or not isinstance(session, dict):
+                continue
+            username = str(session.get("username") or "")
+            expires_at = float(session.get("expires_at") or 0)
+            if not username or expires_at <= now:
+                continue
+            current_token = self.active_session_by_user.get(username)
+            current = self.sessions.get(current_token, {}) if current_token else {}
+            if expires_at <= float(current.get("expires_at") or 0):
+                continue
+            if current_token:
+                self.sessions.pop(current_token, None)
+            self.sessions[token] = {
+                "username": username,
+                "role": str(session.get("role") or "user"),
+                "managed_demo": bool(session.get("managed_demo")),
+                "expires_at": expires_at,
+            }
+            self.active_session_by_user[username] = token
+
+    def _write_sessions_locked(self) -> None:
+        ensure_dir(self.sessions_path.parent)
+        payload = {"sessions": self.sessions, "updated_at": timestamp()}
+        tmp_path = self.sessions_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(self.sessions_path)
 
     def serve(self) -> None:
         app = self
@@ -575,6 +629,44 @@ class StockWebApp:
                         return
                     self._json({"ok": True, **query_news_library(parse_qs(parsed.query))})
                     return
+                if parsed.path == "/api/admin/data-sources":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **data_source_snapshot(app.settings)})
+                    return
+                if parsed.path == "/api/admin/kaipanla/features":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, "items": list_kaipanla_features()})
+                    return
+                if parsed.path == "/api/admin/kaipanla/validate":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **validate_kaipanla_integration()})
+                    return
+                if parsed.path == "/api/admin/kaipanla/scheduler":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **app.kaipanla_scheduler.status()})
+                    return
+                if parsed.path == "/api/admin/kaipanla/records":
+                    if not self._require_admin():
+                        return
+                    query = parse_qs(parsed.query)
+                    limit = max(1, min(500, int(query.get("limit", ["80"])[0] or 80)))
+                    self._json({"ok": True, **list_kaipanla_records(limit=limit, feature=query.get("feature", [""])[0])})
+                    return
+                if parsed.path == "/api/admin/kaipanla/record":
+                    if not self._require_admin():
+                        return
+                    query = parse_qs(parsed.query)
+                    self._json({"ok": True, "record": read_kaipanla_record(query.get("path", [""])[0])})
+                    return
+                if parsed.path == "/api/admin/data-library":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **list_local_stock_summaries()})
+                    return
                 if parsed.path == "/api/admin/agent-tokens":
                     if not self._require_admin():
                         return
@@ -629,10 +721,16 @@ class StockWebApp:
                 if parsed.path == "/api/admin/agent-token":
                     if not self._require_admin():
                         return
+                    if not AGENT_GATEWAY_AVAILABLE:
+                        self._json({"ok": False, "error": "Agent Gateway 正在调试中，暂不可用。"}, status=503)
+                        return
                     self._handle_admin_agent_token()
                     return
                 if parsed.path == "/api/admin/agent-token/revoke":
                     if not self._require_admin():
+                        return
+                    if not AGENT_GATEWAY_AVAILABLE:
+                        self._json({"ok": False, "error": "Agent Gateway 正在调试中，暂不可用。"}, status=503)
                         return
                     self._handle_admin_agent_token_revoke()
                     return
@@ -660,6 +758,21 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._handle_admin_daily_market_scheduler()
+                    return
+                if parsed.path == "/api/admin/kaipanla/run":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_kaipanla_run()
+                    return
+                if parsed.path == "/api/admin/kaipanla/scheduler":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_kaipanla_scheduler()
+                    return
+                if parsed.path == "/api/admin/data-sources":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_data_sources()
                     return
                 if not self._require_auth(parsed.path):
                     return
@@ -1064,6 +1177,53 @@ class StockWebApp:
                 except (ValueError, RuntimeError) as exc:
                     self._json({"ok": False, "error": str(exc)}, status=400)
 
+            def _handle_admin_kaipanla_run(self) -> None:
+                try:
+                    payload = self._read_json()
+                    feature = str(payload.get("feature") or "").strip()
+                    params = payload.get("params") or {}
+                    save = payload.get("save", True) is not False
+                    if not isinstance(params, dict):
+                        self._json({"ok": False, "error": "开盘啦参数必须是 JSON object。"}, status=400)
+                        return
+                    self._json(run_kaipanla_feature(feature, params, save=save, run_id=timestamp()))
+                except Exception as exc:  # noqa: BLE001 - keep admin page readable
+                    self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_admin_kaipanla_scheduler(self) -> None:
+                try:
+                    payload = self._read_json()
+                    action = str(payload.get("action") or "save").strip()
+                    if action == "run_now":
+                        if not self._require_data_fetch_approval("/api/admin/kaipanla/scheduler:run_now", payload):
+                            return
+                        self._json({"ok": True, **app.kaipanla_scheduler.run_now()})
+                        return
+                    if action == "save":
+                        features = payload.get("features") or []
+                        params_by_feature = payload.get("params_by_feature") or {}
+                        if not isinstance(features, list) or not isinstance(params_by_feature, dict):
+                            self._json({"ok": False, "error": "开盘啦定时配置格式不正确。"}, status=400)
+                            return
+                        self._json({"ok": True, **app.kaipanla_scheduler.configure(
+                            enabled=bool(payload.get("enabled")),
+                            schedule_time=str(payload.get("time") or "21:45").strip(),
+                            features=[str(item).strip() for item in features if str(item).strip()],
+                            params_by_feature=params_by_feature,
+                        )})
+                        return
+                    self._json({"ok": False, "error": "未知开盘啦调度操作。"}, status=400)
+                except Exception as exc:  # noqa: BLE001 - keep admin page readable
+                    self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_admin_data_sources(self) -> None:
+                try:
+                    payload = self._read_json()
+                    session = self._current_session() or {}
+                    self._json({"ok": True, **configure_data_sources(payload, session.get("username") or "admin")})
+                except Exception as exc:  # noqa: BLE001 - keep admin page readable
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+
             def _handle_analyze(self) -> None:
                 try:
                     payload = self._read_json()
@@ -1211,7 +1371,11 @@ class StockWebApp:
                         page_size=int(payload.get("page_size") or 800),
                     )
                     local_payload = build_local_stock_payload(ts_code) if stock_exists(ts_code) else {"datasets": [], "metadata": {}}
-                    self._json({"ok": result.get("ok", False), "ts_code": ts_code, "market_result": result, **local_payload})
+                    error = ""
+                    if not result.get("ok"):
+                        failed = next((item for item in result.get("results", []) if not item.get("ok")), {})
+                        error = str(failed.get("error") or "分钟行情更新失败")
+                    self._json({"ok": result.get("ok", False), "error": error, "ts_code": ts_code, "market_result": result, **local_payload})
                 except PermissionError as exc:
                     self._json({"ok": False, "error": str(exc)}, status=403)
                 except Exception as exc:  # noqa: BLE001 - return readable UI error
@@ -1237,11 +1401,20 @@ class StockWebApp:
                 path = parsed.path
                 if path == "/api/agent/v1/health":
                     payload = app.health_snapshot()
-                    payload["agent_gateway"] = {"ok": True, "version": "v1", "scopes": AGENT_SCOPE_LABELS}
+                    payload["agent_gateway"] = {
+                        "ok": AGENT_GATEWAY_AVAILABLE,
+                        "available": AGENT_GATEWAY_AVAILABLE,
+                        "version": "v1",
+                        "scopes": AGENT_SCOPE_LABELS,
+                        "reason": "" if AGENT_GATEWAY_AVAILABLE else "Agent Gateway 正在调试中，暂不可用。",
+                    }
                     self._json(payload)
                     return
                 if path == "/api/agent/v1/openapi.json":
                     self._json(read_json(STATIC_DIR / "agent-openapi.json"))
+                    return
+                if not AGENT_GATEWAY_AVAILABLE:
+                    self._json({"ok": False, "error": "Agent Gateway 正在调试中，暂不可用。"}, status=503)
                     return
                 token = self._require_agent_scope("R", parsed)
                 if not token:
@@ -1300,6 +1473,9 @@ class StockWebApp:
 
             def _handle_agent_post(self, parsed) -> None:
                 path = parsed.path
+                if not AGENT_GATEWAY_AVAILABLE:
+                    self._json({"ok": False, "error": "Agent Gateway 正在调试中，暂不可用。"}, status=503)
+                    return
                 if path != "/api/agent/v1/analysis-jobs":
                     token = self._require_agent_scope("R", parsed)
                     if token:
@@ -1468,9 +1644,13 @@ class StockWebApp:
                 return "system" if access.get("is_vip") else "user"
 
             def _tushare_for_session(self) -> TushareClient:
+                if not provider_available("tushare"):
+                    return EastmoneyClient(pause=app.settings.tushare_pause_seconds)
                 session = self._current_session()
                 mode = self._credential_mode(session)
                 if mode == "system":
+                    if not app.settings.tushare_token:
+                        return EastmoneyClient(pause=app.settings.tushare_pause_seconds)
                     return app.tushare
                 keys = app.user_store.decrypted_user_api_keys(session.get("username") if session else "")
                 token = keys.get("tushare")
@@ -1832,6 +2012,8 @@ class TaskRegistry:
             "failed": result.get("failed", ""),
             "stock_list_count": result.get("stock_list_count", ""),
             "trigger": result.get("trigger", ""),
+            "total": result.get("total", ""),
+            "succeeded": result.get("succeeded", ""),
         }
 
 
@@ -1918,12 +2100,20 @@ class DailyMarketScheduler:
 
     def _run_task(self, task_id: str, target_date: str, trigger: str) -> None:
         try:
-            client = TushareClient(
-                self.app.settings.tushare_token,
-                self.app.settings.tushare_base_url,
-                pause=self.app.settings.tushare_pause_seconds,
-            )
-            stock_list = self.app.index.stocks(refresh=True)
+            if provider_available("tushare"):
+                if not self.app.settings.tushare_token:
+                    raise RuntimeError("系统 Tushare token 未配置，每日股票数据更新已暂停。")
+                client = TushareClient(
+                    self.app.settings.tushare_token,
+                    self.app.settings.tushare_base_url,
+                    pause=self.app.settings.tushare_pause_seconds,
+                )
+                stock_list = self.app.index.stocks(refresh=True)
+            else:
+                client = EastmoneyClient(pause=self.app.settings.tushare_pause_seconds)
+                stock_list = self.app.index.stocks(refresh=False)
+            if not stock_list:
+                raise RuntimeError("本地股票列表为空，无法执行每日股票数据更新。请先同步至少一只股票资料包。")
             self.task_registry.add_event(
                 task_id,
                 "running",
@@ -1981,6 +2171,159 @@ class DailyMarketScheduler:
             raise ValueError("每日更新时间必须是数字格式 HH:MM。") from exc
         if hour < 0 or hour > 23 or minute < 0 or minute > 59:
             raise ValueError("每日更新时间必须在 00:00-23:59 之间。")
+        return f"{hour:02d}:{minute:02d}"
+
+
+class KaipanlaScheduler:
+    def __init__(self, config_path: Path, task_registry: TaskRegistry):
+        self.config_path = config_path
+        self.task_registry = task_registry
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.worker: threading.Thread | None = None
+        self.config = self._load_config()
+        self.thread = threading.Thread(target=self._loop, name="kaipanla-scheduler", daemon=True)
+        self.thread.start()
+
+    def configure(self, enabled: bool, schedule_time: str, features: list[str], params_by_feature: dict[str, dict]) -> dict:
+        schedule_time = self._validate_time(schedule_time)
+        selected = [key for key in features if key]
+        if not selected:
+            raise ValueError("请至少选择一个开盘啦功能。")
+        unknown = [key for key in selected if key not in KAIPANLA_FEATURES]
+        if unknown:
+            raise ValueError(f"未知开盘啦功能：{', '.join(unknown)}")
+        clean_params = {str(key): value for key, value in params_by_feature.items() if isinstance(value, dict)}
+        with self.lock:
+            self.config.update(
+                {
+                    "enabled": bool(enabled),
+                    "time": schedule_time,
+                    "features": selected,
+                    "params_by_feature": clean_params,
+                    "updated_at": timestamp(),
+                }
+            )
+            self._write_config_locked()
+        return self.status()
+
+    def run_now(self) -> dict:
+        return self._start_run(trigger="manual")
+
+    def status(self) -> dict:
+        with self.lock:
+            config = dict(self.config)
+            running = bool(self.worker and self.worker.is_alive())
+        return {
+            "scheduler": {
+                "enabled": bool(config.get("enabled")),
+                "time": config.get("time") or "21:45",
+                "features": config.get("features") or [],
+                "params_by_feature": config.get("params_by_feature") or {},
+                "last_run_date": config.get("last_run_date") or "",
+                "last_run_at": config.get("last_run_at") or "",
+                "last_task_id": config.get("last_task_id") or "",
+                "last_result": config.get("last_result") or {},
+                "last_error": config.get("last_error") or "",
+                "running": running,
+            }
+        }
+
+    def _loop(self) -> None:
+        while not self.stop_event.wait(30):
+            try:
+                with self.lock:
+                    enabled = bool(self.config.get("enabled"))
+                    schedule_time = str(self.config.get("time") or "21:45")
+                    last_run_date = str(self.config.get("last_run_date") or "")
+                    running = bool(self.worker and self.worker.is_alive())
+                if not enabled or running:
+                    continue
+                now = datetime.now(CN_TZ).strftime("%H:%M")
+                today = today_yyyymmdd()
+                if now >= schedule_time and last_run_date != today:
+                    self._start_run(trigger="scheduled")
+            except Exception as exc:  # noqa: BLE001 - scheduler must keep ticking
+                with self.lock:
+                    self.config["last_error"] = str(exc)
+                    self._write_config_locked()
+
+    def _start_run(self, trigger: str) -> dict:
+        with self.lock:
+            if self.worker and self.worker.is_alive():
+                raise RuntimeError("开盘啦数据抓取任务正在运行。")
+            features = list(self.config.get("features") or [])
+            if not features:
+                raise RuntimeError("尚未配置开盘啦抓取功能。")
+            params_by_feature = dict(self.config.get("params_by_feature") or {})
+            task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
+            self.config["last_task_id"] = task_id
+            self._write_config_locked()
+        self.task_registry.create_task(task_id, "kaipanla", "开盘啦数据抓取", metadata={"trigger": trigger, "features": features})
+        self.task_registry.update_task(task_id, status="running")
+        self.task_registry.add_event(task_id, "running", "开始抓取开盘啦数据。", {"features": features})
+        self.worker = threading.Thread(target=self._run_task, args=(task_id, trigger, features, params_by_feature), name=f"kaipanla-{task_id}", daemon=True)
+        self.worker.start()
+        return self.status()
+
+    def _run_task(self, task_id: str, trigger: str, features: list[str], params_by_feature: dict[str, dict]) -> None:
+        try:
+            result = run_kaipanla_batch(features, params_by_feature, save=True, run_id=task_id)
+            status = "succeeded" if result.get("ok") else "failed"
+            self.task_registry.add_event(task_id, status, f"开盘啦抓取完成：成功 {result.get('succeeded', 0)}，失败 {result.get('failed', 0)}。", result)
+            self.task_registry.update_task(task_id, status=status, error="" if result.get("ok") else "部分开盘啦功能抓取失败。", result=result)
+            with self.lock:
+                self.config["last_run_date"] = today_yyyymmdd()
+                self.config["last_run_at"] = timestamp()
+                self.config["last_result"] = {**result, "trigger": trigger}
+                self.config["last_error"] = "" if result.get("ok") else "部分开盘啦功能抓取失败。"
+                self._write_config_locked()
+        except Exception as exc:  # noqa: BLE001 - task registry should record readable failure
+            self.task_registry.add_event(task_id, "failed", str(exc), {})
+            self.task_registry.update_task(task_id, status="failed", error=str(exc))
+            with self.lock:
+                self.config["last_error"] = str(exc)
+                self._write_config_locked()
+
+    def _load_config(self) -> dict:
+        if self.config_path.exists():
+            try:
+                data = read_json(self.config_path)
+                if isinstance(data, dict):
+                    data.setdefault("features", ["daily_data", "market_limit_up_ladder", "sector_ranking"])
+                    data.setdefault("params_by_feature", {})
+                    data["enabled"] = data.get("enabled", False) is True
+                    data["time"] = self._validate_time(str(data.get("time") or "21:45"))
+                    return data
+            except Exception:
+                pass
+        return {
+            "enabled": False,
+            "time": "21:45",
+            "features": ["daily_data", "market_limit_up_ladder", "sector_ranking"],
+            "params_by_feature": {},
+            "last_run_date": "",
+            "last_run_at": "",
+            "last_task_id": "",
+            "last_result": {},
+            "last_error": "",
+        }
+
+    def _write_config_locked(self) -> None:
+        write_json(self.config_path, self.config)
+
+    def _validate_time(self, value: str) -> str:
+        text = str(value or "").strip()
+        parts = text.split(":")
+        if len(parts) != 2:
+            raise ValueError("开盘啦定时时间格式必须是 HH:MM。")
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except ValueError as exc:
+            raise ValueError("开盘啦定时时间必须是数字格式 HH:MM。") from exc
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError("开盘啦定时时间必须在 00:00-23:59 之间。")
         return f"{hour:02d}:{minute:02d}"
 
 

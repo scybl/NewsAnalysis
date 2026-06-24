@@ -10,6 +10,7 @@ from .collector import StockDataCollector
 from .config import PROJECT_ROOT, get_news_db_config, get_settings
 from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
+from .kaipanla import list_kaipanla_features, list_kaipanla_records, parse_params, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
 from .news.crawler import CATEGORIES, CrawlOptions, crawl_news, parse_sleep
 from .news_library import query_news_library
 from .secret_store import SECRET_ENV_MAP, get_secret_store
@@ -98,6 +99,19 @@ def main() -> None:
     ths_minute_parser.add_argument("--sleep", type=parse_sleep, default=(0.8, 1.8), help="股票之间请求间隔，格式: min,max")
     ths_minute_parser.add_argument("--timeout", type=float, default=12.0, help="单次请求超时秒数")
 
+    kaipanla_parser = subparsers.add_parser("kaipanla", help="开盘啦数据源")
+    kaipanla_subparsers = kaipanla_parser.add_subparsers(dest="kaipanla_command", required=True)
+    kaipanla_subparsers.add_parser("list", help="列出已集成的开盘啦功能")
+    kaipanla_subparsers.add_parser("validate", help="验证开盘啦功能映射是否覆盖全部公开方法")
+    kaipanla_subparsers.add_parser("records", help="列出本地保存的开盘啦抓取记录")
+    kaipanla_run_parser = kaipanla_subparsers.add_parser("run", help="运行一个开盘啦功能")
+    kaipanla_run_parser.add_argument("feature", help="功能 key，可先运行 kaipanla list 查看")
+    kaipanla_run_parser.add_argument("--params", default="", help='JSON 参数，例如 {"date":"2026-01-16"}')
+    kaipanla_run_parser.add_argument("--save", action="store_true", help="把运行结果保存到 local_data/kaipanla")
+    kaipanla_batch_parser = kaipanla_subparsers.add_parser("batch", help="批量运行多个开盘啦功能并保存")
+    kaipanla_batch_parser.add_argument("--features", required=True, help="逗号分隔功能 key")
+    kaipanla_batch_parser.add_argument("--params", default="", help="JSON object，key 为功能 key，value 为该功能参数")
+
     args = parser.parse_args()
     if args.command == "collect":
         run_collect(args)
@@ -115,6 +129,8 @@ def main() -> None:
         run_news(args)
     elif args.command == "market":
         run_market(args)
+    elif args.command == "kaipanla":
+        run_kaipanla(args)
 
 
 def _add_collect_args(parser: argparse.ArgumentParser) -> None:
@@ -312,3 +328,37 @@ def run_market(args: argparse.Namespace) -> None:
                 )
             else:
                 print(f"  {item['ts_code']}: 失败：{item.get('error')}")
+
+
+def run_kaipanla(args: argparse.Namespace) -> None:
+    if args.kaipanla_command == "list":
+        for item in list_kaipanla_features():
+            suffix = f"；需要：{item['requires']}" if item.get("requires") else ""
+            print(f"{item['key']}\t{item['category']}\t{item['label']}{suffix}")
+        return
+    if args.kaipanla_command == "validate":
+        result = validate_kaipanla_integration()
+        print(f"features={result['feature_count']} public_methods={result['method_count']} ok={result['ok']}")
+        if result["missing_methods"]:
+            print("未映射方法：" + "、".join(result["missing_methods"]))
+        if result["unknown_methods"]:
+            print("未知方法：" + "、".join(result["unknown_methods"]))
+        return
+    if args.kaipanla_command == "records":
+        import json
+
+        print(json.dumps(list_kaipanla_records(), ensure_ascii=False, indent=2))
+        return
+    if args.kaipanla_command == "run":
+        import json
+
+        result = run_kaipanla_feature(args.feature, parse_params(args.params), save=args.save)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.kaipanla_command == "batch":
+        import json
+
+        features = [item.strip() for item in args.features.split(",") if item.strip()]
+        result = run_kaipanla_batch(features, parse_params(args.params), save=True, run_id=timestamp())
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
