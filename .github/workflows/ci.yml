@@ -48,6 +48,7 @@ jobs:
 
       - name: Test NewsAnalysis and NewsCrawler
         run: |
+          python -m pip install -r requirements.txt
           python -m pip install -e './NewsCrawler[dev]'
           python -m pytest -q tests NewsCrawler/tests
 
