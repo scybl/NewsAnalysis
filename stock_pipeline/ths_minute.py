@@ -18,14 +18,15 @@ from typing import Any
 from .analysis_frameworks import build_all_analysis_dossiers
 from .config import PROJECT_ROOT, load_dotenv
 from .dossier import build_dossier
+from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
 from .minute_storage import build_minute_reference
 from .secret_store import secret_value
 from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 
 
-DEFAULT_DB = "stock_market"
-DEFAULT_COLLECTION = "tdx_intraday_minutes"
-DEFAULT_PAYLOAD_COLLECTION = "market_minute_payloads"
+DEFAULT_DB = MARKET_DATABASE
+DEFAULT_COLLECTION = MARKET_COLLECTIONS["minute_buckets"]
+DEFAULT_PAYLOAD_COLLECTION = MARKET_COLLECTIONS["minute_payloads"]
 TDX_DATASET = "tdx_intraday_minutes"
 PYTDX_HISTORY_DATASET = "pytdx_history_minutes"
 THS_DATASET = "ths_intraday_minutes"
@@ -626,40 +627,65 @@ def normalize_minute_rows(ts_code: str, payload: dict[str, Any]) -> list[dict[st
 
 
 def upsert_minute_rows(collection: Any, rows: list[dict[str, Any]]) -> tuple[int, int]:
-    try:
-        from pymongo import UpdateOne  # type: ignore
-    except ImportError:
-        UpdateOne = None
-    if UpdateOne and len(rows) > 100:
-        inserted = 0
-        updated = 0
-        for start in range(0, len(rows), 1000):
-            batch = rows[start : start + 1000]
-            operations = [
-                UpdateOne(
-                    {"source": row.get("source", ""), "ts_code": row["ts_code"], "trade_date": row["trade_date"], "minute": row["minute"]},
-                    {"$set": row},
-                    upsert=True,
-                )
-                for row in batch
-            ]
-            result = collection.bulk_write(operations, ordered=False)
-            inserted += int(result.upserted_count or 0)
-            updated += int(result.modified_count or 0)
-        return inserted, updated
+    return _upsert_minute_day_buckets(collection, rows)
+
+
+def _upsert_minute_day_buckets(collection: Any, rows: list[dict[str, Any]]) -> tuple[int, int]:
     inserted = 0
     updated = 0
-    for row in rows:
-        result = collection.update_one(
-            {"source": row.get("source", ""), "ts_code": row["ts_code"], "trade_date": row["trade_date"], "minute": row["minute"]},
-            {"$set": row},
-            upsert=True,
-        )
+    for bucket in _minute_day_buckets(rows):
+        query = {
+            "source": bucket["source"],
+            "ts_code": bucket["ts_code"],
+            "trade_date": bucket["trade_date"],
+        }
+        existing = collection.find_one(query, {"_id": 0, "row_count": 1})
+        result = collection.update_one(query, {"$set": bucket}, upsert=True)
         if result.upserted_id is not None:
-            inserted += 1
+            inserted += int(bucket.get("row_count") or 0)
         elif result.modified_count:
-            updated += 1
+            updated += int(bucket.get("row_count") or existing.get("row_count") or 0)
     return inserted, updated
+
+
+def _minute_day_buckets(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (
+            str(row.get("source") or ""),
+            normalize_ts_code(str(row.get("ts_code") or "")),
+            str(row.get("trade_date") or ""),
+        )
+        if all(key):
+            grouped.setdefault(key, []).append(row)
+
+    buckets: list[dict[str, Any]] = []
+    for (source, ts_code, trade_date), items in grouped.items():
+        minutes = []
+        for item in sorted(items, key=lambda value: str(value.get("minute") or "")):
+            minute_row = {
+                key: value
+                for key, value in item.items()
+                if key not in {"source", "dataset", "ts_code", "symbol", "trade_date"}
+            }
+            minutes.append(minute_row)
+        if not minutes:
+            continue
+        buckets.append(
+            {
+                "source": source,
+                "dataset": str(items[0].get("dataset") or ""),
+                "ts_code": ts_code,
+                "symbol": ts_code[:6],
+                "trade_date": trade_date,
+                "start_minute": str(minutes[0].get("minute") or ""),
+                "end_minute": str(minutes[-1].get("minute") or ""),
+                "row_count": len(minutes),
+                "minutes": minutes,
+                "fetched_at": max((item.get("fetched_at") for item in items if item.get("fetched_at")), default=None),
+            }
+        )
+    return buckets
 
 
 def upsert_payload(collection: Any, ts_code: str, payload: dict[str, Any]) -> bool:
@@ -694,12 +720,15 @@ def merge_local_dataset(
     dataset: str,
     source: str,
 ) -> dict[str, Any]:
+    from .local_data_mongo import read_mongo_full_data, read_mongo_metadata, save_stock_package_to_mongo
+
     current_dir = PROJECT_ROOT / "local_data" / normalize_ts_code(ts_code) / "current"
     full_path = current_dir / "full_data.json"
-    if not full_path.exists():
-        return {"merged": False, "path": "", "reason": "本地 Tushare 资料包不存在"}
-
-    full_data = read_json(full_path)
+    full_data = read_mongo_full_data(ts_code)
+    if full_data is None and full_path.exists():
+        full_data = read_json(full_path)
+    if full_data is None:
+        return {"merged": False, "path": "", "reason": "MongoDB 中不存在股票资料包，请先全量更新。"}
     datasets = full_data.setdefault("datasets", {})
     datasets.pop(dataset, None)
     reference = build_minute_reference(collection, ts_code, dataset=dataset, source=source)
@@ -719,26 +748,36 @@ def merge_local_dataset(
         "trade_date": payload.get("date", ""),
         "note": note,
     }
-    write_json(full_path, full_data)
-    raw_dir = ensure_dir(current_dir / "raw")
-    minute_raw_path = raw_dir / f"{dataset}.json"
-    if minute_raw_path.exists():
-        minute_raw_path.unlink()
-    if dataset == THS_DATASET:
-        write_json(raw_dir / "ths_market_time_payload.json", payload)
     dossier = build_dossier(full_data)
-    write_json(current_dir / "dossier.json", dossier)
-    for key, analysis_dossier in build_all_analysis_dossiers(dossier).items():
-        write_json(current_dir / f"{key}_dossier.json", analysis_dossier)
+    analysis_dossiers = _build_optional_analysis_dossiers(dossier)
+    metadata = read_mongo_metadata(ts_code) or {}
+    metadata.setdefault("ts_code", normalize_ts_code(ts_code))
+    rows_map = metadata.setdefault("dataset_rows", {})
+    rows_map[dataset] = reference["row_count"]
+    metadata["market_minute_updated_at"] = timestamp()
+    metadata["current_dir"] = f"mongodb://stock_data/stock_packages/{normalize_ts_code(ts_code)}/current"
+    save_result = save_stock_package_to_mongo(
+        ts_code,
+        full_data,
+        metadata,
+        dossier=dossier,
+        analysis_dossiers=analysis_dossiers,
+    )
 
-    metadata_path = current_dir.parent / "metadata.json"
-    if metadata_path.exists():
-        metadata = read_json(metadata_path)
-        rows_map = metadata.setdefault("dataset_rows", {})
-        rows_map[dataset] = reference["row_count"]
-        metadata["market_minute_updated_at"] = timestamp()
-        write_json(metadata_path, metadata)
-    return {"merged": True, "path": str(full_path), "rows": reference["row_count"], "reference": reference}
+    return {
+        "merged": True,
+        "path": f"mongodb://stock_data/stock_packages/{normalize_ts_code(ts_code)}/current",
+        "rows": reference["row_count"],
+        "reference": reference,
+        "mongo_sync": save_result,
+    }
+
+
+def _build_optional_analysis_dossiers(dossier: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    try:
+        return build_all_analysis_dossiers(dossier)
+    except (ImportError, RuntimeError, ModuleNotFoundError):
+        return {}
 
 
 def ths_market_code(code: str) -> str:
@@ -759,6 +798,12 @@ def _existing_trade_dates(collection: Any, ts_code: str, *, source: str) -> set[
 
 
 def _local_daily_trade_dates(ts_code: str) -> list[str]:
+    from .local_data_mongo import read_mongo_full_data
+
+    data = read_mongo_full_data(ts_code)
+    if data is not None:
+        rows = data.get("datasets", {}).get("daily", [])
+        return sorted({str(row.get("trade_date") or "") for row in rows if row.get("trade_date")})
     full_path = PROJECT_ROOT / "local_data" / normalize_ts_code(ts_code) / "current" / "full_data.json"
     if not full_path.exists():
         return []
@@ -768,9 +813,12 @@ def _local_daily_trade_dates(ts_code: str) -> list[str]:
 
 
 def _ensure_indexes(collection: Any, pymongo: Any) -> None:
-    collection.create_index([("source", pymongo.ASCENDING), ("ts_code", pymongo.ASCENDING), ("trade_date", pymongo.ASCENDING), ("minute", pymongo.ASCENDING)], unique=True)
+    collection.create_index(
+        [("source", pymongo.ASCENDING), ("ts_code", pymongo.ASCENDING), ("trade_date", pymongo.ASCENDING)],
+        unique=True,
+    )
+    collection.create_index([("ts_code", pymongo.ASCENDING), ("source", pymongo.ASCENDING), ("trade_date", pymongo.DESCENDING)])
     collection.create_index([("trade_date", pymongo.DESCENDING), ("ts_code", pymongo.ASCENDING)])
-    collection.create_index([("datetime", pymongo.DESCENDING)])
 
 
 def _ensure_payload_indexes(collection: Any, pymongo: Any) -> None:

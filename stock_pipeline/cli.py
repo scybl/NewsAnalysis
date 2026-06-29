@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import logging
 from pathlib import Path
 
 from .analyst import INITIAL_QUESTION, StockAnalyst, session_path_for
+from .akshare_client import AkshareClient
+from .composite_client import FallbackStockClient
 from .collector import StockDataCollector
-from .config import PROJECT_ROOT, get_news_db_config, get_settings
+from .config import PROJECT_ROOT, get_settings
 from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
 from .kaipanla import list_kaipanla_features, list_kaipanla_records, parse_params, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
-from .news.crawler import CATEGORIES, CrawlOptions, crawl_news, parse_sleep
 from .news_library import query_news_library
 from .secret_store import SECRET_ENV_MAP, get_secret_store
 from .ths_minute import build_config as build_ths_minute_config
@@ -21,6 +21,13 @@ from .tushare_client import TushareClient
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 from .value_speculation import VALUE_SPECULATION_QUESTION, build_value_speculation_dossier
 from .web import serve_web
+
+
+def parse_sleep(value: str) -> tuple[float, float]:
+    parts = [float(part.strip()) for part in value.split(",")]
+    if len(parts) != 2 or parts[0] < 0 or parts[1] < parts[0]:
+        raise argparse.ArgumentTypeError("sleep range must be formatted as min,max")
+    return parts[0], parts[1]
 
 
 def main() -> None:
@@ -67,22 +74,8 @@ def main() -> None:
     setup_totp_parser.add_argument("--issuer", default="NewsAnalysis", help="Authenticator 中显示的发行方")
     setup_totp_parser.add_argument("--secret", default=None, help="使用已有 Base32 密钥；不传则自动生成")
 
-    news_parser = subparsers.add_parser("news", help="财经新闻抓取和检索")
+    news_parser = subparsers.add_parser("news", help="检索由独立 NewsCrawler 写入的新闻")
     news_subparsers = news_parser.add_subparsers(dest="news_command", required=True)
-    news_crawl_parser = news_subparsers.add_parser("crawl", help="抓取同花顺财经新闻入库")
-    news_crawl_parser.add_argument("--types", default=",".join(CATEGORIES.keys()), help="逗号分隔的分类名称")
-    news_crawl_parser.add_argument("--since", default="2019-01-01 00:00:00", help="抓取到该发布时间后停止，格式: YYYY-MM-DD HH:MM:SS")
-    news_crawl_parser.add_argument("--max-pages", type=int, default=0, help="每个分类最多抓取页数，0 表示不限制")
-    news_crawl_parser.add_argument("--threads", type=int, default=2, help="最大并发分类数")
-    news_crawl_parser.add_argument("--article-sleep", type=parse_sleep, default=(2.0, 5.0), help="单篇文章请求间隔，格式: min,max")
-    news_crawl_parser.add_argument("--page-sleep", type=parse_sleep, default=(5.0, 15.0), help="分页请求间隔，格式: min,max")
-    news_crawl_parser.add_argument("--stale-stop-count", type=int, default=10, help="连续多少篇早于 since 后停止该分类")
-    news_crawl_parser.add_argument("--new-only", action="store_true", help="只抓新增文章，连续遇到已存在文章后停止该分类")
-    news_crawl_parser.add_argument("--existing-stop-count", type=int, default=10, help="new-only 模式下连续多少篇已存在后停止")
-    news_crawl_parser.add_argument("--max-page-failures", type=int, default=3, help="同一分类连续列表页失败多少次后停止")
-    news_crawl_parser.add_argument("--dry-run", action="store_true", help="只抓取解析，不写入数据库")
-    news_crawl_parser.add_argument("--no-migrate", action="store_true", help="不自动补齐数据库字段和索引")
-
     news_search_parser = news_subparsers.add_parser("search", help="从本地新闻库检索关键词")
     news_search_parser.add_argument("terms", nargs="+", help="检索关键词，多个关键词按 OR 匹配")
     news_search_parser.add_argument("--limit", type=int, default=20, help="最多返回条数")
@@ -94,8 +87,8 @@ def main() -> None:
     ths_minute_parser.add_argument("--source", choices=["tdx", "pytdx_history", "ths", "auto"], default="pytdx_history", help="分钟行情源：pytdx_history 为历史分时价量构造分钟 K；tdx 为近期真实分钟 K；ths 为同花顺最新日分时")
     ths_minute_parser.add_argument("--pages", default="all", help="tdx 分页数量；all 表示一直翻到数据源返回空页")
     ths_minute_parser.add_argument("--page-size", type=int, default=800, help="tdx 单页数量，最大 800")
-    ths_minute_parser.add_argument("--mongo-db", default=None, help="MongoDB 数据库名，默认 MARKET_MINUTE_DATABASE 或 stock_market")
-    ths_minute_parser.add_argument("--collection", default=None, help="MongoDB 集合名，默认 MARKET_MINUTE_COLLECTION 或 tdx_intraday_minutes")
+    ths_minute_parser.add_argument("--mongo-db", default=None, help="MongoDB 数据库名，默认 MARKET_MINUTE_DATABASE 或 market_data")
+    ths_minute_parser.add_argument("--collection", default=None, help="MongoDB 集合名，默认 MARKET_MINUTE_COLLECTION 或 minute_day_buckets")
     ths_minute_parser.add_argument("--sleep", type=parse_sleep, default=(0.8, 1.8), help="股票之间请求间隔，格式: min,max")
     ths_minute_parser.add_argument("--timeout", type=float, default=12.0, help="单次请求超时秒数")
 
@@ -103,11 +96,11 @@ def main() -> None:
     kaipanla_subparsers = kaipanla_parser.add_subparsers(dest="kaipanla_command", required=True)
     kaipanla_subparsers.add_parser("list", help="列出已集成的开盘啦功能")
     kaipanla_subparsers.add_parser("validate", help="验证开盘啦功能映射是否覆盖全部公开方法")
-    kaipanla_subparsers.add_parser("records", help="列出本地保存的开盘啦抓取记录")
+    kaipanla_subparsers.add_parser("records", help="列出已保存的开盘啦抓取记录")
     kaipanla_run_parser = kaipanla_subparsers.add_parser("run", help="运行一个开盘啦功能")
     kaipanla_run_parser.add_argument("feature", help="功能 key，可先运行 kaipanla list 查看")
     kaipanla_run_parser.add_argument("--params", default="", help='JSON 参数，例如 {"date":"2026-01-16"}')
-    kaipanla_run_parser.add_argument("--save", action="store_true", help="把运行结果保存到 local_data/kaipanla")
+    kaipanla_run_parser.add_argument("--save", action="store_true", help="把运行结果保存到 MongoDB")
     kaipanla_batch_parser = kaipanla_subparsers.add_parser("batch", help="批量运行多个开盘啦功能并保存")
     kaipanla_batch_parser.add_argument("--features", required=True, help="逗号分隔功能 key")
     kaipanla_batch_parser.add_argument("--params", default="", help="JSON object，key 为功能 key，value 为该功能参数")
@@ -193,7 +186,10 @@ def run_collect(args: argparse.Namespace) -> Path:
     ts_code = normalize_ts_code(args.code)
     output_dir = ensure_dir(Path(args.output_dir) / f"{ts_code}_{timestamp()}")
     collector = StockDataCollector(
-        TushareClient(settings.tushare_token, settings.tushare_base_url, pause=settings.tushare_pause_seconds)
+        FallbackStockClient(
+            TushareClient(settings.tushare_token, settings.tushare_base_url, pause=settings.tushare_pause_seconds),
+            [AkshareClient(pause=settings.tushare_pause_seconds)],
+        )
     )
     print(f"开始采集 {ts_code}，输出目录：{output_dir}")
     full_data = collector.collect(ts_code, output_dir, years=args.years, full_history=args.full_history or args.years is None)
@@ -278,28 +274,6 @@ def _print_collect_summary(dossier: dict, output_dir: Path) -> None:
 
 
 def run_news(args: argparse.Namespace) -> None:
-    if args.news_command == "crawl":
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s")
-        options = CrawlOptions(
-            types=args.types,
-            since=args.since,
-            max_pages=args.max_pages,
-            threads=args.threads,
-            article_sleep=args.article_sleep,
-            page_sleep=args.page_sleep,
-            stale_stop_count=args.stale_stop_count,
-            new_only=args.new_only,
-            existing_stop_count=args.existing_stop_count,
-            max_page_failures=args.max_page_failures,
-            dry_run=args.dry_run,
-            migrate=not args.no_migrate,
-        )
-        result = crawl_news(get_news_db_config(), options)
-        print("新闻抓取完成：")
-        for kind, stats in result["categories"].items():
-            print(f"  {kind}: parsed={stats['parsed']} inserted={stats['inserted']} skipped={stats['skipped']}")
-        return
-
     if args.news_command == "search":
         result = query_news_library({"q": [" ".join(args.terms)], "page_size": [str(args.limit)], "days": ["0"]})
         if not result.get("enabled"):

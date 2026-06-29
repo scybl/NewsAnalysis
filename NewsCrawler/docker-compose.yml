@@ -1,0 +1,30 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - crawler_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  news-crawler:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/
+      MONGODB_DATABASE: news
+      MONGODB_RAW_COLLECTION: raw_articles
+      GUARDIAN_API_KEY: ${GUARDIAN_API_KEY:-}
+      BLOOMBERG_COOKIE: ${BLOOMBERG_COOKIE:-}
+      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg}
+      NEWS_CRAWLER_TONGHUASHUN_CATEGORY_PAGES: ${NEWS_CRAWLER_TONGHUASHUN_CATEGORY_PAGES:-产经新闻=30,区域经济=18,公司新闻=16,国际财经=12,财经评论=6,财经要闻=5,宏观经济=3,金融市场=3,财经人物=2}
+    command: ["schedule", "--source", "all", "--interval", "${NEWS_CRAWLER_INTERVAL_SECONDS:-1800}", "--max-pages", "${NEWS_CRAWLER_MAX_PAGES:-1}"]
+
+volumes:
+  crawler_mongo_data:

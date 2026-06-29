@@ -14,7 +14,7 @@ RUN sed -i \
         -e 's|http://deb.debian.org/debian-security|https://mirrors.aliyun.com/debian-security|g' \
         /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends chromium chromium-driver \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends chromium chromium-driver curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

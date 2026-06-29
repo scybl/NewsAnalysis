@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .tushare_client import TushareClient, TushareError
+from .data_quality import audit_collection_completeness
 from .utils import ensure_dir, normalize_ts_code, today_yyyymmdd, write_json, years_ago_yyyymmdd
 
 
@@ -64,6 +65,7 @@ class StockDataCollector:
             "datasets": raw,
             "fetch_errors": errors,
         }
+        dossier["completeness"] = audit_collection_completeness(dossier)
         write_json(output_dir / "full_data.json", dossier)
         return dossier
 

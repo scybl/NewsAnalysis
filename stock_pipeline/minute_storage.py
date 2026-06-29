@@ -5,12 +5,13 @@ import urllib.parse
 from typing import Any
 
 from .config import load_dotenv
+from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
 from .secret_store import secret_value
 from .utils import normalize_ts_code
 
 
-DEFAULT_DATABASE = "stock_market"
-DEFAULT_COLLECTION = "tdx_intraday_minutes"
+DEFAULT_DATABASE = MARKET_DATABASE
+DEFAULT_COLLECTION = MARKET_COLLECTIONS["minute_buckets"]
 MINUTE_DATASET_SOURCES = {
     "tdx_intraday_minutes": "tdx",
     "pytdx_history_minutes": "pytdx_history",
@@ -26,11 +27,11 @@ def build_minute_reference(
     source: str,
 ) -> dict[str, Any]:
     query = {"ts_code": normalize_ts_code(ts_code), "source": source}
-    row_count = collection.count_documents(query)
-    first = collection.find_one(query, {"_id": 0, "trade_date": 1, "minute": 1}, sort=[("trade_date", 1), ("minute", 1)]) or {}
-    last = collection.find_one(query, {"_id": 0, "trade_date": 1, "minute": 1}, sort=[("trade_date", -1), ("minute", -1)]) or {}
+    row_count = _bucket_row_count(collection, query)
+    first = collection.find_one(query, {"_id": 0, "trade_date": 1, "start_minute": 1}, sort=[("trade_date", 1)]) or {}
+    last = collection.find_one(query, {"_id": 0, "trade_date": 1, "end_minute": 1}, sort=[("trade_date", -1)]) or {}
     return {
-        "storage": "mongodb",
+        "storage": "mongodb_day_buckets",
         "database": collection.database.name,
         "collection": collection.name,
         "dataset": dataset,
@@ -39,11 +40,13 @@ def build_minute_reference(
         "row_count": row_count,
         "start_date": str(first.get("trade_date") or ""),
         "end_date": str(last.get("trade_date") or ""),
+        "start_minute": str(first.get("start_minute") or ""),
+        "end_minute": str(last.get("end_minute") or ""),
     }
 
 
 def read_minute_rows(reference: dict[str, Any], limit: int = 80) -> list[dict[str, Any]]:
-    if not reference or reference.get("storage") != "mongodb":
+    if not reference or reference.get("storage") != "mongodb_day_buckets":
         return []
     try:
         import pymongo
@@ -58,18 +61,36 @@ def read_minute_rows(reference: dict[str, Any], limit: int = 80) -> list[dict[st
     }
     client = pymongo.MongoClient(_mongo_uri(database), serverSelectionTimeoutMS=2000, socketTimeoutMS=3000)
     try:
-        rows = list(
-            client[database][collection_name]
-            .find(query, {"_id": 0})
-            .sort([("trade_date", pymongo.DESCENDING), ("minute", pymongo.DESCENDING)])
-            .limit(max(1, min(int(limit), 10000)))
-        )
-        rows.reverse()
-        return rows
+        return _read_bucket_minute_rows(client[database][collection_name], query, limit)
     except Exception:  # MongoDB downtime must not block daily-data reads or analysis.
         return []
     finally:
         client.close()
+
+
+def _read_bucket_minute_rows(collection: Any, query: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    target = max(1, min(int(limit), 10000))
+    rows: list[dict[str, Any]] = []
+    # A trading day usually has about 240 minute rows. Read enough day buckets
+    # to satisfy the requested row limit without scanning a stock's full history.
+    day_limit = max(1, min((target // 200) + 2, 60))
+    buckets = collection.find(query, {"_id": 0}).sort([("trade_date", -1)]).limit(day_limit)
+    for bucket in buckets:
+        base = {
+            "source": bucket.get("source", ""),
+            "dataset": bucket.get("dataset", ""),
+            "ts_code": bucket.get("ts_code", ""),
+            "symbol": bucket.get("symbol", ""),
+            "trade_date": bucket.get("trade_date", ""),
+        }
+        for item in reversed(bucket.get("minutes") or []):
+            if isinstance(item, dict):
+                rows.append({**base, **item})
+                if len(rows) >= target:
+                    rows.reverse()
+                    return rows
+    rows.reverse()
+    return rows
 
 
 def read_external_minute_datasets(full_data: dict[str, Any], limit: int = 80) -> dict[str, list[dict[str, Any]]]:
@@ -89,6 +110,18 @@ def minute_reference_row_counts(full_data: dict[str, Any]) -> dict[str, int]:
         for dataset, reference in references.items()
         if dataset in MINUTE_DATASET_SOURCES and isinstance(reference, dict)
     }
+
+
+def _bucket_row_count(collection: Any, query: dict[str, Any]) -> int:
+    result = list(
+        collection.aggregate(
+            [
+                {"$match": query},
+                {"$group": {"_id": None, "rows": {"$sum": "$row_count"}}},
+            ]
+        )
+    )
+    return int((result[0] if result else {}).get("rows") or 0)
 
 
 def _mongo_uri(database: str) -> str:

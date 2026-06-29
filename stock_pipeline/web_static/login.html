@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>登录 - 价值投机分析</title>
+    <title>登录 - NewsCrawler</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -15,7 +15,7 @@
       :root {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         color: #17202a;
-        background: #f6f7f9;
+        background: #f8fafc;
       }
 
       * {
@@ -32,20 +32,59 @@
         display: grid;
         place-items: center;
         padding: 24px;
+        background:
+          radial-gradient(circle at 18% -10%, rgba(148, 163, 184, 0.24), transparent 30%),
+          #f8fafc;
       }
 
       main {
-        width: min(460px, 100%);
-        border: 1px solid #e4e7ec;
-        border-radius: 8px;
-        background: #fff;
-        padding: 28px;
-        box-shadow: 0 12px 30px rgba(23, 32, 42, 0.08);
+        position: relative;
+        width: min(500px, 100%);
+        border: 1px solid #e2e8f0;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.92);
+        padding: 32px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 24px 70px rgba(15, 23, 42, 0.10);
+        overflow: hidden;
+        backdrop-filter: blur(18px);
+      }
+
+      main::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto;
+        height: 4px;
+        background: #0f172a;
+      }
+
+      .login-theme-toggle {
+        position: absolute;
+        top: 18px;
+        right: 18px;
+        z-index: 1;
+        width: auto;
+        height: 34px;
+        border: 1px solid #e2e8f0;
+        border-radius: 999px;
+        padding: 0 12px;
+        background: rgba(255, 255, 255, 0.9);
+        color: #0f172a;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+      }
+
+      .login-theme-toggle:hover {
+        background: #f1f5f9;
       }
 
       h1 {
         margin: 0;
-        font-size: 26px;
+        font-size: 34px;
+        letter-spacing: -0.055em;
       }
 
       p {
@@ -62,19 +101,21 @@
       }
 
       .tab {
-        height: 38px;
-        border: 1px solid #cfd6df;
-        border-radius: 6px;
-        background: #fff;
+        height: 42px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #ffffff;
         color: #344054;
         font: inherit;
+        font-weight: 750;
         cursor: pointer;
       }
 
       .tab.active {
-        background: #17202a;
-        border-color: #17202a;
+        background: #0f172a;
+        border-color: #0f172a;
         color: #fff;
+        box-shadow: 0 16px 34px rgba(59, 130, 246, 0.24);
       }
 
       form[hidden] {
@@ -91,10 +132,11 @@
 
       input {
         width: 100%;
-        height: 42px;
-        border: 1px solid #cfd6df;
-        border-radius: 6px;
-        padding: 0 12px;
+        height: 46px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 0 14px;
+        background: #ffffff;
         font: inherit;
         outline: none;
       }
@@ -106,23 +148,25 @@
 
       button.submit {
         width: 100%;
-        height: 42px;
+        height: 46px;
         margin-top: 20px;
-        border: 1px solid #17202a;
-        border-radius: 6px;
-        background: #17202a;
+        border: 0;
+        border-radius: 10px;
+        background: #0f172a;
         color: #fff;
         font: inherit;
+        font-weight: 800;
         cursor: pointer;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
       }
 
       button.secondary {
         width: 100%;
         height: 40px;
         margin-top: 10px;
-        border: 1px solid #cfd6df;
-        border-radius: 6px;
-        background: transparent;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #ffffff;
         color: #475467;
         font: inherit;
         cursor: pointer;
@@ -155,8 +199,8 @@
         height: 38px;
         flex: 0 0 38px;
         place-items: center;
-        border-radius: 6px;
-        background: #17202a;
+        border-radius: 10px;
+        background: #0f172a;
         color: #fff;
         font-size: 13px;
         font-weight: 700;
@@ -165,17 +209,6 @@
       button:disabled {
         cursor: not-allowed;
         opacity: 0.65;
-      }
-
-      .notice {
-        margin-top: 18px;
-        padding: 12px;
-        border: 1px solid #e4e7ec;
-        border-radius: 6px;
-        background: #f9fafb;
-        color: #667085;
-        font-size: 13px;
-        line-height: 1.55;
       }
 
       .message {
@@ -201,6 +234,16 @@
         box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
       }
 
+      html.theme-dark .login-theme-toggle {
+        background: rgba(21, 31, 43, 0.92);
+        border-color: #344154;
+        color: #e6edf3;
+      }
+
+      html.theme-dark .login-theme-toggle:hover {
+        background: #1c2938;
+      }
+
       html.theme-dark p,
       html.theme-dark label {
         color: #9aa7b5;
@@ -222,12 +265,6 @@
         color: #0f141b;
       }
 
-      html.theme-dark .notice {
-        background: #151f2b;
-        border-color: #344154;
-        color: #9aa7b5;
-      }
-
       html.theme-dark .message {
         color: #ff9a9a;
       }
@@ -235,8 +272,9 @@
   </head>
   <body>
     <main>
-      <h1>价值投机</h1>
-      <p id="pageSubtitle">登录或使用邀请码创建账号</p>
+      <button class="login-theme-toggle" id="loginThemeToggleBtn" type="button" aria-pressed="false">深色模式</button>
+      <h1>NewsCrawler</h1>
+      <p id="pageSubtitle">新闻数据与运行观测平台</p>
 
       <div class="tabs" id="authTabs" role="tablist" aria-label="认证方式">
         <button class="tab active" id="loginTab" type="button">登录</button>
@@ -297,9 +335,6 @@
       </form>
 
       <div id="message" class="message"></div>
-      <div class="notice">
-        朋友测试账号由管理员生成，默认有请求次数限制。注册只接受管理员生成的邀请码。
-      </div>
     </main>
     <script>
       const loginTab = document.querySelector("#loginTab");
@@ -310,6 +345,24 @@
       const adminLoginForm = document.querySelector("#adminLoginForm");
       const registerForm = document.querySelector("#registerForm");
       const message = document.querySelector("#message");
+      const loginThemeToggleBtn = document.querySelector("#loginThemeToggleBtn");
+
+      function syncLoginThemeToggle() {
+        const isDark = document.documentElement.classList.contains("theme-dark");
+        loginThemeToggleBtn.textContent = isDark ? "浅色模式" : "深色模式";
+        loginThemeToggleBtn.setAttribute("aria-pressed", String(isDark));
+      }
+
+      loginThemeToggleBtn.addEventListener("click", () => {
+        const nextTheme = document.documentElement.classList.contains("theme-dark") ? "light" : "dark";
+        document.documentElement.classList.toggle("theme-dark", nextTheme === "dark");
+        try {
+          localStorage.setItem("stockTheme", nextTheme);
+        } catch {}
+        syncLoginThemeToggle();
+      });
+
+      syncLoginThemeToggle();
 
       function setMode(mode) {
         const isLogin = mode === "login";
@@ -319,7 +372,7 @@
         loginForm.hidden = !isLogin;
         adminLoginForm.hidden = true;
         registerForm.hidden = isLogin;
-        pageSubtitle.textContent = "登录或使用邀请码创建账号";
+        pageSubtitle.textContent = "新闻数据与运行观测平台";
         message.textContent = "";
       }
 
@@ -331,7 +384,7 @@
         document.querySelector("#adminChallenge").value = challenge;
         document.querySelector("#adminPassword").value = "";
         document.querySelector("#adminOtp").value = "";
-        pageSubtitle.textContent = "管理员安全登录";
+        pageSubtitle.textContent = "管理员安全登录 · TOTP 二次验证";
         message.textContent = "";
         document.querySelector("#adminPassword").focus();
       }

@@ -15,6 +15,7 @@ const agentRunSelect = document.querySelector("#agentRunSelect");
 const readAgentRunBtn = document.querySelector("#readAgentRunBtn");
 const themeToggleBtn = document.querySelector("#themeToggleBtn");
 const adminPanelLink = document.querySelector("#adminPanelLink");
+const sidebarFooter = document.querySelector(".sidebar-footer");
 const logoutBtn = document.querySelector("#logoutBtn");
 const output = document.querySelector("#analysisOutput");
 const scorePanel = document.querySelector("#scorePanel");
@@ -91,6 +92,8 @@ let linePlotArea = null;
 let pieSlices = [];
 let hoveredPieIndex = -1;
 const pageSize = 50;
+let analysisModuleAvailable = false;
+const ANALYSIS_MODULE_MESSAGE = "分析模块已拆分为外部项目，当前主站只保留数据资产和历史报告读取。";
 const defaultAnalysisFrameworks = [
   { key: "value_speculation", label: "价值投机" },
   { key: "value_quality", label: "质量成长价值" },
@@ -104,6 +107,19 @@ initializeTheme();
 initializeSession();
 loadAnalysisFrameworks();
 loadInitialStockList();
+initializeAnalysisModuleState();
+
+function initializeAnalysisModuleState() {
+  if (multiAgentBtn) {
+    multiAgentBtn.disabled = !analysisModuleAvailable || !selected;
+    multiAgentBtn.textContent = analysisModuleAvailable ? "多Agent分析" : "分析模块已封存";
+    multiAgentBtn.title = analysisModuleAvailable ? "" : ANALYSIS_MODULE_MESSAGE;
+  }
+  if (analyzeBtn) {
+    analyzeBtn.disabled = true;
+    analyzeBtn.hidden = true;
+  }
+}
 
 function initializeTheme() {
   let savedTheme = "light";
@@ -229,7 +245,7 @@ analyzeBtn.addEventListener("click", async () => {
       .join("\n");
     const errors = payload.fetch_errors?.length ? `\n\n未成功接口：${payload.fetch_errors.length} 个` : "";
     const risks = (payload.risk_flags || []).map((item) => `- [${item.level}] ${item.title}: ${item.message}`).join("\n");
-    output.textContent = `${payload.answer}\n\n---\n分析类型：${payload.analysis_label || framework.label}\n输出目录：${payload.output_dir}\n分析资料包：${payload.analysis_dossier_path || payload.value_dossier_path}\n分析文件：${payload.analysis_path || "未生成"}\n\n规则风险提示：\n${risks || "暂无明显规则风险"}\n\n数据集行数：\n${rows}${errors}`;
+    output.textContent = `${payload.answer}\n\n---\n分析类型：${payload.analysis_label || framework.label}\n分析结果：已保存\n\n规则风险提示：\n${risks || "暂无明显规则风险"}\n\n数据集行数：\n${rows}${errors}`;
     await refreshAnalysisResults();
   } catch (error) {
     output.textContent = `出错了：${error.message}`;
@@ -255,9 +271,9 @@ readAnalysisBtn.addEventListener("click", async () => {
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || "读取失败");
     const history = (payload.items || [])
-      .map((item) => `- ${item.location === "current" ? "当前" : `快照 ${item.snapshot_name}`}：${item.analysis_path}`)
+      .map((item) => `- ${item.location === "current" ? "当前" : `快照 ${item.snapshot_name}`}`)
       .join("\n");
-    output.textContent = `${payload.answer}\n\n---\n分析类型：${payload.analysis_label || framework.label}\n分析文件：${payload.analysis_path}\n\n可读取历史：\n${history || "暂无其他历史分析"}`;
+    output.textContent = `${payload.answer}\n\n---\n分析类型：${payload.analysis_label || framework.label}\n分析结果：已读取\n\n可读取历史：\n${history || "暂无其他历史分析"}`;
     renderAnalysisHistoryOptions(payload.items || []);
   } catch (error) {
     output.textContent = `读取分析失败：${error.message}`;
@@ -268,6 +284,11 @@ readAnalysisBtn.addEventListener("click", async () => {
 
 multiAgentBtn.addEventListener("click", async () => {
   if (!selected) return;
+  if (!analysisModuleAvailable) {
+    output.textContent = ANALYSIS_MODULE_MESSAGE;
+    multiAgentBtn.disabled = true;
+    return;
+  }
   const token = ++syncToken;
   const framework = selectedAnalysisFramework();
   if (!approveDataFetch(`创建 ${selected.name}（${selected.ts_code}）的${framework.label}多 Agent 分析任务`)) return;
@@ -299,7 +320,7 @@ async function pollMultiAgentJob(jobId, framework, token) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ job_id: jobId }),
     });
-    const payload = await readApiPayload(response, "读取多 Agent 进度失败");
+    const payload = await readApiPayload(response, "读取分析进度失败");
     lastPayload = payload;
     renderAgentProgress(payload, framework);
     output.textContent = formatMultiAgentJobProgress(payload, framework);
@@ -326,7 +347,7 @@ async function pollMultiAgentJob(jobId, framework, token) {
 readAgentRunBtn.addEventListener("click", async () => {
   if (!selected || !agentRunSelect.value) return;
   readAgentRunBtn.disabled = true;
-  output.textContent = `正在读取多 Agent 运行记录 ${agentRunSelect.value}...`;
+  output.textContent = `正在读取历史分析记录 ${agentRunSelect.value}...`;
   try {
     const response = await fetch("/api/read-agent-run", {
       method: "POST",
@@ -364,7 +385,7 @@ loadDataBtn.addEventListener("click", async () => {
     syncMinuteButtonState();
     renderStockMetricsFromDatasets(loadedDatasets);
     renderDatasetOptions();
-    dataMeta.textContent = `本地目录：${payload.local_dir}`;
+    dataMeta.textContent = `资料包：已加载`;
     if (loadedDatasets.length) {
       activeDataset = loadedDatasets[0];
       currentPage = 1;
@@ -528,8 +549,13 @@ async function initializeSession() {
     const response = await fetch("/api/session");
     const payload = await readApiPayload(response, "读取会话失败");
     currentSession = payload;
-    if (payload.role === "admin" && adminPanelLink) {
-      adminPanelLink.hidden = false;
+    const isAdminRole = ["admin", "admin_readonly"].includes(payload.role);
+    if (sidebarFooter) {
+      sidebarFooter.classList.toggle("is-admin", isAdminRole);
+      sidebarFooter.classList.toggle("is-user", !isAdminRole);
+    }
+    if (adminPanelLink) {
+      adminPanelLink.hidden = !isAdminRole;
     }
     renderApiKeyPanel(payload);
   } catch {}
@@ -659,7 +685,7 @@ function selectStock(item) {
   resetStockMetrics();
   resetAgentDashboard();
   analyzeBtn.disabled = true;
-  multiAgentBtn.disabled = false;
+  multiAgentBtn.disabled = !analysisModuleAvailable;
   updateDataBtn.disabled = false;
   syncMinuteButtonState();
   loadDataBtn.disabled = false;
@@ -669,7 +695,7 @@ function selectStock(item) {
   loadedDatasets = [];
   activeDataset = null;
   resetTableFilters();
-  output.textContent = "正在读取本地更新状态...";
+  output.textContent = "正在读取本地更新状态；分析模块已封存，只保留历史报告读取。";
   renderAnalysisHistoryOptions([]);
   renderAgentRunOptions([]);
   for (const button of results.querySelectorAll(".result")) {
@@ -713,7 +739,7 @@ async function syncSelectedData(options = {}) {
     const cacheLine = payload.cache_hit
       ? `已复用共享缓存，缓存年龄：${formatDurationText(payload.cache_age_seconds)}。`
       : "本地数据已更新。";
-    output.textContent = `${cacheLine}\n数据源：Tushare\n采集范围：${range}\n每日行情覆盖：${dailySummary}\n当前数据目录：${payload.local_dir}\n股票存储目录：${payload.stock_dir}\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或继续补抓分钟行情。`;
+    output.textContent = `${cacheLine}\n数据源：Tushare\n采集范围：${range}\n每日行情覆盖：${dailySummary}\n资料包：已保存\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或继续补抓分钟行情。`;
     await refreshAnalysisResults();
   } catch (error) {
     if (token === syncToken) {
@@ -724,7 +750,7 @@ async function syncSelectedData(options = {}) {
       updateDataBtn.disabled = false;
       syncMinuteButtonState();
       loadDataBtn.disabled = false;
-      multiAgentBtn.disabled = false;
+      multiAgentBtn.disabled = !analysisModuleAvailable;
       analysisHistorySelect.disabled = false;
       syncReadAnalysisButtonState();
       syncReadAgentRunButtonState();
@@ -756,7 +782,7 @@ async function syncSelectedThsMarketData() {
     syncMinuteButtonState();
     renderStockMetricsFromDatasets(loadedDatasets);
     const result = payload.market_result?.results?.[0] || {};
-    const localText = result.local_merged ? `MongoDB 引用已写入资料包：${result.local_path}` : "本地 Tushare 资料包尚不存在，分钟数据已写入 MongoDB。";
+    const localText = result.local_merged ? "MongoDB 引用已写入资料包。" : "本地 Tushare 资料包尚不存在，分钟数据已写入 MongoDB。";
     const dateRange = result.date_range?.start && result.date_range?.end ? `${result.date_range.start} - ${result.date_range.end}` : result.trade_date || "-";
     const pageText = result.requested_pages === "all"
       ? `全部可取页；实际 ${result.pages_fetched ?? "-"} 页 × ${result.page_size ?? "-"} 根/页${result.source_exhausted ? "；已到数据源尽头" : ""}`
@@ -779,7 +805,7 @@ async function syncSelectedThsMarketData() {
       updateDataBtn.disabled = false;
       syncMinuteButtonState();
       loadDataBtn.disabled = false;
-      multiAgentBtn.disabled = false;
+      multiAgentBtn.disabled = !analysisModuleAvailable;
       analysisHistorySelect.disabled = false;
       syncReadAnalysisButtonState();
       syncReadAgentRunButtonState();
@@ -849,7 +875,7 @@ async function refreshAgentRuns() {
       body: JSON.stringify({ ts_code: selected.ts_code, analysis_type: framework.key }),
     });
     const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error || "读取多 Agent 历史失败");
+    if (!payload.ok) throw new Error(payload.error || "读取分析历史失败");
     renderAgentRunOptions(payload.items || []);
   } catch {
     renderAgentRunOptions([]);
@@ -860,7 +886,7 @@ async function refreshAgentRuns() {
 
 function renderAgentRunOptions(items) {
   if (!items.length) {
-    agentRunSelect.innerHTML = `<option value="">暂无多Agent历史</option>`;
+    agentRunSelect.innerHTML = `<option value="">暂无分析历史</option>`;
     readAgentRunBtn.disabled = true;
     return;
   }
@@ -871,7 +897,7 @@ function renderAgentRunOptions(items) {
 }
 
 function syncReadAgentRunButtonState() {
-  const hasHistory = agentRunSelect.options.length > 0 && agentRunSelect.options[0].textContent !== "暂无多Agent历史";
+  const hasHistory = agentRunSelect.options.length > 0 && agentRunSelect.options[0].textContent !== "暂无分析历史";
   readAgentRunBtn.disabled = !selected || !hasHistory;
 }
 
@@ -959,14 +985,65 @@ function resetStockMetrics() {
 function renderStockMetricsFromDatasets(datasets) {
   const dailyBasic = latestRecord(findDataset(datasets, "daily_basic")?.records || [], "trade_date");
   const daily = latestRecord(findDataset(datasets, "daily")?.records || [], "trade_date");
-  const latestPrice = firstFinite(dailyBasic?.close, daily?.close);
-  const pe = firstFinite(dailyBasic?.pe_ttm, dailyBasic?.pe);
-  const pb = firstFinite(dailyBasic?.pb);
-  const dividend = firstFinite(dailyBasic?.dv_ttm);
+  const latestIncome = latestRecord(findDataset(datasets, "income")?.records || [], "end_date");
+  const latestBalance = latestRecord(findDataset(datasets, "balancesheet")?.records || [], "end_date");
+  const valuationRecords = latestValuationRecords(datasets);
+  const latestPrice = firstFinite(valueByAliases(dailyBasic, METRIC_ALIASES.close), valueByAliases(daily, METRIC_ALIASES.close));
+  const marketCap = firstFinite(...valuationRecords.map((row) => valueByAliases(row, METRIC_ALIASES.marketCap)));
+  const pe = firstFinite(
+    ...valuationRecords.map((row) => valueByAliases(row, METRIC_ALIASES.pe)),
+    ratioFromWanMarketCap(marketCap, valueByAliases(latestIncome, METRIC_ALIASES.profit)),
+  );
+  const pb = firstFinite(
+    ...valuationRecords.map((row) => valueByAliases(row, METRIC_ALIASES.pb)),
+    ratioFromWanMarketCap(marketCap, valueByAliases(latestBalance, METRIC_ALIASES.equity)),
+  );
+  const dividend = firstFinite(...valuationRecords.map((row) => valueByAliases(row, METRIC_ALIASES.dividend)));
   if (metricLatestPrice) metricLatestPrice.textContent = formatMetric(latestPrice, 2);
   if (metricPe) metricPe.textContent = formatMetric(pe, 2);
   if (metricPb) metricPb.textContent = formatMetric(pb, 2);
   if (metricDividend) metricDividend.textContent = Number.isFinite(dividend) ? `${formatMetric(dividend, 2)}%` : "-";
+}
+
+const METRIC_ALIASES = {
+  close: ["close", "latest_price", "price", "收盘价", "最新价", "价格"],
+  pe: ["pe_ttm", "pe", "市盈率ttm", "滚动市盈率", "市盈率", "动态市盈率"],
+  pb: ["pb", "市净率"],
+  dividend: ["dv_ttm", "dv_ratio", "dividend_yield", "股息率", "滚动股息率"],
+  marketCap: ["total_mv", "market_cap", "total_market_value", "总市值", "市值"],
+  profit: ["n_income_attr_p", "n_income", "net_profit", "parent_netprofit", "归母净利润", "净利润"],
+  equity: ["total_hldr_eqy_exc_min_int", "total_hldr_eqy_inc_min_int", "total_equity", "净资产", "股东权益合计", "所有者权益合计"],
+};
+
+function latestValuationRecords(datasets) {
+  return ["daily_basic", "valuation", "daily", "fina_indicator", "stock_basic"]
+    .map((key) => latestRecord(findDataset(datasets, key)?.records || [], key === "daily_basic" || key === "daily" ? "trade_date" : "end_date"))
+    .filter(Boolean);
+}
+
+function valueByAliases(row, aliases) {
+  if (!row) return NaN;
+  for (const key of aliases) {
+    const value = toNumber(row[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  const entries = Object.entries(row);
+  for (const key of aliases) {
+    const normalized = normalizeMetricKey(key);
+    const match = entries.find(([name]) => normalizeMetricKey(name) === normalized);
+    const value = toNumber(match?.[1]);
+    if (Number.isFinite(value)) return value;
+  }
+  return NaN;
+}
+
+function normalizeMetricKey(value) {
+  return String(value || "").toLowerCase().replace(/[\s_\-（）()]/g, "");
+}
+
+function ratioFromWanMarketCap(marketCapWan, denominatorYuan) {
+  if (!Number.isFinite(marketCapWan) || !Number.isFinite(denominatorYuan) || denominatorYuan === 0) return NaN;
+  return (marketCapWan * 10000) / denominatorYuan;
 }
 
 function findDataset(datasets, key) {
@@ -1390,7 +1467,7 @@ async function checkSelectedStatus() {
       const snapshotCount = payload.metadata?.snapshots?.length || 0;
       selectedHasDailyData = Number(payload.metadata?.dataset_rows?.daily || 0) > 0;
       syncMinuteButtonState();
-      output.textContent = `本地已有 ${selected.name}（${selected.ts_code}）的数据。\n上次更新时间：${formatUpdateTime(payload.updated_at)}\n距离现在：${payload.age_text}\n当前数据目录：${payload.local_dir}\n历史快照：${snapshotCount} 个\n\n你可以直接点击“读取数据”查看表格，点击“读取分析”加载已生成报告，也可以点击“更新数据”保存新版本并归档旧版本。`;
+      output.textContent = `本地已有 ${selected.name}（${selected.ts_code}）的数据。\n上次更新时间：${formatUpdateTime(payload.updated_at)}\n距离现在：${payload.age_text}\n资料包：已保存\n历史快照：${snapshotCount} 个\n\n你可以直接点击“读取数据”查看表格，点击“读取分析”加载已生成报告，也可以点击“更新数据”保存新版本并归档旧版本。`;
     } else {
       selectedHasDailyData = false;
       syncMinuteButtonState();
@@ -1448,12 +1525,15 @@ async function loadAnalysisFrameworks() {
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || "读取分析类型失败");
     analysisFrameworks = payload.items?.length ? payload.items : defaultAnalysisFrameworks;
+    analysisModuleAvailable = Boolean(payload.analysis_module?.available);
   } catch {
     analysisFrameworks = defaultAnalysisFrameworks;
+    analysisModuleAvailable = false;
   }
   analysisTypeSelect.innerHTML = analysisFrameworks
     .map((item) => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)}</option>`)
     .join("");
+  initializeAnalysisModuleState();
 }
 
 function selectedAnalysisFramework() {
@@ -2545,7 +2625,9 @@ function labelForKey(columns, key) {
 
 function toNumber(value) {
   if (value === null || value === undefined || value === "") return NaN;
-  const number = Number(value);
+  const text = String(value).trim();
+  if (!text || text === "-" || text === "--") return NaN;
+  const number = Number(text.replaceAll(",", "").replace(/%$/, ""));
   return Number.isFinite(number) ? number : NaN;
 }
 

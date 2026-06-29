@@ -1,0 +1,28 @@
+from stock_pipeline import stock_storage
+from stock_pipeline.utils import write_json
+
+
+def test_list_local_stock_summaries_uses_metadata_without_full_data(monkeypatch, tmp_path):
+    monkeypatch.setattr(stock_storage, "LOCAL_DATA_DIR", tmp_path)
+    stock_dir = tmp_path / "000001.SZ"
+    current_dir = stock_dir / "current"
+    current_dir.mkdir(parents=True)
+    (current_dir / "full_data.json").write_text("{not valid json", encoding="utf-8")
+    write_json(
+        stock_dir / "metadata.json",
+        {
+            "ts_code": "000001.SZ",
+            "updated_at": "20260628_120000",
+            "date_range": {"start_date": "20200101", "end_date": "20260628"},
+            "stock_basic": {"name": "平安银行", "industry": "银行", "market": "主板"},
+            "dataset_rows": {"daily": 10, "daily_basic": 10, "minute_1m": 3},
+        },
+    )
+
+    summary = stock_storage.list_local_stock_summaries()
+
+    assert summary["count"] == 1
+    assert summary["total_dataset_rows"] == 23
+    assert summary["total_minute_rows"] == 3
+    assert summary["items"][0]["name"] == "平安银行"
+    assert summary["items"][0]["industry"] == "银行"

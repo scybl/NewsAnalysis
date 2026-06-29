@@ -144,5 +144,6 @@ ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && docker compose -f d
 
 echo "Waiting for ${DEPLOY_HEALTH_URL}"
 ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "for attempt in \$(seq 1 '${DEPLOY_HEALTH_RETRIES}'); do if curl --fail --silent --show-error '${DEPLOY_HEALTH_URL}' >/dev/null; then exit 0; fi; sleep 2; done; echo 'Health check failed: ${DEPLOY_HEALTH_URL}' >&2; cd '${DEPLOY_PATH}' && docker compose -f docker-compose.prod.yml logs --tail=100 web >&2; exit 1"
+ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}'; for attempt in \$(seq 1 20); do if docker compose -f docker-compose.prod.yml exec -T news-crawler news-crawler health >/dev/null 2>&1; then exit 0; fi; sleep 3; done; echo 'NewsCrawler health check failed' >&2; docker compose -f docker-compose.prod.yml logs --tail=100 news-crawler >&2; exit 1"
 
 echo "Deployed ${RELEASE_VERSION} to ${SSH_TARGET}:${DEPLOY_PATH}"

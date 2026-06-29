@@ -9,6 +9,8 @@ const newsDaysSelect = document.querySelector("#newsDaysSelect");
 const newsPageSizeSelect = document.querySelector("#newsPageSizeSelect");
 const newsRefreshBtn = document.querySelector("#newsRefreshBtn");
 const newsExportBtn = document.querySelector("#newsExportBtn");
+const newsRefetchBtn = document.querySelector("#newsRefetchBtn");
+const newsRefetchStatus = document.querySelector("#newsRefetchStatus");
 const newsResetBtn = document.querySelector("#newsResetBtn");
 const newsPrevBtn = document.querySelector("#newsPrevBtn");
 const newsNextBtn = document.querySelector("#newsNextBtn");
@@ -22,12 +24,6 @@ const dataSourceMeta = document.querySelector("#dataSourceMeta");
 const dataSourceStats = document.querySelector("#dataSourceStats");
 const dataSourceProviders = document.querySelector("#dataSourceProviders");
 const standardDataTable = document.querySelector("#standardDataTable");
-const kaipanlaMeta = document.querySelector("#kaipanlaMeta");
-const kaipanlaFeatureSelect = document.querySelector("#kaipanlaFeatureSelect");
-const kaipanlaParamsInput = document.querySelector("#kaipanlaParamsInput");
-const kaipanlaValidateBtn = document.querySelector("#kaipanlaValidateBtn");
-const kaipanlaRunBtn = document.querySelector("#kaipanlaRunBtn");
-const kaipanlaOutput = document.querySelector("#kaipanlaOutput");
 
 const state = {
   page: 1,
@@ -45,34 +41,76 @@ const stockState = {
   totalMinuteRows: 0,
 };
 
-const kaipanlaState = {
-  features: [],
-};
-
 const dataSourceState = {
   providers: [],
   types: [],
   coverage: {},
   summary: {},
 };
+const STOCK_PROVIDER_KEYS = new Set(["stock_data", "eastmoney", "akshare", "tushare", "tencent_fallback"]);
+const STOCK_STANDARD_CATEGORIES = new Set(["个股"]);
+const hasNewsLibrary = Boolean(newsList);
+const hasStockLibrary = Boolean(stockDataTable);
 
 let searchTimer = null;
 let stockSearchTimer = null;
+let newsPageAdminReadonly = false;
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  await loadAdminSession();
   bindEvents();
-  loadDataSources();
-  loadStockData();
-  loadKaipanlaFeatures();
-  loadNews();
+  if (hasStockLibrary) {
+    loadDataSources();
+    loadStockData();
+  }
+  if (hasNewsLibrary) {
+    loadNews();
+  }
+  applyNewsAdminReadonlyMode();
 });
+
+async function loadAdminSession() {
+  try {
+    const response = await fetch("/api/session");
+    const payload = await readApiPayload(response, "读取会话失败");
+    if (!payload.authenticated) {
+      window.location.href = "/login";
+      return;
+    }
+    if (!["admin", "admin_readonly"].includes(payload.role)) {
+      window.location.href = "/";
+      return;
+    }
+    newsPageAdminReadonly = payload.role === "admin_readonly";
+  } catch {
+    window.location.href = "/login";
+  }
+}
+
+function applyNewsAdminReadonlyMode() {
+  if (!newsPageAdminReadonly) return;
+  if (!document.querySelector(".admin-readonly-banner")) {
+    const banner = document.createElement("div");
+    banner.className = "admin-readonly-banner";
+    banner.textContent = "只读展示模式：可以查看股票数据和新闻数据，但补抓操作已禁用。";
+    document.querySelector(".admin-workspace")?.prepend(banner);
+  }
+  [newsRefetchBtn].forEach((node) => {
+    if (node) node.disabled = true;
+  });
+}
 
 function bindEvents() {
   newsRefreshBtn?.addEventListener("click", () => {
-    loadDataSources();
-    loadStockData();
-    loadNews();
+    if (hasStockLibrary) {
+      loadDataSources();
+      loadStockData();
+    }
+    if (hasNewsLibrary) {
+      loadNews();
+    }
   });
+  newsRefetchBtn?.addEventListener("click", () => runNewsRefetch());
   newsExportBtn?.addEventListener("click", () => exportCurrentPage());
   newsResetBtn?.addEventListener("click", () => {
     newsSearchInput.value = "";
@@ -81,31 +119,31 @@ function bindEvents() {
     newsDaysSelect.value = "30";
     newsPageSizeSelect.value = "20";
     state.page = 1;
-    loadNews();
+    if (hasNewsLibrary) loadNews();
   });
   newsPrevBtn?.addEventListener("click", () => {
     if (state.page > 1) {
       state.page -= 1;
-      loadNews();
+      if (hasNewsLibrary) loadNews();
     }
   });
   newsNextBtn?.addEventListener("click", () => {
     if (state.page < state.pages) {
       state.page += 1;
-      loadNews();
+      if (hasNewsLibrary) loadNews();
     }
   });
   [newsPublisherSelect, newsTypeSelect, newsDaysSelect, newsPageSizeSelect].forEach((control) => {
     control?.addEventListener("change", () => {
       state.page = 1;
-      loadNews();
+      if (hasNewsLibrary) loadNews();
     });
   });
   newsSearchInput?.addEventListener("input", () => {
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(() => {
       state.page = 1;
-      loadNews();
+      if (hasNewsLibrary) loadNews();
     }, 280);
   });
   stockDataSearchInput?.addEventListener("input", () => {
@@ -113,9 +151,6 @@ function bindEvents() {
     stockSearchTimer = window.setTimeout(renderStockData, 160);
   });
   stockDataSortSelect?.addEventListener("change", renderStockData);
-  kaipanlaFeatureSelect?.addEventListener("change", syncKaipanlaParams);
-  kaipanlaValidateBtn?.addEventListener("click", validateKaipanlaIntegration);
-  kaipanlaRunBtn?.addEventListener("click", runKaipanlaFeature);
 }
 
 async function loadDataSources() {
@@ -127,12 +162,18 @@ async function loadDataSources() {
     if (!response.ok || payload.ok === false) {
       throw new Error(payload.error || "读取数据源失败");
     }
-    dataSourceState.providers = payload.providers || [];
-    dataSourceState.types = payload.types || [];
+    dataSourceState.providers = (payload.providers || []).filter((item) => STOCK_PROVIDER_KEYS.has(item.key));
+    dataSourceState.types = (payload.types || []).filter((item) => STOCK_STANDARD_CATEGORIES.has(item.category));
     dataSourceState.coverage = payload.coverage || {};
-    dataSourceState.summary = payload.summary || {};
+    dataSourceState.summary = {
+      provider_count: dataSourceState.providers.length,
+      active_count: dataSourceState.providers.filter((item) => item.status === "active").length,
+      archived_count: dataSourceState.providers.filter((item) => item.status === "archived").length,
+      planned_count: dataSourceState.providers.filter((item) => item.status === "planned").length,
+      standard_type_count: dataSourceState.types.length,
+    };
     renderDataSources();
-    dataSourceMeta.textContent = `已注册 ${dataSourceState.summary.provider_count || 0} 个来源，${dataSourceState.summary.standard_type_count || 0} 类标准数据`;
+    dataSourceMeta.textContent = `已注册 ${dataSourceState.summary.provider_count || 0} 个股票来源，${dataSourceState.summary.standard_type_count || 0} 类股票标准数据`;
   } catch (error) {
     dataSourceMeta.textContent = `读取失败：${error.message}`;
     if (dataSourceProviders) dataSourceProviders.innerHTML = `<div class="news-empty is-error">${escapeHtml(error.message)}</div>`;
@@ -152,8 +193,8 @@ function renderDataSourceStats() {
   const cards = [
     ["活跃来源", summary.active_count ?? 0, "当前可用于新数据"],
     ["封存来源", summary.archived_count ?? 0, "保留旧数据，不默认抓取"],
-    ["本地股票", coverage.local_stock_count ?? 0, "local_data/current"],
-    ["开盘啦记录", coverage.kaipanla_record_count ?? 0, `${coverage.kaipanla_recorded_features || 0} 类功能已有记录`],
+    ["本地股票", coverage.stock_count ?? 0, "数据库资料包"],
+    ["标准类型", summary.standard_type_count ?? 0, "股票 / 财务"],
   ];
   dataSourceStats.innerHTML = cards
     .map(
@@ -232,7 +273,7 @@ function renderStandardDataRow(item) {
         <p>${escapeHtml(item.description || "")}</p>
       </td>
       <td>${escapeHtml(item.category || "-")}</td>
-      <td><code>${escapeHtml(primary)}</code></td>
+      <td>${escapeHtml(primary)}</td>
       <td>${escapeHtml((item.priority || []).join(" > ") || "-")}</td>
       <td><span class="data-type-status ${item.needs_provider ? "is-missing" : "is-ok"}">${escapeHtml(status)}</span></td>
     </tr>
@@ -268,7 +309,7 @@ function renderStockStats() {
   if (!stockDataStats) return;
   const latest = stockState.items[0]?.updated_at || "-";
   const cards = [
-    ["股票资料包", stockState.count, "local_data/current"],
+    ["股票资料包", stockState.count, "数据库资料包"],
     ["数据集总行数", formatNumber(stockState.totalDatasetRows), "按 metadata 统计"],
     ["分钟行情行数", formatNumber(stockState.totalMinuteRows), "MongoDB 引用"],
     ["最近更新", latest, "按 updated_at 排序"],
@@ -347,87 +388,86 @@ function compareStockRows(left, right, key) {
   return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
 }
 
-async function loadKaipanlaFeatures() {
-  if (!kaipanlaFeatureSelect) return;
-  kaipanlaMeta.textContent = "正在读取功能列表...";
+async function runNewsRefetch() {
+  if (newsPageAdminReadonly) return;
+  const source = newsPublisherSelect.value || "all";
+  const sourceText = source === "all" ? "全部可用新闻源" : newsPublisherLabel(source);
+  const confirmed = window.confirm(`将通过 NewsCrawler 重新抓取 ${sourceText} 的最新新闻，并补充写入 MongoDB 新闻库。确认执行？`);
+  if (!confirmed) return;
+  newsRefetchBtn.disabled = true;
+  if (newsRefetchStatus) newsRefetchStatus.textContent = "补抓状态：正在启动...";
   try {
-    const response = await fetch("/api/admin/kaipanla/features");
-    const payload = await response.json();
-    if (!response.ok || payload.ok === false) {
-      throw new Error(payload.error || "读取开盘啦功能失败");
-    }
-    kaipanlaState.features = payload.items || [];
-    kaipanlaFeatureSelect.innerHTML = kaipanlaState.features
-      .map((item) => `<option value="${escapeAttr(item.key)}">${escapeHtml(item.category)} · ${escapeHtml(item.label)}</option>`)
-      .join("");
-    syncKaipanlaParams();
-    kaipanlaMeta.textContent = `已集成 ${kaipanlaState.features.length} 个功能`;
-  } catch (error) {
-    kaipanlaMeta.textContent = `读取失败：${error.message}`;
-    kaipanlaOutput.textContent = error.message;
-  }
-}
-
-function syncKaipanlaParams() {
-  const feature = selectedKaipanlaFeature();
-  if (!feature || !kaipanlaParamsInput) return;
-  kaipanlaParamsInput.value = JSON.stringify(feature.default_params || {}, null, 2);
-  kaipanlaOutput.textContent = `${feature.description || ""}${feature.requires ? `\n需要：${feature.requires}` : ""}`;
-}
-
-async function validateKaipanlaIntegration() {
-  if (!kaipanlaOutput) return;
-  kaipanlaValidateBtn.disabled = true;
-  kaipanlaOutput.textContent = "正在验证开盘啦功能映射...";
-  try {
-    const response = await fetch("/api/admin/kaipanla/validate");
-    const payload = await response.json();
-    if (!response.ok || payload.ok === false) {
-      throw new Error(payload.error || "验证失败");
-    }
-    kaipanlaOutput.textContent = JSON.stringify(payload, null, 2);
-  } catch (error) {
-    kaipanlaOutput.textContent = `验证失败：${error.message}`;
-  } finally {
-    kaipanlaValidateBtn.disabled = false;
-  }
-}
-
-async function runKaipanlaFeature() {
-  const feature = selectedKaipanlaFeature();
-  if (!feature || !kaipanlaOutput) return;
-  kaipanlaRunBtn.disabled = true;
-  kaipanlaOutput.textContent = `正在运行 ${feature.label}...`;
-  try {
-    const params = JSON.parse(kaipanlaParamsInput.value || "{}");
-    if (!params || Array.isArray(params) || typeof params !== "object") {
-      throw new Error("参数必须是 JSON object");
-    }
-    const response = await fetch("/api/admin/kaipanla/run", {
+    const payload = {
+      approved: true,
+      source,
+      type: newsTypeSelect.value || "",
+      request_delay: 0.5,
+    };
+    const response = await fetch("/api/admin/news-library/refetch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ feature: feature.key, params }),
+      body: JSON.stringify(payload),
     });
-    const payload = await response.json();
-    if (!response.ok || payload.ok === false) {
-      throw new Error(payload.error || "运行失败");
-    }
-    kaipanlaOutput.textContent = JSON.stringify(payload, null, 2);
+    const result = await readNewsAdminPayload(response, "启动新闻补抓失败");
+    renderNewsRefetchStatus(result.refetch || {});
+    await pollNewsRefetch();
   } catch (error) {
-    kaipanlaOutput.textContent = `运行失败：${error.message}`;
+    if (newsRefetchStatus) newsRefetchStatus.textContent = `补抓失败：${error.message}`;
   } finally {
-    kaipanlaRunBtn.disabled = false;
+    newsRefetchBtn.disabled = false;
   }
 }
 
-function selectedKaipanlaFeature() {
-  const key = kaipanlaFeatureSelect?.value || "";
-  return kaipanlaState.features.find((item) => item.key === key) || null;
+async function pollNewsRefetch() {
+  for (let i = 0; i < 60; i += 1) {
+    await sleep(2000);
+    const response = await fetch("/api/admin/news-library/refetch");
+    const payload = await readNewsAdminPayload(response, "读取新闻补抓状态失败");
+    const refetch = payload.refetch || {};
+    renderNewsRefetchStatus(refetch);
+    if (!["running", "queued"].includes(refetch.status)) {
+      await loadNews();
+      return;
+    }
+  }
+}
+
+function renderNewsRefetchStatus(refetch) {
+  if (!newsRefetchStatus) return;
+  const status = refetch.status || "idle";
+  if (status === "running") {
+    newsRefetchStatus.textContent = `补抓状态：运行中 · ${refetch.source || "all"} · ${refetch.started_at || "-"}`;
+    return;
+  }
+  if (status === "succeeded") {
+    newsRefetchStatus.textContent = `补抓状态：完成 · ${refetch.finished_at || "-"}，已刷新新闻库。`;
+    return;
+  }
+  if (status === "failed") {
+    newsRefetchStatus.textContent = `补抓状态：失败 · ${refetch.error || "请查看任务日志"}`;
+    return;
+  }
+  newsRefetchStatus.textContent = "补抓状态：空闲";
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function readNewsAdminPayload(response, fallbackMessage) {
+  const payload = await response.json();
+  if (response.status === 401) {
+    window.location.href = "/login";
+    throw new Error("登录状态已失效");
+  }
+  if (!response.ok || payload.ok === false) throw new Error(payload.error || fallbackMessage);
+  return payload;
 }
 
 async function loadNews() {
+  if (!hasNewsLibrary || !newsMeta || !newsList) return;
   newsMeta.textContent = "正在读取 MongoDB 新闻库...";
-  newsRefreshBtn.disabled = true;
+  if (newsRefreshBtn) newsRefreshBtn.disabled = true;
   try {
     const params = new URLSearchParams({
       page: String(state.page),
@@ -457,15 +497,16 @@ async function loadNews() {
   } catch (error) {
     newsMeta.textContent = `读取失败：${error.message}`;
     state.items = [];
-    newsList.innerHTML = `<div class="news-empty is-error">${escapeHtml(error.message)}</div>`;
+    if (newsList) newsList.innerHTML = `<div class="news-empty is-error">${escapeHtml(error.message)}</div>`;
   } finally {
-    newsRefreshBtn.disabled = false;
+    if (newsRefreshBtn) newsRefreshBtn.disabled = false;
   }
 }
 
 function renderDistribution(stats) {
+  if (!newsDistribution) return;
   const publisherItems = (stats.by_publisher || []).map((item) => ({
-    label: item.publisher || "-",
+    label: newsPublisherLabel(item.publisher),
     count: item.count || 0,
   }));
   const typeItems = (stats.by_type || []).map((item) => ({
@@ -508,6 +549,7 @@ function renderDistributionPanel(title, items) {
 }
 
 function renderFilters(filters) {
+  if (!newsPublisherSelect || !newsTypeSelect) return;
   const currentPublisher = newsPublisherSelect.value;
   const currentType = newsTypeSelect.value;
   fillSelect(newsPublisherSelect, "全部来源", filters.publishers || [], currentPublisher);
@@ -515,17 +557,19 @@ function renderFilters(filters) {
 }
 
 function fillSelect(select, label, values, currentValue) {
+  if (!select) return;
   const options = [`<option value="">${label}</option>`].concat(
-    values.map((value) => `<option value="${escapeAttr(value)}">${escapeHtml(value)}</option>`),
+    values.map((value) => `<option value="${escapeAttr(value)}">${escapeHtml(newsPublisherLabel(value))}</option>`),
   );
   select.innerHTML = options.join("");
   select.value = values.includes(currentValue) ? currentValue : "";
 }
 
 function renderStats(stats, payload) {
+  if (!newsStats) return;
   const publisherLines = (stats.by_publisher || [])
     .slice(0, 3)
-    .map((item) => `${item.publisher || "-"} ${item.count || 0}`)
+    .map((item) => `${newsPublisherLabel(item.publisher)} ${item.count || 0}`)
     .join(" / ");
   const cards = [
     ["总文章", stats.total ?? "-", "MongoDB 当前文章总数"],
@@ -559,7 +603,7 @@ function renderItem(item) {
   return `
     <article class="news-item">
       <div class="news-item-meta">
-        <span>${escapeHtml(item.publisher || "-")}</span>
+        <span>${escapeHtml(newsPublisherLabel(item.publisher))}</span>
         <span>${escapeHtml(item.type || "-")}</span>
         <span>${escapeHtml(item.time || "-")}</span>
         ${url}
@@ -574,14 +618,23 @@ function renderItem(item) {
   `;
 }
 
+function newsPublisherLabel(value) {
+  return {
+    tonghuashun: "同花顺新闻",
+    guardian: "Guardian",
+    bloomberg: "Bloomberg",
+  }[value] || value || "-";
+}
+
 function renderPager() {
+  if (!newsPageInfo || !newsPrevBtn || !newsNextBtn) return;
   newsPageInfo.textContent = `第 ${state.page} / ${state.pages} 页，共 ${state.total} 篇`;
   newsPrevBtn.disabled = state.page <= 1;
   newsNextBtn.disabled = state.page >= state.pages;
 }
 
 function exportCurrentPage() {
-  if (!state.items.length) return;
+  if (!hasNewsLibrary || !state.items.length) return;
   const headers = ["time", "publisher", "type", "title", "source", "url", "summary"];
   const rows = state.items.map((item) => headers.map((key) => csvCell(item[key] || "")));
   const csv = [headers.join(","), ...rows.map((row) => row.join(","))].join("\n");

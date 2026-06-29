@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,16 @@ from .analysis_frameworks import ANALYSIS_FRAMEWORKS, build_all_analysis_dossier
 from .config import PROJECT_ROOT
 from .dossier import build_dossier
 from .field_labels import build_table_datasets
+from .local_data_mongo import (
+    list_mongo_stock_codes,
+    read_mongo_analysis_dossier,
+    read_mongo_dossier,
+    read_mongo_full_data,
+    read_mongo_metadata,
+    save_stock_package_to_mongo,
+    sync_current_stock_to_mongo,
+)
+from .market_dimensions import STOCK_COLLECTIONS, STOCK_DATABASE
 from .minute_storage import minute_reference_row_counts, read_external_minute_datasets
 from .tushare_client import TushareClient
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, today_yyyymmdd, write_json
@@ -32,14 +43,62 @@ def snapshots_dir(ts_code: str) -> Path:
     return stock_dir(ts_code) / "snapshots"
 
 
+def read_current_full_data(ts_code: str) -> dict[str, Any]:
+    code = normalize_ts_code(ts_code)
+    ensure_current_layout(code)
+    full_path = current_dir(code) / "full_data.json"
+    if full_path.exists():
+        return read_json(full_path)
+    full_data = read_mongo_full_data(code)
+    if full_data is not None:
+        return full_data
+    raise FileNotFoundError(f"本地和 MongoDB 都没有 {code} 的数据，请先更新数据。")
+
+
+def read_current_metadata(ts_code: str) -> dict[str, Any]:
+    code = normalize_ts_code(ts_code)
+    metadata_path = stock_dir(code) / "metadata.json"
+    if metadata_path.exists():
+        return read_json(metadata_path)
+    return read_mongo_metadata(code) or {}
+
+
+def read_current_dossier(ts_code: str) -> dict[str, Any]:
+    code = normalize_ts_code(ts_code)
+    dossier_path = current_dir(code) / "dossier.json"
+    if dossier_path.exists():
+        return read_json(dossier_path)
+    mongo_dossier = read_mongo_dossier(code)
+    if mongo_dossier is not None:
+        return mongo_dossier
+    return build_dossier(read_current_full_data(code))
+
+
+def read_current_analysis_dossier(ts_code: str, analysis_type: str) -> dict[str, Any]:
+    code = normalize_ts_code(ts_code)
+    framework = get_analysis_framework(analysis_type)
+    path = current_dir(code) / f"{framework.key}_dossier.json"
+    if path.exists():
+        return read_json(path)
+    if framework.key == "value_speculation":
+        legacy = current_dir(code) / "value_speculation_dossier.json"
+        if legacy.exists():
+            return read_json(legacy)
+    mongo_dossier = read_mongo_analysis_dossier(code, framework.key)
+    if mongo_dossier is not None:
+        return mongo_dossier
+    return build_analysis_dossier(framework.key, read_current_dossier(code))
+
+
 def stock_exists(ts_code: str) -> bool:
     ensure_current_layout(ts_code)
-    return (current_dir(ts_code) / "full_data.json").exists()
+    return (current_dir(ts_code) / "full_data.json").exists() or read_mongo_full_data(ts_code) is not None
 
 
 def list_local_stock_codes() -> list[str]:
+    mongo_codes = set(list_mongo_stock_codes())
     if not LOCAL_DATA_DIR.exists():
-        return []
+        return sorted(mongo_codes)
     codes: list[str] = []
     for path in sorted(LOCAL_DATA_DIR.iterdir()):
         if not path.is_dir() or path.name.startswith("."):
@@ -51,7 +110,7 @@ def list_local_stock_codes() -> list[str]:
         if (current_dir(ts_code) / "full_data.json").exists() or (path / "full_data.json").exists():
             ensure_current_layout(ts_code)
             codes.append(ts_code)
-    return codes
+    return sorted(set(codes) | mongo_codes)
 
 
 def list_local_stock_summaries() -> dict[str, Any]:
@@ -59,12 +118,10 @@ def list_local_stock_summaries() -> dict[str, Any]:
     for ts_code in list_local_stock_codes():
         base_dir = stock_dir(ts_code)
         metadata_path = base_dir / "metadata.json"
-        full_path = current_dir(ts_code) / "full_data.json"
-        metadata = read_json(metadata_path) if metadata_path.exists() else {}
-        full_data = read_json(full_path) if full_path.exists() else {}
-        stock_basic = _first_record(full_data.get("datasets", {}).get("stock_basic", []))
+        metadata = read_json(metadata_path) if metadata_path.exists() else (read_mongo_metadata(ts_code) or {})
+        stock_basic = metadata.get("stock_basic") or {}
         dataset_rows = metadata.get("dataset_rows") or {}
-        date_range = metadata.get("date_range") or full_data.get("date_range") or {}
+        date_range = metadata.get("date_range") or {}
         minute_rows = sum(
             int(count or 0)
             for name, count in dataset_rows.items()
@@ -73,7 +130,7 @@ def list_local_stock_summaries() -> dict[str, Any]:
         items.append(
             {
                 "ts_code": ts_code,
-                "name": stock_basic.get("name") or stock_basic.get("fullname") or "",
+                "name": stock_basic.get("name") or stock_basic.get("fullname") or metadata.get("name") or "",
                 "industry": stock_basic.get("industry") or "",
                 "market": stock_basic.get("market") or stock_basic.get("exchange") or "",
                 "updated_at": metadata.get("updated_at") or "",
@@ -106,7 +163,8 @@ def stock_status(code: str) -> dict[str, Any]:
     ensure_current_layout(ts_code)
     base_dir = stock_dir(ts_code)
     metadata_path = base_dir / "metadata.json"
-    if not metadata_path.exists():
+    metadata = read_json(metadata_path) if metadata_path.exists() else (read_mongo_metadata(ts_code) or {})
+    if not metadata:
         return {
             "ok": True,
             "ts_code": ts_code,
@@ -118,7 +176,6 @@ def stock_status(code: str) -> dict[str, Any]:
             "age_text": "本地还没有更新过",
             "metadata": {},
         }
-    metadata = read_json(metadata_path)
     updated_at = metadata.get("updated_at")
     age_seconds = _age_seconds(updated_at)
     return {
@@ -143,8 +200,6 @@ def sync_stock_data(
     max_age_seconds: int | None = None,
 ) -> dict[str, Any]:
     ts_code = normalize_ts_code(code)
-    ensure_current_layout(ts_code)
-    base_dir = stock_dir(ts_code)
     target_dir = current_dir(ts_code)
     if not force and max_age_seconds is not None and stock_exists(ts_code):
         status = stock_status(ts_code)
@@ -156,57 +211,40 @@ def sync_stock_data(
             payload["cache_max_age_seconds"] = max_age_seconds
             return payload
 
-    temp_dir = LOCAL_DATA_DIR / f".{ts_code}.tmp_{timestamp()}"
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    ensure_dir(temp_dir)
-    existing_external_datasets: dict[str, Any] = {}
-    existing_full_path = target_dir / "full_data.json"
-    if existing_full_path.exists():
-        existing_external_datasets = read_json(existing_full_path).get("external_datasets") or {}
-
-    try:
+    existing_external_datasets: dict[str, Any] = (read_mongo_full_data(ts_code) or {}).get("external_datasets") or {}
+    if not existing_external_datasets and (target_dir / "full_data.json").exists():
+        existing_external_datasets = read_json(target_dir / "full_data.json").get("external_datasets") or {}
+    with tempfile.TemporaryDirectory(prefix=f"{ts_code}.", suffix=".stock_collect") as temp_name:
+        temp_dir = Path(temp_name)
         full_data = StockDataCollector(client).collect(ts_code, temp_dir, years=years, full_history=full_history)
         if existing_external_datasets:
             full_data["external_datasets"] = existing_external_datasets
         _validate_full_data(full_data)
         dossier = build_dossier(full_data)
-        analysis_dossiers = build_all_analysis_dossiers(dossier)
+        analysis_dossiers = _build_optional_analysis_dossiers(dossier)
 
-        previous_updated_at = _metadata_updated_at(base_dir / "metadata.json")
-        snapshot_path = archive_current(ts_code, previous_updated_at)
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        ensure_dir(target_dir)
-
-        shutil.move(str(temp_dir / "raw"), str(target_dir / "raw"))
-        write_json(target_dir / "full_data.json", full_data)
-        write_json(target_dir / "dossier.json", dossier)
-        for key, analysis_dossier in analysis_dossiers.items():
-            write_json(target_dir / f"{key}_dossier.json", analysis_dossier)
         updated_at = timestamp()
         metadata = {
             "ts_code": ts_code,
             "years": years,
             "full_history": full_history,
             "updated_at": updated_at,
-            "current_dir": str(target_dir),
-            "latest_snapshot": str(snapshot_path) if snapshot_path else "",
-            "snapshots": list_snapshots(ts_code),
+            "current_dir": _stock_package_uri(ts_code),
+            "latest_snapshot": "",
+            "snapshots": [],
             "date_range": full_data.get("date_range", {}),
+            "stock_basic": _stock_identity(full_data),
             "dataset_rows": {
                 **{name: len(rows) for name, rows in full_data.get("datasets", {}).items()},
                 **minute_reference_row_counts(full_data),
             },
             "fetch_errors": full_data.get("fetch_errors", []),
         }
-        write_json(base_dir / "metadata.json", metadata)
-    finally:
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
+        mongo_sync = _save_stock_package_safe(ts_code, full_data, metadata, dossier=dossier, analysis_dossiers=analysis_dossiers)
     payload = build_local_stock_payload(ts_code)
     payload["cache_hit"] = False
     payload["cache_max_age_seconds"] = max_age_seconds
+    payload["mongo_sync"] = mongo_sync
     return payload
 
 
@@ -249,11 +287,10 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
     ts_code = normalize_ts_code(code)
     ensure_current_layout(ts_code)
     date = target_date or today_yyyymmdd()
-    full_path = current_dir(ts_code) / "full_data.json"
-    if not full_path.exists():
-        return {"ok": False, "ts_code": ts_code, "target_date": date, "status": "failed", "error": "本地资料包不存在，请先全量更新。"}
-
-    full_data = read_json(full_path)
+    try:
+        full_data = read_current_full_data(ts_code)
+    except FileNotFoundError:
+        return {"ok": False, "ts_code": ts_code, "target_date": date, "status": "failed", "error": "本地和 MongoDB 都不存在资料包，请先全量更新。"}
     datasets = full_data.setdefault("datasets", {})
     current_daily = datasets.get("daily", [])
     latest_daily_date = _latest_trade_date(current_daily)
@@ -295,7 +332,6 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
         merged = _merge_trade_date_rows(datasets.get(dataset, []), rows)
         datasets[dataset] = merged
         changed[dataset] = len(rows)
-        write_json(current_dir(ts_code) / "raw" / f"{dataset}.json", {"fields": list(merged[0].keys()) if merged else [], "records": merged})
 
     full_data["date_range"] = {
         **(full_data.get("date_range") or {}),
@@ -303,17 +339,17 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
         "full_history": bool((full_data.get("date_range") or {}).get("full_history", True)),
     }
     full_data["fetch_errors"] = fetch_errors
-    _write_stock_outputs(ts_code, full_data)
-
-    metadata_path = stock_dir(ts_code) / "metadata.json"
-    metadata = read_json(metadata_path) if metadata_path.exists() else {"ts_code": ts_code}
+    dossier = build_dossier(full_data)
+    analysis_dossiers = _build_optional_analysis_dossiers(dossier)
+    metadata = read_current_metadata(ts_code) or {"ts_code": ts_code}
     metadata.update(
         {
             "ts_code": ts_code,
             "updated_at": timestamp(),
-            "current_dir": str(current_dir(ts_code)),
-            "snapshots": list_snapshots(ts_code),
+            "current_dir": _stock_package_uri(ts_code),
+            "snapshots": [],
             "date_range": full_data.get("date_range", {}),
+            "stock_basic": _stock_identity(full_data),
             "dataset_rows": {
                 **{name: len(rows) for name, rows in datasets.items()},
                 **minute_reference_row_counts(full_data),
@@ -324,7 +360,7 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
             "latest_daily_date": _latest_trade_date(datasets.get("daily", [])),
         }
     )
-    write_json(metadata_path, metadata)
+    mongo_sync = _save_stock_package_safe(ts_code, full_data, metadata, dossier=dossier, analysis_dossiers=analysis_dossiers)
     return {
         "ok": True,
         "ts_code": ts_code,
@@ -333,6 +369,7 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
         "latest_daily_date": metadata["latest_daily_date"],
         "changed": changed,
         "fetch_errors": fetch_errors,
+        "mongo_sync": mongo_sync,
     }
 
 
@@ -342,12 +379,8 @@ def build_local_stock_payload(code: str) -> dict[str, Any]:
     base_dir = stock_dir(ts_code)
     target_dir = current_dir(ts_code)
     full_path = target_dir / "full_data.json"
-    if not full_path.exists():
-        raise FileNotFoundError(f"本地还没有 {ts_code} 的数据，请先更新本地数据。")
-
-    full_data = read_json(full_path)
-    metadata_path = base_dir / "metadata.json"
-    metadata = read_json(metadata_path) if metadata_path.exists() else {}
+    full_data = read_current_full_data(ts_code)
+    metadata = read_current_metadata(ts_code)
     table_datasets = build_table_datasets(full_data.get("datasets", {}))
     external_rows = read_external_minute_datasets(full_data, limit=4000)
     external_counts = minute_reference_row_counts(full_data)
@@ -368,6 +401,7 @@ def build_local_stock_payload(code: str) -> dict[str, Any]:
         "analysis_frameworks": list_analysis_frameworks(),
         "analysis_results": list_analysis_results(ts_code),
         "metadata": metadata,
+        "storage_source": "local_file" if full_path.exists() else "mongodb",
         "date_range": full_data.get("date_range", {}),
         "datasets": table_datasets,
         "fetch_errors": full_data.get("fetch_errors", []),
@@ -375,13 +409,51 @@ def build_local_stock_payload(code: str) -> dict[str, Any]:
 
 
 def _write_stock_outputs(ts_code: str, full_data: dict[str, Any]) -> None:
-    target_dir = current_dir(ts_code)
     dossier = build_dossier(full_data)
-    analysis_dossiers = build_all_analysis_dossiers(dossier)
-    write_json(target_dir / "full_data.json", full_data)
-    write_json(target_dir / "dossier.json", dossier)
-    for key, analysis_dossier in analysis_dossiers.items():
-        write_json(target_dir / f"{key}_dossier.json", analysis_dossier)
+    analysis_dossiers = _build_optional_analysis_dossiers(dossier)
+    metadata = read_current_metadata(ts_code) or {"ts_code": normalize_ts_code(ts_code)}
+    _save_stock_package_safe(ts_code, full_data, metadata, dossier=dossier, analysis_dossiers=analysis_dossiers)
+
+
+def _stock_package_uri(ts_code: str) -> str:
+    return f"mongodb://{STOCK_DATABASE}/{STOCK_COLLECTIONS['packages']}/{normalize_ts_code(ts_code)}/current"
+
+
+def _build_optional_analysis_dossiers(dossier: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    try:
+        return build_all_analysis_dossiers(dossier)
+    except (ImportError, RuntimeError, ModuleNotFoundError):
+        return {}
+
+
+def _sync_current_stock_to_mongo_safe(ts_code: str) -> dict[str, Any]:
+    try:
+        return {"ok": True, **sync_current_stock_to_mongo(ts_code)}
+    except Exception as exc:  # noqa: BLE001 - local files remain the source of truth if MongoDB is unavailable.
+        return {"ok": False, "error": str(exc)}
+
+
+def _save_stock_package_safe(
+    ts_code: str,
+    full_data: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    dossier: dict[str, Any] | None = None,
+    analysis_dossiers: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    try:
+        return {
+            "ok": True,
+            **save_stock_package_to_mongo(
+                ts_code,
+                full_data,
+                metadata,
+                dossier=dossier,
+                analysis_dossiers=analysis_dossiers,
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001 - surface Mongo failures without losing the main error context.
+        return {"ok": False, "error": str(exc)}
 
 
 def _latest_trade_date(records: list[dict[str, Any]]) -> str:
@@ -474,6 +546,7 @@ def restore_snapshot(code: str, snapshot_name: str) -> dict[str, Any]:
         "restored_from_snapshot": snapshot_name,
         "snapshots": list_snapshots(ts_code),
         "date_range": full_data.get("date_range", {}),
+        "stock_basic": _stock_identity(full_data),
         "dataset_rows": {
             **{name: len(rows) for name, rows in full_data.get("datasets", {}).items()},
             **minute_reference_row_counts(full_data),
@@ -481,7 +554,9 @@ def restore_snapshot(code: str, snapshot_name: str) -> dict[str, Any]:
         "fetch_errors": full_data.get("fetch_errors", []),
     }
     write_json(stock_dir(ts_code) / "metadata.json", metadata)
-    return build_local_stock_payload(ts_code)
+    payload = build_local_stock_payload(ts_code)
+    payload["mongo_sync"] = _sync_current_stock_to_mongo_safe(ts_code)
+    return payload
 
 
 def list_snapshots(code: str) -> list[dict[str, str]]:
@@ -508,8 +583,11 @@ def analysis_dossier_path(code: str, analysis_type: str) -> Path:
             return legacy
     dossier_path = current_dir(ts_code) / "dossier.json"
     if dossier_path.exists():
-        write_json(path, build_analysis_dossier(framework.key, read_json(dossier_path)))
-        return path
+        try:
+            write_json(path, build_analysis_dossier(framework.key, read_json(dossier_path)))
+            return path
+        except (ImportError, RuntimeError, ModuleNotFoundError) as exc:
+            raise FileNotFoundError(f"分析项目不可用，无法生成 {framework.label} 资料包。") from exc
     raise FileNotFoundError(f"本地还没有 {framework.label} 资料包，请先更新本地数据。")
 
 
@@ -625,6 +703,20 @@ def _metadata_updated_at(path: Path) -> str | None:
     if not path.exists():
         return None
     return read_json(path).get("updated_at")
+
+
+def _stock_identity(full_data: dict[str, Any]) -> dict[str, Any]:
+    stock_basic = _first_record((full_data.get("datasets") or {}).get("stock_basic", []))
+    return {
+        "ts_code": stock_basic.get("ts_code") or full_data.get("ts_code") or "",
+        "symbol": stock_basic.get("symbol") or "",
+        "name": stock_basic.get("name") or "",
+        "fullname": stock_basic.get("fullname") or "",
+        "industry": stock_basic.get("industry") or "",
+        "area": stock_basic.get("area") or "",
+        "market": stock_basic.get("market") or stock_basic.get("exchange") or "",
+        "list_date": stock_basic.get("list_date") or "",
+    }
 
 
 def _validate_full_data(full_data: dict[str, Any]) -> None:

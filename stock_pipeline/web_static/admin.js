@@ -43,6 +43,9 @@ const spiderSourceTasks = document.querySelector("#spiderSourceTasks");
 const spiderTypesSelect = document.querySelector("#spiderTypesSelect");
 const spiderStockCodeField = document.querySelector("#spiderStockCodeField");
 const spiderStockCode = document.querySelector("#spiderStockCode");
+const spiderStockTsCode = document.querySelector("#spiderStockTsCode");
+const spiderStockSuggestions = document.querySelector("#spiderStockSuggestions");
+const spiderStockSelection = document.querySelector("#spiderStockSelection");
 const spiderMaxPages = document.querySelector("#spiderMaxPages");
 const spiderThreads = document.querySelector("#spiderThreads");
 const spiderArticleSleep = document.querySelector("#spiderArticleSleep");
@@ -61,11 +64,60 @@ const dailyStockListCount = document.querySelector("#dailyStockListCount");
 const dailyMarketLastDate = document.querySelector("#dailyMarketLastDate");
 const dailyMarketUpdated = document.querySelector("#dailyMarketUpdated");
 const dailyMarketSkipped = document.querySelector("#dailyMarketSkipped");
+const idlePrefetchStatus = document.querySelector("#idlePrefetchStatus");
+const idlePrefetchEnabled = document.querySelector("#idlePrefetchEnabled");
+const idlePrefetchSeconds = document.querySelector("#idlePrefetchSeconds");
+const saveIdlePrefetchBtn = document.querySelector("#saveIdlePrefetchBtn");
+const runIdlePrefetchNowBtn = document.querySelector("#runIdlePrefetchNowBtn");
+const idlePrefetchIdle = document.querySelector("#idlePrefetchIdle");
+const idlePrefetchRemaining = document.querySelector("#idlePrefetchRemaining");
+const idlePrefetchLastRequest = document.querySelector("#idlePrefetchLastRequest");
+const idlePrefetchLastRun = document.querySelector("#idlePrefetchLastRun");
+const idlePrefetchLastResult = document.querySelector("#idlePrefetchLastResult");
+const kaipanlaMeta = document.querySelector("#kaipanlaMeta");
+const kaipanlaFeatureSelect = document.querySelector("#kaipanlaFeatureSelect");
+const kaipanlaFeatureGrid = document.querySelector("#kaipanlaFeatureGrid");
+const kaipanlaParamsInput = document.querySelector("#kaipanlaParamsInput");
+const kaipanlaValidateBtn = document.querySelector("#kaipanlaValidateBtn");
+const kaipanlaSaveBtn = document.querySelector("#kaipanlaSaveBtn");
+const kaipanlaRunBtn = document.querySelector("#kaipanlaRunBtn");
+const kaipanlaOutput = document.querySelector("#kaipanlaOutput");
+const kaipanlaEnabled = document.querySelector("#kaipanlaEnabled");
+const kaipanlaTime = document.querySelector("#kaipanlaTime");
+const kaipanlaStateText = document.querySelector("#kaipanlaStateText");
+const kaipanlaTimeText = document.querySelector("#kaipanlaTimeText");
+const kaipanlaFeatureCount = document.querySelector("#kaipanlaFeatureCount");
+const kaipanlaLastDate = document.querySelector("#kaipanlaLastDate");
+const kaipanlaLastResult = document.querySelector("#kaipanlaLastResult");
+const kaipanlaRecordsTable = document.querySelector("#kaipanlaRecordsTable");
 
 let spiderPollTimer = null;
+let spiderStockSearchTimer = null;
+let adminReadonly = false;
+const kaipanlaState = {
+  features: [],
+  scheduler: {},
+  paramsByFeature: {},
+  currentParamFeature: "",
+};
 
 initializeTheme();
 initializeAdminPage();
+
+spiderStockCode?.addEventListener("input", () => {
+  if (spiderStockTsCode) spiderStockTsCode.value = "";
+  if (spiderStockSelection) spiderStockSelection.textContent = "输入关键词并选择一只股票";
+  window.clearTimeout(spiderStockSearchTimer);
+  spiderStockSearchTimer = window.setTimeout(searchMarketStocks, 220);
+});
+
+spiderStockCode?.addEventListener("focus", () => {
+  if (spiderStockCode.value.trim() && !spiderStockTsCode?.value) searchMarketStocks();
+});
+
+document.addEventListener("click", (event) => {
+  if (!spiderStockCodeField?.contains(event.target)) hideMarketStockSuggestions();
+});
 
 function initializeTheme() {
   let savedTheme = "light";
@@ -85,7 +137,7 @@ function applyTheme(theme) {
 }
 
 function approveDataFetch(message) {
-  return window.confirm(`${message}\n\n该操作会访问外部数据源或启动爬虫任务。确认执行？`);
+  return window.confirm(`${message}\n\n该操作会访问外部数据源。确认执行？`);
 }
 
 themeToggleBtn?.addEventListener("click", () => {
@@ -238,7 +290,7 @@ startSpiderBtn?.addEventListener("click", async () => {
     const selectedSource = spiderSourcesSelect?.querySelector("input[type='radio']:checked")?.value || "ths";
     if (!approveDataFetch(`启动 ${sourceLabel(selectedSource)} 爬虫`)) return;
     const selectedTypes = [...spiderTypesSelect.querySelectorAll("input[type='checkbox']:checked")].map((input) => input.value);
-    const response = await fetch("/api/admin/spider/start", {
+    const response = await fetch("/api/admin/market-fetch/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -249,11 +301,11 @@ startSpiderBtn?.addEventListener("click", async () => {
         article_sleep: spiderArticleSleep.value || "3,5",
         page_sleep: spiderPageSleep.value || "5,10",
         new_only: spiderNewOnly.checked,
-        stock_code: spiderStockCode?.value || "",
+        stock_code: selectedMarketStockCode(),
         approved: true,
       }),
     });
-    await readApiPayload(response, "启动爬虫失败");
+    await readApiPayload(response, "启动行情补采失败");
     started = true;
     await refreshSpiderConsole();
     startSpiderPolling();
@@ -268,12 +320,12 @@ stopSpiderBtn?.addEventListener("click", async () => {
   stopSpiderBtn.disabled = true;
   try {
     const selectedSource = getSelectedSpiderSource();
-    const response = await fetch("/api/admin/spider/stop", {
+    const response = await fetch("/api/admin/market-fetch/stop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source: selectedSource }),
     });
-    await readApiPayload(response, "停止爬虫失败");
+    await readApiPayload(response, "停止行情补采失败");
     await refreshSpiderConsole();
   } catch (error) {
     spiderStatus.textContent = `停止失败：${error.message}`;
@@ -320,6 +372,51 @@ runDailyMarketNowBtn?.addEventListener("click", async () => {
   }
 });
 
+saveIdlePrefetchBtn?.addEventListener("click", async () => {
+  saveIdlePrefetchBtn.disabled = true;
+  try {
+    const response = await fetch("/api/admin/idle-stock-prefetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "save",
+        enabled: !!idlePrefetchEnabled?.checked,
+        idle_seconds: Number(idlePrefetchSeconds?.value || 1800),
+      }),
+    });
+    const payload = await readApiPayload(response, "保存空闲预抓失败");
+    renderIdlePrefetchScheduler(payload.scheduler || {});
+  } catch (error) {
+    if (idlePrefetchStatus) idlePrefetchStatus.textContent = `保存失败：${error.message}`;
+  } finally {
+    saveIdlePrefetchBtn.disabled = false;
+  }
+});
+
+runIdlePrefetchNowBtn?.addEventListener("click", async () => {
+  runIdlePrefetchNowBtn.disabled = true;
+  try {
+    if (!approveDataFetch("立即预抓一只未建立详情资料包的股票")) return;
+    const response = await fetch("/api/admin/idle-stock-prefetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "run_now", approved: true }),
+    });
+    const payload = await readApiPayload(response, "启动空闲预抓失败");
+    renderIdlePrefetchScheduler(payload.scheduler || {});
+    await loadAdminTasks();
+  } catch (error) {
+    if (idlePrefetchStatus) idlePrefetchStatus.textContent = `启动失败：${error.message}`;
+  } finally {
+    runIdlePrefetchNowBtn.disabled = false;
+  }
+});
+
+kaipanlaFeatureSelect?.addEventListener("change", syncKaipanlaParams);
+kaipanlaValidateBtn?.addEventListener("click", validateKaipanlaIntegration);
+kaipanlaSaveBtn?.addEventListener("click", saveKaipanlaScheduler);
+kaipanlaRunBtn?.addEventListener("click", runKaipanlaNow);
+
 async function initializeAdminPage() {
   try {
     const response = await fetch("/api/session");
@@ -328,16 +425,21 @@ async function initializeAdminPage() {
       window.location.href = "/login";
       return;
     }
-    if (payload.role !== "admin") {
+    if (!["admin", "admin_readonly"].includes(payload.role)) {
       window.location.href = "/";
       return;
     }
+    adminReadonly = payload.role === "admin_readonly";
+    applyAdminReadonlyMode();
     if (adminSummary) await loadAdminOverview();
     if (spiderStatus) {
       await refreshSpiderConsole();
       startSpiderPolling();
     }
     if (dailyMarketStatus) await refreshDailyMarketScheduler();
+    if (idlePrefetchStatus) await refreshIdlePrefetchScheduler();
+    if (kaipanlaFeatureSelect) await loadKaipanlaFeatures();
+    applyAdminReadonlyMode();
   } catch {
     window.location.href = "/login";
   }
@@ -547,6 +649,10 @@ function renderAdminDemoAccounts(accounts) {
 
 async function runUserAction(username, action) {
   if (!username || !action) return;
+  if (adminReadonly) {
+    adminSummary.textContent = "只读展示模式不能修改账号。";
+    return;
+  }
   const payload = { username, action };
   if (action === "grant_vip") {
     const rawDays = window.prompt("发放 VIP 天数", "30");
@@ -582,6 +688,21 @@ async function runUserAction(username, action) {
   } catch (error) {
     adminSummary.textContent = `更新用户权限失败：${error.message}`;
   }
+}
+
+function applyAdminReadonlyMode() {
+  if (!adminReadonly) return;
+  if (!document.querySelector(".admin-readonly-banner")) {
+    const banner = document.createElement("div");
+    banner.className = "admin-readonly-banner";
+    banner.textContent = "只读展示模式：可以查看后台状态和数据，但所有调用、保存、生成、删除和调度操作都已禁用。";
+    document.querySelector(".admin-workspace")?.prepend(banner);
+  }
+  document.querySelectorAll("button, input, select, textarea").forEach((node) => {
+    if (node.id === "logoutBtn" || node.id === "themeToggleBtn") return;
+    node.disabled = true;
+  });
+  if (adminSummary) adminSummary.textContent = "只读展示模式已启用。";
 }
 
 async function resetDemoBudget(username) {
@@ -632,8 +753,8 @@ function renderAdminTasks(tasks) {
 function taskKindLabel(kind) {
   return ({
     daily_market: "股票数据",
-    kaipanla: "开盘啦",
-    spider: "爬虫",
+    kaipanla: "行情数据",
+    spider: "行情数据",
     multi_agent: "多 Agent",
     multi_agent_cache: "分析缓存",
   })[kind] || kind || "-";
@@ -682,15 +803,16 @@ function startSpiderPolling() {
 
 async function refreshSpiderConsole() {
   try {
-    const statusResponse = await fetch("/api/admin/spider/status");
+    const statusResponse = await fetch("/api/admin/market-fetch/status");
     const statusPayload = await readApiPayload(statusResponse, "读取爬虫状态失败");
     renderSpiderStatus(statusPayload);
     const logsSource = getSelectedSpiderSource();
-    const logsResponse = await fetch(`/api/admin/spider/logs?lines=160&source=${encodeURIComponent(logsSource)}`);
+    const logsResponse = await fetch(`/api/admin/market-fetch/logs?lines=160&source=${encodeURIComponent(logsSource)}`);
     const logsPayload = await readApiPayload(logsResponse, "读取爬虫日志失败");
     spiderLogs.textContent = logsPayload.content || statusPayload.spider?.error || "暂无日志";
     if (spiderLogFile) spiderLogFile.textContent = logsPayload.log_file ? basename(logsPayload.log_file) : "暂无日志文件";
     await refreshDailyMarketScheduler();
+    await refreshIdlePrefetchScheduler();
     await loadAdminTasks();
   } catch (error) {
     spiderStatus.textContent = `爬虫状态读取失败：${error.message}`;
@@ -705,6 +827,17 @@ async function refreshDailyMarketScheduler() {
     renderDailyMarketScheduler(payload.scheduler || {});
   } catch (error) {
     dailyMarketStatus.textContent = `读取失败：${error.message}`;
+  }
+}
+
+async function refreshIdlePrefetchScheduler() {
+  if (!idlePrefetchStatus) return;
+  try {
+    const response = await fetch("/api/admin/idle-stock-prefetch");
+    const payload = await readApiPayload(response, "读取空闲预抓状态失败");
+    renderIdlePrefetchScheduler(payload.scheduler || {});
+  } catch (error) {
+    idlePrefetchStatus.textContent = `读取失败：${error.message}`;
   }
 }
 
@@ -725,6 +858,206 @@ function renderDailyMarketScheduler(scheduler) {
   if (dailyMarketUpdated) dailyMarketUpdated.textContent = String(last.updated ?? "-");
   if (dailyMarketSkipped) dailyMarketSkipped.textContent = String(last.skipped ?? "-");
   if (runDailyMarketNowBtn) runDailyMarketNowBtn.disabled = running;
+}
+
+function renderIdlePrefetchScheduler(scheduler) {
+  if (!idlePrefetchStatus) return;
+  if (idlePrefetchEnabled) idlePrefetchEnabled.checked = !!scheduler.enabled;
+  if (idlePrefetchSeconds) idlePrefetchSeconds.value = scheduler.idle_seconds || 1800;
+  const running = !!scheduler.running;
+  idlePrefetchStatus.textContent = running
+    ? "运行中"
+    : scheduler.enabled
+      ? `已启用 · 空闲 ${formatDuration(scheduler.idle_seconds || 1800)}`
+      : "未启用";
+  if (idlePrefetchIdle) idlePrefetchIdle.textContent = formatDuration(scheduler.current_idle_seconds || 0);
+  if (idlePrefetchRemaining) idlePrefetchRemaining.textContent = scheduler.remaining_seconds ? formatDuration(scheduler.remaining_seconds) : "可触发";
+  if (idlePrefetchLastRequest) {
+    const code = scheduler.last_request_code ? ` · ${scheduler.last_request_code}` : "";
+    idlePrefetchLastRequest.textContent = scheduler.last_request_at ? `${scheduler.last_request_at}${code}` : "-";
+  }
+  const last = scheduler.last_result || {};
+  if (idlePrefetchLastRun) idlePrefetchLastRun.textContent = scheduler.last_run_at || "-";
+  if (idlePrefetchLastResult) {
+    idlePrefetchLastResult.textContent = last.ts_code
+      ? `${last.ts_code}${last.name ? ` ${last.name}` : ""} · 全量历史`
+      : (last.reason === "no_unfetched_stock" ? "没有待预抓股票" : (scheduler.last_error || "-"));
+  }
+  if (runIdlePrefetchNowBtn) runIdlePrefetchNowBtn.disabled = running;
+}
+
+async function loadKaipanlaFeatures() {
+  if (!kaipanlaFeatureSelect) return;
+  if (kaipanlaMeta) kaipanlaMeta.textContent = "正在读取开盘啦配置...";
+  try {
+    const [featuresResponse, schedulerResponse, recordsResponse] = await Promise.all([
+      fetch("/api/admin/kaipanla/features"),
+      fetch("/api/admin/kaipanla/scheduler"),
+      fetch("/api/admin/kaipanla/records?limit=20"),
+    ]);
+    const featuresPayload = await readApiPayload(featuresResponse, "读取开盘啦功能失败");
+    const schedulerPayload = await readApiPayload(schedulerResponse, "读取开盘啦定时失败");
+    const recordsPayload = await readApiPayload(recordsResponse, "读取开盘啦记录失败");
+    kaipanlaState.features = featuresPayload.items || [];
+    kaipanlaState.currentParamFeature = "";
+    renderKaipanlaScheduler(schedulerPayload.scheduler || {});
+    renderKaipanlaFeatures();
+    renderKaipanlaRecords(recordsPayload.items || []);
+    if (kaipanlaMeta) kaipanlaMeta.textContent = `${kaipanlaState.features.length} 个功能 · 行情数据`;
+  } catch (error) {
+    if (kaipanlaMeta) kaipanlaMeta.textContent = `读取失败：${error.message}`;
+    if (kaipanlaOutput) kaipanlaOutput.textContent = error.message;
+  }
+}
+
+function renderKaipanlaFeatures() {
+  if (!kaipanlaFeatureGrid || !kaipanlaFeatureSelect) return;
+  const selected = new Set(kaipanlaState.scheduler.features || ["daily_data", "market_limit_up_ladder", "sector_ranking"]);
+  kaipanlaFeatureGrid.innerHTML = kaipanlaState.features.map((item) => `
+    <label class="kaipanla-feature-option">
+      <input type="checkbox" value="${escapeAttr(item.key)}" ${selected.has(item.key) ? "checked" : ""} />
+      <span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.category)}${item.requires ? ` · ${escapeHtml(item.requires)}` : ""}</small></span>
+    </label>
+  `).join("");
+  kaipanlaFeatureSelect.innerHTML = kaipanlaState.features
+    .map((item) => `<option value="${escapeAttr(item.key)}">${escapeHtml(item.category)} · ${escapeHtml(item.label)}</option>`)
+    .join("");
+  syncKaipanlaParams();
+}
+
+function renderKaipanlaScheduler(scheduler) {
+  kaipanlaState.scheduler = scheduler || {};
+  kaipanlaState.paramsByFeature = scheduler.params_by_feature || {};
+  const running = !!scheduler.running;
+  if (kaipanlaEnabled) kaipanlaEnabled.value = scheduler.enabled ? "1" : "0";
+  if (kaipanlaTime) kaipanlaTime.value = scheduler.time || "21:45";
+  if (kaipanlaStateText) kaipanlaStateText.textContent = running ? "运行中" : scheduler.enabled ? "已启用" : "未启用";
+  if (kaipanlaTimeText) kaipanlaTimeText.textContent = scheduler.time || "21:45";
+  if (kaipanlaFeatureCount) kaipanlaFeatureCount.textContent = String((scheduler.features || []).length);
+  if (kaipanlaLastDate) kaipanlaLastDate.textContent = scheduler.last_run_date || "-";
+  const last = scheduler.last_result || {};
+  if (kaipanlaLastResult) kaipanlaLastResult.textContent = last.total ? `${last.succeeded || 0} / ${last.failed || 0}` : "-";
+  if (kaipanlaRunBtn) kaipanlaRunBtn.disabled = running;
+}
+
+function syncKaipanlaParams() {
+  try {
+    persistKaipanlaParams();
+  } catch (error) {
+    if (kaipanlaOutput) kaipanlaOutput.textContent = `参数格式错误：${error.message}`;
+    return;
+  }
+  const feature = selectedKaipanlaFeature();
+  if (!feature || !kaipanlaParamsInput) return;
+  kaipanlaParamsInput.value = JSON.stringify(kaipanlaState.paramsByFeature[feature.key] || feature.default_params || {}, null, 2);
+  if (kaipanlaOutput) kaipanlaOutput.textContent = `${feature.description || ""}${feature.requires ? `\n需要：${feature.requires}` : ""}`;
+  kaipanlaState.currentParamFeature = feature.key;
+}
+
+function persistKaipanlaParams() {
+  const key = kaipanlaState.currentParamFeature;
+  if (!key || !kaipanlaParamsInput?.value) return;
+  const params = JSON.parse(kaipanlaParamsInput.value || "{}");
+  if (!params || Array.isArray(params) || typeof params !== "object") throw new Error("参数必须是 JSON object");
+  kaipanlaState.paramsByFeature[key] = params;
+}
+
+function selectedKaipanlaFeature() {
+  const key = kaipanlaFeatureSelect?.value || "";
+  return kaipanlaState.features.find((item) => item.key === key) || null;
+}
+
+async function validateKaipanlaIntegration() {
+  if (!kaipanlaOutput || !kaipanlaValidateBtn) return;
+  kaipanlaValidateBtn.disabled = true;
+  kaipanlaOutput.textContent = "正在验证开盘啦功能映射...";
+  try {
+    const response = await fetch("/api/admin/kaipanla/validate");
+    const payload = await readApiPayload(response, "验证开盘啦功能失败");
+    kaipanlaOutput.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    kaipanlaOutput.textContent = `验证失败：${error.message}`;
+  } finally {
+    kaipanlaValidateBtn.disabled = adminReadonly;
+  }
+}
+
+function kaipanlaSchedulerPayload() {
+  persistKaipanlaParams();
+  return {
+    action: "save",
+    enabled: kaipanlaEnabled?.value === "1",
+    time: kaipanlaTime?.value || "21:45",
+    features: [...(kaipanlaFeatureGrid?.querySelectorAll("input[type='checkbox']:checked") || [])].map((input) => input.value),
+    params_by_feature: { ...kaipanlaState.paramsByFeature },
+  };
+}
+
+async function saveKaipanlaScheduler() {
+  if (!kaipanlaSaveBtn) return false;
+  kaipanlaSaveBtn.disabled = true;
+  try {
+    const response = await fetch("/api/admin/kaipanla/scheduler", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(kaipanlaSchedulerPayload()),
+    });
+    const payload = await readApiPayload(response, "保存开盘啦定时失败");
+    renderKaipanlaScheduler(payload.scheduler || {});
+    if (kaipanlaOutput) kaipanlaOutput.textContent = "开盘啦行情数据定时配置已保存。";
+    return true;
+  } catch (error) {
+    if (kaipanlaOutput) kaipanlaOutput.textContent = `保存失败：${error.message}`;
+    return false;
+  } finally {
+    kaipanlaSaveBtn.disabled = adminReadonly;
+  }
+}
+
+async function runKaipanlaNow() {
+  if (!kaipanlaRunBtn || !approveDataFetch("立即执行开盘啦行情数据抓取")) return;
+  kaipanlaRunBtn.disabled = true;
+  if (kaipanlaOutput) kaipanlaOutput.textContent = "正在启动开盘啦行情数据任务...";
+  try {
+    if (!(await saveKaipanlaScheduler())) return;
+    const response = await fetch("/api/admin/kaipanla/scheduler", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "run_now", approved: true }),
+    });
+    const payload = await readApiPayload(response, "启动开盘啦抓取失败");
+    renderKaipanlaScheduler(payload.scheduler || {});
+    if (kaipanlaOutput) kaipanlaOutput.textContent = "开盘啦行情数据任务已启动。";
+    window.setTimeout(loadKaipanlaFeatures, 2500);
+  } catch (error) {
+    if (kaipanlaOutput) kaipanlaOutput.textContent = `启动失败：${error.message}`;
+  } finally {
+    kaipanlaRunBtn.disabled = adminReadonly;
+  }
+}
+
+function renderKaipanlaRecords(items) {
+  if (!kaipanlaRecordsTable) return;
+  kaipanlaRecordsTable.innerHTML = `
+    <thead><tr><th>保存时间</th><th>功能</th><th>分类</th><th>Run</th><th>操作</th></tr></thead>
+    <tbody>${items.length ? items.map((item) => `
+      <tr><td>${escapeHtml(item.saved_at || "")}</td><td>${escapeHtml(item.label || item.feature || "")}</td><td>${escapeHtml(item.category || "")}</td><td><code>${escapeHtml(item.run_id || "")}</code></td><td><button type="button" data-record-path="${escapeAttr(item.path || "")}">查看</button></td></tr>
+    `).join("") : `<tr><td colspan="5" class="news-empty">暂无本地记录</td></tr>`}</tbody>
+  `;
+  kaipanlaRecordsTable.querySelectorAll("[data-record-path]").forEach((button) => {
+    button.addEventListener("click", () => readKaipanlaRecord(button.dataset.recordPath));
+  });
+}
+
+async function readKaipanlaRecord(path) {
+  if (!path || !kaipanlaOutput) return;
+  try {
+    const response = await fetch(`/api/admin/kaipanla/record?path=${encodeURIComponent(path)}`);
+    const payload = await readApiPayload(response, "读取开盘啦记录失败");
+    kaipanlaOutput.textContent = JSON.stringify(payload.record || {}, null, 2);
+  } catch (error) {
+    kaipanlaOutput.textContent = `读取记录失败：${error.message}`;
+  }
 }
 
 function renderSpiderStatus(payload) {
@@ -833,6 +1166,60 @@ function getSelectedSpiderSource() {
   return spiderSourcesSelect?.querySelector("input[type='radio']:checked")?.value || "ths";
 }
 
+async function searchMarketStocks() {
+  if (!spiderStockCode || !spiderStockSuggestions) return;
+  const query = spiderStockCode.value.trim();
+  if (!query) {
+    hideMarketStockSuggestions();
+    return;
+  }
+  try {
+    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    const payload = await readApiPayload(response, "股票检索失败");
+    renderMarketStockSuggestions(payload.items || []);
+  } catch (error) {
+    spiderStockSuggestions.hidden = false;
+    spiderStockSuggestions.innerHTML = `<div class="market-stock-empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderMarketStockSuggestions(items) {
+  if (!spiderStockSuggestions) return;
+  const rows = items.slice(0, 12);
+  spiderStockSuggestions.hidden = false;
+  spiderStockSuggestions.innerHTML = rows.length
+    ? rows.map((item) => `
+        <button type="button" class="market-stock-option" data-ts-code="${escapeHtml(item.ts_code || "")}" data-name="${escapeHtml(item.name || "")}">
+          <span><strong>${escapeHtml(item.name || "-")}</strong><small>${escapeHtml([item.industry, item.market].filter(Boolean).join(" · ") || "A 股")}</small></span>
+          <code>${escapeHtml(item.ts_code || item.symbol || "-")}</code>
+        </button>
+      `).join("")
+    : `<div class="market-stock-empty">没有匹配股票，请尝试代码、名称、全拼或首字母缩写。</div>`;
+  spiderStockSuggestions.querySelectorAll("[data-ts-code]").forEach((button) => {
+    button.addEventListener("click", () => selectMarketStock(button.dataset.tsCode, button.dataset.name));
+  });
+}
+
+function selectMarketStock(tsCode, name) {
+  if (!tsCode) return;
+  spiderStockTsCode.value = tsCode;
+  spiderStockCode.value = `${name || ""} ${tsCode}`.trim();
+  spiderStockSelection.textContent = `已选择：${name || "-"} · ${tsCode}`;
+  hideMarketStockSuggestions();
+}
+
+function selectedMarketStockCode() {
+  const selected = spiderStockTsCode?.value || "";
+  if (!selected) throw new Error("请先从检索结果中选择一只股票。");
+  return selected;
+}
+
+function hideMarketStockSuggestions() {
+  if (!spiderStockSuggestions) return;
+  spiderStockSuggestions.hidden = true;
+  spiderStockSuggestions.innerHTML = "";
+}
+
 function selectSpiderSource(source) {
   const radio = spiderSourcesSelect?.querySelector(`input[value="${cssEscape(source)}"]`);
   if (!radio) return;
@@ -865,22 +1252,14 @@ function renderSpiderTypes(types) {
 
 function sourceLabel(source) {
   const labels = {
-    ths: "同花顺",
     ths_market: "分钟行情",
-    guardian: "Guardian",
-    bloomberg_urls: "Bloomberg URL",
-    bloomberg_articles: "Bloomberg 正文",
   };
   return labels[source] || source || "";
 }
 
 function sourceHint(source) {
   const hints = {
-    ths: "同花顺分类新闻",
     ths_market: "指定股票行情补抓",
-    guardian: "Guardian API",
-    bloomberg_urls: "URL 队列",
-    bloomberg_articles: "正文队列",
   };
   return hints[source] || "";
 }
@@ -989,6 +1368,10 @@ function escapeHtml(value) {
     "\"": "&quot;",
     "'": "&#39;",
   }[char]));
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, "&#096;");
 }
 
 function basename(path) {

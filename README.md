@@ -1,6 +1,30 @@
-# Tushare Stock Analysis Pipeline
+# ValueScope / NewsAnalysis
 
-一个面向 A 股个股研究的流水线工程：输入股票代码，自动从 Tushare Pro 拉取行情、估值、财务、公司、行业、公告等数据，整理成结构化 dossier，然后调用 DeepSeek 生成可持续追问的分析对话。
+一个面向 A 股研究场景的多源数据采集与多 Agent 分析平台。项目把股票资料包、分钟行情、新闻采集、数据源治理、后台任务、权限隔离和 LLM 投研分析组合成一个可部署、可演示的完整 Web 工程。
+
+这个仓库不是单一脚本，而是一个产品化系统：
+
+- 前台提供股票检索、资料读取、分钟行情补采、多 Agent 分析和历史报告复用。
+- 后台提供账户管理、只读展示账号、数据源中心、新闻采集状态、行情补采和任务审计。
+- `NewsCrawler/` 作为独立新闻采集服务写入 MongoDB，`NewsAnalysis` 只读消费标准化 `news.v1` 文档。
+- Docker Compose 部署 Web、MongoDB 和 NewsCrawler，支持一键同步到服务器。
+- 敏感信息进入本地加密密钥库，不写入 `.env` 或仓库。
+
+适合展示的只读账号：
+
+```text
+账号：admin_view
+密码：admin_view
+```
+
+只读账号可以进入 Admin Console 查看数据源、新闻库、采集状态和任务记录，但不能触发抓取、保存、删除、生成分析或修改账号。
+
+面试/展示材料：
+
+- [项目简介](docs/PROJECT_BRIEF.md)
+- [HR 演示指南](docs/HR_DEMO_GUIDE.md)
+- [多 Agent 架构](docs/multi_agent_analysis_architecture.md)
+- [Agent Gateway 设计](docs/newsanalysis_agent_gateway.md)
 
 ## 快速开始
 
@@ -70,7 +94,7 @@ scripts/run_web.sh
 
 注册功能只接受管理员后台生成的邀请码。管理员登录后可在“管理”面板生成 6 位数字邀请码，默认 3 天有效，成功注册后会被标记为已使用，不能再次注册。`STOCK_WEB_INVITE_CODES` 只作为可选启动种子，不建议日常使用。朋友测试账号也在管理员面板生成，默认每 24 小时最多 30 次 API 请求，可用 `STOCK_WEB_DEMO_REQUEST_LIMIT` 和 `STOCK_WEB_DEMO_WINDOW_SECONDS` 调整新生成测试账号的默认额度。
 
-管理员后台分为账户管理和爬虫控制。账户管理可查看用户用量、配置系统 DeepSeek key、生成邀请码、生成 VIP 兑换码、发放/撤销用户 VIP、禁用/启用用户、重置测试账号额度，并查看后台任务和权限操作审计日志。禁用用户会立即移除该用户当前会话。
+管理员后台分为账户管理和行情补采。账户管理可查看用户用量、配置系统 DeepSeek key、生成邀请码、生成 VIP 兑换码、发放/撤销用户 VIP、禁用/启用用户、重置测试账号额度，并查看后台任务和权限操作审计日志。禁用用户会立即移除该用户当前会话。
 
 股票数据按股票代码共享保存到 `local_data/{ts_code}`，不是按用户隔离。`STOCK_DATA_CACHE_TTL_SECONDS` 控制共享缓存有效期，默认 24 小时内同一只股票不会重复调用 Tushare 更新。`STOCK_ANALYSIS_REUSE_TTL_SECONDS` 控制近期 DeepSeek / 多 Agent 分析结果的复用窗口，默认 30 分钟。`STOCK_ANALYSIS_HISTORY_REVIEW_LIMIT` 控制 LLM 分析时纳入最近几份历史分析做复盘，默认 3 份。
 
@@ -95,18 +119,23 @@ Agent API 位于 `/api/agent/v1`，OpenAPI 合约位于 `/api/agent/v1/openapi.j
 
 账号分为管理员、VIP、普通用户和测试账号。管理员和 VIP 使用本地加密密钥库中的 Tushare / DeepSeek key；普通用户需要在页面内保存自己的 key。用户 key 会用本地加密密钥派生的 Fernet 密钥加密保存，删除时会直接移除密文记录，不保留删除痕迹。管理员可在账户管理页生成 VIP 兑换码，并自定义兑换后的 VIP 天数；兑换码默认 3 天内有效，一次性使用。
 
-股票基础列表由后台“每日股票数据”任务按北京时间自动刷新，默认时间为 `21:30`，不在普通用户前台提供手动刷新入口。其他会访问外部数据源或消耗 API/模型额度的手动动作默认需要审批确认，包括同步股票资料包、补抓分钟行情、单 Agent/多 Agent 分析、启动爬虫和立即执行每日股票数据更新。后端会校验 `approved=true`，并把审批动作写入审计日志；如需关闭可设置非敏感参数 `DATA_FETCH_APPROVAL_REQUIRED=0`。
+股票基础列表由后台“每日股票数据”任务按北京时间自动刷新，默认时间为 `21:30`，不在普通用户前台提供手动刷新入口。其他会访问外部数据源或消耗 API/模型额度的手动动作默认需要审批确认，包括同步股票资料包、补抓分钟行情、单 Agent/多 Agent 分析和立即执行每日股票数据更新。后端会校验 `approved=true`，并把审批动作写入审计日志；如需关闭可设置非敏感参数 `DATA_FETCH_APPROVAL_REQUIRED=0`。
 
-抓取同花顺财经新闻到 MongoDB：
+新闻采集已经拆分为独立的 `NewsCrawler/` 项目。NewsAnalysis 不再请求新闻网站或启动新闻爬虫，只读取 NewsCrawler 写入的 `news.raw_articles`。
+
+管理员后台的“新闻采集”页是只读运维视图：展示 `source_health`、`crawl_runs`、运行错误和数据所有权边界，不会从 NewsAnalysis 启动、停止或修改 NewsCrawler。
 
 ```bash
-scripts/spider_crawl.sh
+cd NewsCrawler
+python3 -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/news-crawler sources
 ```
 
-只抓新增新闻，适合日常定时运行：
+本地验证同花顺采集但不写库：
 
 ```bash
-SPIDER_TYPES=财经要闻,公司新闻 SPIDER_MAX_PAGES=3 scripts/spider_crawl.sh
+.venv/bin/news-crawler crawl --source tonghuashun --latest --max-pages 1 --dry-run
 ```
 
 本地 MongoDB 可用 Docker 启动，数据会保存在 `local_data/mongo`：
@@ -119,13 +148,21 @@ docker compose up -d mongo
 scripts/mongo_ping.sh
 ```
 
-抓取 dry-run 不写库：
+正式写入 MongoDB：
 
 ```bash
-scripts/spider_dry_run.sh
+.venv/bin/news-crawler crawl --source all --latest --max-pages 1
 ```
 
-`stock_pipeline news crawl/search` 是旧 MySQL 新闻入口，当前建议使用 `spider/` 和上面的脚本抓取新闻。后续可再把 `stock_pipeline` 的新闻读取也统一迁到 MongoDB。
+Guardian 需要在 NewsCrawler 自己的环境中配置 `GUARDIAN_API_KEY`。Bloomberg 已作为正式 Provider 接入；若公开页面触发登录墙或反爬，可通过部署 secret 设置 `BLOOMBERG_COOKIE`。
+
+NewsAnalysis 仍可独立检索已采集新闻：
+
+```bash
+.venv/bin/python -m stock_pipeline news search 牧原股份
+```
+
+两个项目只通过 `news.v1` 文档契约通信。契约文件分别位于 `contracts/` 和 `NewsCrawler/contracts/`。
 
 ### 数据源中心
 
@@ -143,11 +180,11 @@ python -m stock_pipeline kaipanla validate
 python -m stock_pipeline kaipanla run daily_data --params '{"end_date":"2026-01-16"}'
 ```
 
-管理员后台“数据源”页也提供开盘啦功能选择、参数 JSON 和运行结果查看。当前集成覆盖交易日完整数据、百日新高、连板梯队、板块排行/强度/资金、实时情绪、指数/个股/板块分时、板块新闻、龙虎榜、ETF、竞价 tick 等公开方法。个别功能可能依赖后续配置，例如 Selenium/Chrome 或开盘啦侧 Token/Cookie；这些功能会保留入口，便于后续补权限后继续调试。
+管理员后台不再为开盘啦设置独立导航模块；“数据源”页统一提供开盘啦功能选择、参数 JSON、定时配置、立即抓取和本地记录查看。当前集成覆盖交易日完整数据、百日新高、连板梯队、板块排行/强度/资金、实时情绪、指数/个股/板块分时、板块新闻、龙虎榜、ETF、竞价 tick 等公开方法。个别功能可能依赖后续配置，例如 Selenium/Chrome 或开盘啦侧 Token/Cookie；这些功能会保留入口，便于后续补权限后继续调试。
 
 ## 服务器部署
 
-推荐使用 Docker Compose 部署，Web 和 MongoDB 会自动持续运行：
+推荐使用 Docker Compose 部署，NewsAnalysis Web、NewsCrawler 和 MongoDB 会分别持续运行：
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build

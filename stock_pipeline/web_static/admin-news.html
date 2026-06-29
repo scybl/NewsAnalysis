@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>数据源 - 价值投机分析</title>
+    <title>股票数据 - NewsCrawler</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -11,16 +11,16 @@
         }
       } catch {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=admin-unified-20260616-v1" />
+    <link rel="stylesheet" href="/styles.css?v=admin-layout-20260626-v1" />
   </head>
   <body>
     <main class="admin-page admin-shell">
       <aside class="admin-sidebar">
         <a class="admin-brand" href="/">
-          <span class="admin-brand-mark">VA</span>
+          <span class="admin-brand-mark">NC</span>
           <span>
-            <strong>价值投机分析</strong>
-            <small>Admin Console</small>
+            <strong>NewsCrawler</strong>
+            <small>Data Console</small>
           </span>
         </a>
         <nav class="admin-nav" aria-label="后台导航">
@@ -28,32 +28,32 @@
             <span class="admin-nav-icon">A</span>
             <span>账户管理</span>
           </a>
-          <a class="admin-nav-unavailable" aria-disabled="true" title="Agent Gateway 调试中，暂不可用">
-            <span class="admin-nav-icon">G</span>
-            <span>Agent Gateway · 调试中</span>
-          </a>
           <a href="/admin-archives.html">
             <span class="admin-nav-icon">R</span>
             <span>归档账号</span>
           </a>
-          <a href="/admin-spider.html">
+          <a href="/admin-market.html">
             <span class="admin-nav-icon">S</span>
-            <span>爬虫控制</span>
+            <span>行情数据</span>
           </a>
           <a class="active" href="/admin-news.html">
             <span class="admin-nav-icon">N</span>
-            <span>数据源</span>
+            <span>股票数据</span>
           </a>
-          <a href="/admin-kaipanla.html">
-            <span class="admin-nav-icon">K</span>
-            <span>开盘啦</span>
+          <a href="/admin-crawler.html">
+            <span class="admin-nav-icon">C</span>
+            <span>新闻数据</span>
+          </a>
+          <a class="admin-nav-unavailable" aria-disabled="true" title="数据分发维护中，暂不可用">
+            <span class="admin-nav-icon">D</span>
+            <span>数据分发 · 维护中</span>
+          </a>
+          <a class="admin-nav-unavailable" aria-disabled="true" title="Agent Gateway 调试中，暂不可用">
+            <span class="admin-nav-icon">G</span>
+            <span>Agent Gateway · 调试中</span>
           </a>
         </nav>
         <div class="admin-sidebar-footer">
-          <a class="admin-footer-link" href="/">
-            <span class="admin-nav-icon">H</span>
-            <span>返回分析</span>
-          </a>
           <div class="admin-footer-actions">
             <button id="themeToggleBtn" type="button">深色模式</button>
             <button id="logoutBtn" type="button">退出登录</button>
@@ -64,20 +64,27 @@
       <section class="admin-workspace">
         <header class="admin-page-head">
           <div>
-            <span class="admin-kicker">DATA LIBRARY</span>
-            <h1>数据源</h1>
-            <p id="newsMeta">查看本地股票资料包和已爬新闻库。</p>
+            <span class="admin-kicker">STOCK DATA</span>
+            <h1>股票数据</h1>
+            <p id="newsMeta">查看股票来源、标准类型和已经落地的本地股票资料包。</p>
           </div>
           <div class="admin-actions">
-            <button id="newsExportBtn" type="button">导出当前页</button>
+            <button id="stopSpiderBtn" type="button" disabled>停止补采</button>
+            <button id="startSpiderBtn" class="primary-action" type="button">启动补采</button>
             <button id="newsRefreshBtn" class="primary-action" type="button">刷新</button>
           </div>
         </header>
 
-        <section class="admin-panel news-panel">
+        <section class="admin-panel data-library-console">
+          <section class="admin-section-block">
+            <div class="admin-section-heading">
+              <div><span>SOURCE MAP</span><h2>股票来源与标准</h2></div>
+              <p>先看股票数据来源，再看统一消费的标准数据类型。</p>
+            </div>
+            <div class="data-source-overview-grid">
           <section class="admin-card data-source-card">
             <div class="admin-card-head">
-              <h4>数据源中心</h4>
+              <h4>股票数据源</h4>
               <span id="dataSourceMeta">正在读取数据源...</span>
             </div>
             <div id="dataSourceStats" class="admin-kpis news-kpis"></div>
@@ -93,7 +100,143 @@
               <table id="standardDataTable"></table>
             </div>
           </section>
+            </div>
+          </section>
 
+          <section class="admin-section-block">
+            <div class="admin-section-heading">
+              <div><span>MANUAL FETCH</span><h2>手动行情补采</h2></div>
+              <p id="spiderStatus">选择一只股票补抓分钟行情，并在右侧查看当前任务状态。</p>
+            </div>
+            <div class="market-primary-grid">
+          <section class="admin-card spider-config-card">
+            <div class="admin-card-head">
+              <h4>选择股票</h4>
+              <span>代码 / 名称 / 拼音 / 缩写</span>
+            </div>
+            <div class="spider-form">
+              <label class="field-wide" hidden>
+                <span>行情来源</span>
+                <div id="spiderSourcesSelect" class="spider-source-grid"></div>
+                <small id="spiderSourceHint" class="spider-source-hint">同花顺</small>
+              </label>
+              <label class="field-wide" hidden>
+                <span>分类</span>
+                <div id="spiderTypesSelect" class="spider-type-grid"></div>
+              </label>
+              <label class="field-wide" id="spiderStockCodeField" hidden>
+                <span>股票</span>
+                <div class="market-stock-search">
+                  <input id="spiderStockCode" type="search" autocomplete="off" placeholder="代码、名称、拼音或缩写，例如 000001、平安银行、payh" />
+                  <input id="spiderStockTsCode" type="hidden" />
+                  <div id="spiderStockSuggestions" class="market-stock-suggestions" hidden></div>
+                </div>
+                <small id="spiderStockSelection" class="spider-source-hint">输入关键词并选择一只股票</small>
+              </label>
+              <label hidden>
+                <span>页数</span>
+                <input id="spiderMaxPages" type="number" min="1" max="50" value="1" />
+              </label>
+              <label hidden>
+                <span>线程</span>
+                <input id="spiderThreads" type="number" min="1" max="4" value="2" />
+              </label>
+              <label hidden>
+                <span>文章间隔</span>
+                <input id="spiderArticleSleep" value="3,5" />
+              </label>
+              <label hidden>
+                <span>分页间隔</span>
+                <input id="spiderPageSleep" value="5,10" />
+              </label>
+              <label class="check-row field-wide" hidden>
+                <input id="spiderNewOnly" type="checkbox" checked />
+                <span>只抓新增</span>
+              </label>
+            </div>
+          </section>
+          <section class="admin-card spider-state-card">
+            <div class="admin-card-head">
+              <h4>当前任务</h4>
+              <span>实时状态</span>
+            </div>
+            <div id="spiderSourceTasks" class="spider-source-tasks"></div>
+            <div class="spider-state-grid spider-snapshot-state-grid">
+              <div><span>状态</span><strong id="spiderStateText">-</strong></div>
+              <div><span>模式</span><strong id="spiderModeText">-</strong></div>
+              <div><span>来源</span><strong id="spiderSourceText">-</strong></div>
+              <div><span>分类</span><strong id="spiderTypeText">-</strong></div>
+              <div><span>页数</span><strong id="spiderPagesText">-</strong></div>
+            </div>
+          </section>
+            </div>
+          </section>
+
+          <section class="admin-section-block">
+            <div class="admin-section-heading">
+              <div><span>PREFETCH</span><h2>空闲预抓</h2></div>
+              <p>在没有股票请求时，自动补齐还没有详情资料包的股票。</p>
+            </div>
+          <section class="admin-card idle-prefetch-card">
+            <div class="admin-card-head">
+              <h4>空闲预抓</h4>
+              <span id="idlePrefetchStatus">未读取</span>
+            </div>
+            <p class="card-note">当 30 分钟内没有股票请求时，自动挑选 1 只还没有本地详情资料包的股票，后台预抓能抓到的全量历史数据。</p>
+            <div class="spider-form">
+              <label class="field-wide check-row">
+                <input id="idlePrefetchEnabled" type="checkbox" />
+                <span>启用空闲自动预抓</span>
+              </label>
+              <label>
+                <span>空闲秒数</span>
+                <input id="idlePrefetchSeconds" type="number" min="300" step="60" value="1800" />
+              </label>
+              <div class="admin-actions field-wide">
+                <button id="saveIdlePrefetchBtn" type="button">保存预抓</button>
+                <button id="runIdlePrefetchNowBtn" type="button">立即预抓一只</button>
+              </div>
+            </div>
+            <div class="spider-state-grid idle-prefetch-state-grid">
+              <div><span>当前空闲</span><strong id="idlePrefetchIdle">-</strong></div>
+              <div><span>距触发</span><strong id="idlePrefetchRemaining">-</strong></div>
+              <div><span>最近请求</span><strong id="idlePrefetchLastRequest">-</strong></div>
+              <div><span>上次预抓</span><strong id="idlePrefetchLastRun">-</strong></div>
+              <div><span>结果</span><strong id="idlePrefetchLastResult">-</strong></div>
+            </div>
+          </section>
+          </section>
+
+          <section class="admin-section-block">
+            <div class="admin-section-heading">
+              <div><span>OBSERVABILITY</span><h2>运行结果</h2></div>
+              <p>左侧查看当前日志，右侧追溯手动和定时任务。</p>
+            </div>
+            <div class="market-observability-grid">
+          <section class="admin-card spider-log-card">
+            <div class="admin-card-head">
+              <h4>运行日志</h4>
+              <span id="spiderLogFile">暂无日志文件</span>
+            </div>
+            <pre id="spiderLogs" class="spider-logs">暂无日志</pre>
+          </section>
+          <section class="admin-card spider-task-history-card">
+            <div class="admin-card-head">
+              <h4>运行记录</h4>
+              <span>定时与手动任务，服务重启后保留</span>
+            </div>
+            <div class="admin-table-wrap">
+              <table id="adminTasksTable"></table>
+            </div>
+          </section>
+            </div>
+          </section>
+
+          <section class="admin-section-block">
+            <div class="admin-section-heading">
+              <div><span>LOCAL ASSETS</span><h2>本地股票资料库</h2></div>
+              <p>查看已经落地的股票资料包、数据集规模和分钟行情覆盖。</p>
+            </div>
           <section class="admin-card stock-data-card">
             <div class="admin-card-head">
               <h4>本地股票数据</h4>
@@ -119,82 +262,12 @@
               <table id="stockDataTable"></table>
             </div>
           </section>
-
-          <section class="admin-card kaipanla-card">
-            <div class="admin-card-head">
-              <h4>开盘啦数据源</h4>
-              <span id="kaipanlaMeta">正在读取功能列表...</span>
-            </div>
-            <div class="news-filter-grid kaipanla-control-grid">
-              <label class="news-search-field">
-                <span>功能</span>
-                <select id="kaipanlaFeatureSelect"></select>
-              </label>
-              <button id="kaipanlaValidateBtn" type="button">验证集成</button>
-              <button id="kaipanlaRunBtn" class="primary-action" type="button">运行</button>
-            </div>
-            <label class="kaipanla-param-field">
-              <span>参数 JSON</span>
-              <textarea id="kaipanlaParamsInput" rows="5" spellcheck="false"></textarea>
-            </label>
-            <pre id="kaipanlaOutput" class="agent-code-sample kaipanla-output">等待运行。</pre>
-          </section>
-
-          <div id="newsStats" class="admin-kpis news-kpis"></div>
-          <div id="newsDistribution" class="news-distribution"></div>
-
-          <section class="admin-card news-browser-card">
-            <div class="admin-card-head">
-              <h4>新闻列表</h4>
-              <span>筛选与分页</span>
-            </div>
-            <div class="news-filter-grid">
-              <label class="news-search-field">
-                <span>搜索</span>
-                <input id="newsSearchInput" type="search" placeholder="标题、正文、来源" />
-              </label>
-              <label>
-                <span>来源</span>
-                <select id="newsPublisherSelect"></select>
-              </label>
-              <label>
-                <span>分类</span>
-                <select id="newsTypeSelect"></select>
-              </label>
-              <label>
-                <span>时间</span>
-                <select id="newsDaysSelect">
-                  <option value="1">最近 1 天</option>
-                  <option value="7">最近 7 天</option>
-                  <option value="30" selected>最近 30 天</option>
-                  <option value="90">最近 90 天</option>
-                  <option value="0">全部</option>
-                </select>
-              </label>
-              <label>
-                <span>每页</span>
-                <select id="newsPageSizeSelect">
-                  <option value="20" selected>20</option>
-                  <option value="40">40</option>
-                  <option value="80">80</option>
-                </select>
-              </label>
-              <button id="newsResetBtn" type="button">重置筛选</button>
-            </div>
-
-            <div id="newsList" class="news-list"></div>
-
-            <div class="news-pager">
-              <button id="newsPrevBtn" type="button">上一页</button>
-              <span id="newsPageInfo">第 1 页</span>
-              <button id="newsNextBtn" type="button">下一页</button>
-            </div>
           </section>
         </section>
       </section>
     </main>
 
     <script src="/admin.js?v=admin-unified-20260616-v1"></script>
-    <script src="/admin-news.js?v=admin-unified-20260616-v1"></script>
+    <script src="/admin-news.js?v=data-library-20260627-v2"></script>
   </body>
 </html>

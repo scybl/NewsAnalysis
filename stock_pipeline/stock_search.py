@@ -112,7 +112,7 @@ def _local_stock_rows() -> list[dict[str, Any]]:
                 "list_status": "L",
                 "pinyin": full_pinyin,
                 "initials": initials,
-                "source": "local_cache",
+                "source": "stock_data",
             }
         )
     return rows

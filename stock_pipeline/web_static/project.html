@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>项目介绍 - ValueScope</title>
+    <script>
+      try {
+        if (localStorage.getItem("stockTheme") === "dark") {
+          document.documentElement.classList.add("theme-dark");
+        }
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="project-page">
+    <main class="project-shell">
+      <nav class="project-nav" aria-label="项目页导航">
+        <a href="/">返回工作台</a>
+        <button id="projectThemeToggleBtn" type="button" aria-pressed="false">深色模式</button>
+      </nav>
+
+      <section class="project-hero-page">
+        <div class="project-hero-meta">
+          <span class="product-kicker">PROJECT OVERVIEW</span>
+          <span>A 股多源数据 · NewsCrawler · Multi-Agent Research Workspace</span>
+        </div>
+        <h1>ValueScope</h1>
+        <p>
+          基于多 Agent 的 A 股金融投研分析平台。项目将股票行情、财务指标、新闻数据、本地资料库和分析审计链路整合为一个可复用的研究工作台。
+        </p>
+        <div class="product-badges">
+          <span>Python</span>
+          <span>LLM Application</span>
+          <span>Multi-Agent</span>
+          <span>MongoDB</span>
+          <span>Docker Compose</span>
+          <span>NewsCrawler</span>
+          <span>AKShare</span>
+        </div>
+        <div class="project-hero-actions" aria-label="项目入口">
+          <a href="/">进入工作台</a>
+          <a href="/login">登录系统</a>
+          <a href="/admin-crawler.html">新闻数据状态</a>
+        </div>
+      </section>
+
+      <section class="project-section-grid">
+        <article>
+          <span class="project-section-index">01</span>
+          <h2>主要目标</h2>
+          <p>
+            面向 A 股投研场景构建统一入口：支持股票检索、资料包生成、历史分析复用，并把行情、财务、公告和新闻数据沉淀为可重复读取的本地资产。
+          </p>
+        </article>
+        <article>
+          <span class="project-section-index">02</span>
+          <h2>Agent 设计</h2>
+          <p>
+            根据不同分析任务动态编排市场、新闻、基本面、风险审计等角色，实现多轮分析、反方审计、结论修正与最终汇总。
+          </p>
+        </article>
+        <article>
+          <span class="project-section-index">03</span>
+          <h2>工程链路</h2>
+          <p>
+            构建任务执行与观测链路，记录任务状态、调用历史、错误信息、分析结果和审计日志，支持后台追踪、问题定位与结果复用。
+          </p>
+        </article>
+      </section>
+
+      <section class="project-showcase-grid">
+        <article class="project-wide-card">
+          <span class="product-kicker">SYSTEM HIGHLIGHT</span>
+          <h2>从数据源到投研结论的完整闭环</h2>
+          <ul>
+            <li>整合股票行情、财务指标、分钟行情、公告、资金与新闻数据，统一存入本地资料包。</li>
+            <li>拆分独立 NewsCrawler 服务，通过 MongoDB 与标准化 news.v1 文档契约解耦主系统。</li>
+            <li>只读 Admin 视图可查看股票数据、行情数据、新闻数据和权限隔离，便于观察系统运行边界。</li>
+          </ul>
+        </article>
+
+        <article class="project-profile-card">
+          <span class="product-kicker">BOUNDARY</span>
+          <h2>系统边界</h2>
+          <div class="project-timeline">
+            <div>
+              <strong>采集层</strong>
+              <span>多源行情、公告、新闻和资金数据适配，按统一字段沉淀到本地资料包。</span>
+            </div>
+            <div>
+              <strong>分析层</strong>
+              <span>多 Agent 根据任务类型拆分观点、审计风险并生成可追踪的分析结论。</span>
+            </div>
+            <div>
+              <strong>运维层</strong>
+              <span>后台查看任务、股票数据、行情数据、新闻数据和只读权限状态。</span>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="project-skills-card">
+        <div>
+          <span class="product-kicker">TECH STACK</span>
+          <h2>应用技术</h2>
+        </div>
+        <div class="project-skill-cloud">
+          <span>Python</span>
+          <span>LLM Application</span>
+          <span>Multi-Agent</span>
+          <span>MongoDB</span>
+          <span>Docker Compose</span>
+          <span>NewsCrawler</span>
+          <span>AKShare</span>
+          <span>东方财富</span>
+          <span>任务调度</span>
+          <span>只读 Admin</span>
+          <span>原生 HTML / CSS / JS</span>
+        </div>
+      </section>
+
+      <section class="project-contact-card">
+        <div>
+          <span class="product-kicker">WORKFLOW</span>
+          <h2>核心流程</h2>
+          <p>从股票检索开始，读取或补采本地资料包，再进入多 Agent 分析；后台用于观察数据源、采集任务和新闻库状态。</p>
+        </div>
+        <div class="project-contact-list">
+          <a href="/">股票检索与分析</a>
+          <a href="/admin-crawler.html">新闻数据</a>
+          <a href="/admin-market.html">行情采补</a>
+          <a href="/admin-crawler.html">采集任务</a>
+        </div>
+      </section>
+    </main>
+    <script>
+      const projectThemeToggleBtn = document.querySelector("#projectThemeToggleBtn");
+
+      function syncProjectThemeToggle() {
+        const isDark = document.documentElement.classList.contains("theme-dark");
+        projectThemeToggleBtn.textContent = isDark ? "浅色模式" : "深色模式";
+        projectThemeToggleBtn.setAttribute("aria-pressed", String(isDark));
+      }
+
+      projectThemeToggleBtn.addEventListener("click", () => {
+        const nextTheme = document.documentElement.classList.contains("theme-dark") ? "light" : "dark";
+        document.documentElement.classList.toggle("theme-dark", nextTheme === "dark");
+        try {
+          localStorage.setItem("stockTheme", nextTheme);
+        } catch {}
+        syncProjectThemeToggle();
+      });
+
+      syncProjectThemeToggle();
+    </script>
+  </body>
+</html>

@@ -332,7 +332,6 @@ class KaipanlaCrawler:
             print(f"请求新高数据失败: {e}")
             return pd.Series()
     
-    # ========== 保留原有的单独接口（向后兼容）==========
     
     def get_market_sentiment(self, date=None):
         """获取涨跌统计数据"""
@@ -893,8 +892,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求板块连板梯队失败 ({display_date}): {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "date": display_date,
                 "is_realtime": is_realtime,
@@ -1085,8 +1082,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求全市场连板梯队失败 ({display_date}): {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "date": display_date,
                 "is_realtime": is_realtime,
@@ -1199,8 +1194,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"获取历史炸板股失败 ({date}): {e}")
-            import traceback
-            traceback.print_exc()
             return []
     
     def get_sector_capital_data(self, sector_code, date=None, timeout=None):
@@ -1320,8 +1313,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求板块资金数据失败 ({sector_code}): {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def get_sector_strength_ndays(self, end_date, num_days=7, timeout=None):
@@ -1495,12 +1486,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求实时市场情绪失败: {e}")
-            import traceback
-            traceback.prprint_exc()
-            return {}
-            print(f"请求实时连板梯队指数失败: {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def get_realtime_actual_limit_up_down(self, timeout=None):
@@ -1563,8 +1548,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求实时实际涨跌停数据失败: {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def get_realtime_board_stocks(self, board_type=1, timeout=None):
@@ -1682,8 +1665,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求实时{board_type}板股票失败: {e}")
-            import traceback
-            traceback.print_exc()
             return []
     
     def get_realtime_all_boards_stocks(self, timeout=None):
@@ -1882,8 +1863,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求实时指数趋势失败: {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def get_realtime_index_list(self, stock_ids=None, timeout=None):
@@ -1970,8 +1949,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求实时指数列表失败: {e}")
-            import traceback
-            traceback.print_exc()
             return {}
 
     def get_realtime_sharp_withdrawal(self, timeout=None):
@@ -2065,8 +2042,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求实时大幅回撤数据失败: {e}")
-            import traceback
-            traceback.print_exc()
             return {}
             data = crawler.get_realtime_rise_fall_analysis()
             print(f"日期: {data['date']}")
@@ -2180,8 +2155,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求实时涨跌分析失败: {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
 
@@ -2328,8 +2301,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求板块分时数据失败 ({sector_code}): {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def get_sector_volume_turnover(self, sector_code, date=None, timeout=300):
@@ -2451,8 +2422,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求板块成交量/成交额数据失败 ({sector_code}): {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def get_stock_intraday(self, stock_code, date=None, timeout=300):
@@ -2683,8 +2652,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求个股分时数据失败 ({stock_code}): {e}")
-            import traceback
-            traceback.print_exc()
             return {}
 
     def get_stock_big_order_intraday(self, stock_code, date=None, timeout=300):
@@ -2858,8 +2825,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求大单净额数据失败 ({stock_code}): {e}")
-            import traceback
-            traceback.print_exc()
             return {}
 
     def get_index_intraday(self, index_code="SH000001", date=None, timeout=300):
@@ -3052,8 +3017,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求指数分时数据失败 ({index_code}): {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def get_plate_news(self, plate_id: str, index: int = 0, page_size: int = 30, timeout: int = 1600):
@@ -3172,8 +3135,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求板块要闻失败 ({plate_id}): {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "plate_id": plate_id,
                 "news_list": [],
@@ -3461,8 +3422,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求板块要闻失败 ({plate_id}): {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "plate_id": plate_id,
                 "news_list": [],
@@ -4033,8 +3992,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求龙虎榜列表失败 ({date}): {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "date": date,
                 "user_type": 0,
@@ -4214,8 +4171,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求龙虎榜详情失败 ({stock_code}, {date}): {e}")
-            import traceback
-            traceback.print_exc()
             return {}
     
     def get_longhubang_dataframe(self, date=None, timeout=1600):
@@ -4280,7 +4235,7 @@ class KaipanlaCrawler:
             date: 日期，格式YYYY-MM-DD，默认为None（获取当日数据）
             order: 排序方式，默认1
                 1: 涨幅排序
-                其他值待测试
+                其他值按接口原样传入
             timeout: 超时时间（秒），默认1600秒
             
         Returns:
@@ -4385,8 +4340,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求板块成分股失败 ({plate_id}, {date}): {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "date": date,
                 "plate_id": plate_id,
@@ -4662,8 +4615,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求板块竞价异动失败 ({date}): {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "date": date if date else datetime.now().strftime("%Y-%m-%d"),
                 "is_realtime": is_realtime,
@@ -4798,8 +4749,6 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求ETF榜单失败 ({date}, Index={index}): {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "date": date if date else datetime.now().strftime("%Y-%m-%d"),
                 "is_realtime": is_realtime,
@@ -5057,6 +5006,4 @@ class KaipanlaCrawler:
             
         except Exception as e:
             print(f"请求竞价tick数据失败 ({stock_code}): {e}")
-            import traceback
-            traceback.print_exc()
             return {}

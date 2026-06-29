@@ -5,16 +5,19 @@ import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import date
-from pathlib import Path
 from typing import Any
 
-from .config import PROJECT_ROOT
+from pymongo import ASCENDING, DESCENDING, MongoClient
+
 from .kaipanla_crawler import KaipanlaCrawler
-from .utils import ensure_dir, read_json, timestamp, write_json
+from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
+from .ths_minute import _mongo_uri
+from .utils import timestamp
 
 
 DEFAULT_DATE = "2026-01-16"
-KAIPANLA_DATA_DIR = PROJECT_ROOT / "local_data" / "kaipanla"
+DEFAULT_DB = MARKET_DATABASE
+KAIPANLA_COLLECTION = MARKET_COLLECTIONS["kaipanla_results"]
 
 
 @dataclass(frozen=True)
@@ -178,9 +181,7 @@ def save_kaipanla_result(key: str, payload: dict[str, Any], *, run_id: str = "")
         raise ValueError(f"未知开盘啦功能：{key}")
     saved_at = timestamp()
     clean_run_id = _safe_name(run_id or saved_at)
-    feature_dir = ensure_dir(KAIPANLA_DATA_DIR / key)
-    filename = f"{saved_at}_{clean_run_id}.json"
-    path = feature_dir / filename
+    path = f"mongodb://{DEFAULT_DB}/{KAIPANLA_COLLECTION}/{key}/{saved_at}/{clean_run_id}"
     record = {
         "schema": "kaipanla.result.v1",
         "feature": key,
@@ -188,41 +189,86 @@ def save_kaipanla_result(key: str, payload: dict[str, Any], *, run_id: str = "")
         "category": KAIPANLA_FEATURES[key].category,
         "saved_at": saved_at,
         "run_id": run_id or clean_run_id,
+        "path": path,
         "payload": payload,
     }
-    write_json(path, record)
-    _append_kaipanla_index(
-        {
-            "feature": key,
-            "label": KAIPANLA_FEATURES[key].label,
-            "category": KAIPANLA_FEATURES[key].category,
-            "saved_at": saved_at,
-            "run_id": run_id or clean_run_id,
-            "path": str(path),
-            "ok": bool(payload.get("ok")),
-            "params": payload.get("params", {}),
-        }
-    )
-    return {"path": str(path), "saved_at": saved_at, "run_id": run_id or clean_run_id}
+    return save_kaipanla_record(record)
+
+
+def save_kaipanla_record(record: dict[str, Any], *, database: str = DEFAULT_DB) -> dict[str, Any]:
+    key = str(record.get("feature") or "")
+    if key not in KAIPANLA_FEATURES:
+        raise ValueError(f"未知开盘啦功能：{key}")
+    saved_at = str(record.get("saved_at") or timestamp())
+    run_id = str(record.get("run_id") or saved_at)
+    path = str(record.get("path") or f"mongodb://{database}/{KAIPANLA_COLLECTION}/{key}/{saved_at}/{_safe_name(run_id)}")
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    document = {
+        "record_id": _record_id(key, saved_at, run_id),
+        "schema": str(record.get("schema") or "kaipanla.result.v1"),
+        "feature": key,
+        "label": str(record.get("label") or KAIPANLA_FEATURES[key].label),
+        "category": str(record.get("category") or KAIPANLA_FEATURES[key].category),
+        "saved_at": saved_at,
+        "run_id": run_id,
+        "path": path,
+        "ok": bool(payload.get("ok")),
+        "params": payload.get("params", {}) if isinstance(payload, dict) else {},
+        "payload": payload,
+        "storage": "mongodb",
+        "synced_at": timestamp(),
+    }
+    with _kaipanla_collection(database) as collection:
+        collection.update_one({"record_id": document["record_id"]}, {"$set": document}, upsert=True)
+    return {"path": path, "saved_at": saved_at, "run_id": run_id, "storage": "mongodb"}
 
 
 def list_kaipanla_records(limit: int = 80, feature: str = "") -> dict[str, Any]:
-    index_path = KAIPANLA_DATA_DIR / "index.json"
-    payload = read_json(index_path) if index_path.exists() else {"items": []}
-    items = payload.get("items", []) if isinstance(payload, dict) else []
-    if feature:
-        items = [item for item in items if item.get("feature") == feature]
-    items = sorted(items, key=lambda item: item.get("saved_at", ""), reverse=True)[: max(1, min(500, limit))]
-    return {"items": items, "count": len(items), "data_dir": str(KAIPANLA_DATA_DIR)}
+    query = {"feature": feature} if feature else {}
+    max_limit = max(1, min(500, int(limit or 80)))
+    with _kaipanla_collection() as collection:
+        cursor = collection.find(
+            query,
+            {
+                "_id": 0,
+                "record_id": 1,
+                "feature": 1,
+                "label": 1,
+                "category": 1,
+                "saved_at": 1,
+                "run_id": 1,
+                "path": 1,
+                "ok": 1,
+                "params": 1,
+                "storage": 1,
+            },
+        ).sort([("saved_at", DESCENDING), ("feature", ASCENDING)]).limit(max_limit)
+        items = list(cursor)
+    return {"items": items, "count": len(items), "data_dir": f"mongodb://{DEFAULT_DB}/{KAIPANLA_COLLECTION}"}
 
 
 def read_kaipanla_record(path: str) -> dict[str, Any]:
-    target = Path(path)
-    root = KAIPANLA_DATA_DIR.resolve()
-    resolved = target.resolve()
-    if root not in resolved.parents and resolved != root:
-        raise ValueError("只能读取开盘啦本地数据目录内的记录。")
-    return read_json(resolved)
+    text = str(path or "").strip()
+    if not text:
+        raise ValueError("缺少开盘啦记录路径。")
+    with _kaipanla_collection() as collection:
+        document = collection.find_one(
+            {"$or": [{"path": text}, {"record_id": text}]},
+            {"_id": 0},
+        )
+    if not document:
+        raise ValueError("开盘啦记录不存在。")
+    return {
+        "schema": document.get("schema") or "kaipanla.result.v1",
+        "feature": document.get("feature", ""),
+        "label": document.get("label", ""),
+        "category": document.get("category", ""),
+        "saved_at": document.get("saved_at", ""),
+        "run_id": document.get("run_id", ""),
+        "path": document.get("path", ""),
+        "payload": document.get("payload", {}),
+        "storage": "mongodb",
+    }
 
 
 def validate_kaipanla_integration() -> dict[str, Any]:
@@ -292,13 +338,35 @@ def _filter_params(method, params: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in params.items() if key in allowed}
 
 
-def _append_kaipanla_index(item: dict[str, Any]) -> None:
-    ensure_dir(KAIPANLA_DATA_DIR)
-    index_path = KAIPANLA_DATA_DIR / "index.json"
-    payload = read_json(index_path) if index_path.exists() else {"version": 1, "items": []}
-    items = payload.get("items", []) if isinstance(payload, dict) else []
-    items.insert(0, item)
-    write_json(index_path, {"version": 1, "items": items[:1000]})
+def _kaipanla_collection(database: str = DEFAULT_DB):
+    return _KaipanlaCollectionContext(database)
+
+
+class _KaipanlaCollectionContext:
+    def __init__(self, database: str):
+        self.database = database
+        self.client: MongoClient | None = None
+
+    def __enter__(self):
+        self.client = MongoClient(_mongo_uri(self.database), serverSelectionTimeoutMS=5000, socketTimeoutMS=8000)
+        collection = self.client[self.database][KAIPANLA_COLLECTION]
+        _ensure_kaipanla_indexes(collection)
+        return collection
+
+    def __exit__(self, *_args):
+        if self.client:
+            self.client.close()
+
+
+def _ensure_kaipanla_indexes(collection: Any) -> None:
+    collection.create_index([("record_id", ASCENDING)], unique=True)
+    collection.create_index([("feature", ASCENDING), ("saved_at", DESCENDING)])
+    collection.create_index([("run_id", ASCENDING)])
+    collection.create_index([("path", ASCENDING)], sparse=True)
+
+
+def _record_id(feature: str, saved_at: str, run_id: str) -> str:
+    return f"{_safe_name(feature)}:{_safe_name(saved_at)}:{_safe_name(run_id)}"
 
 
 def _safe_name(value: str) -> str:

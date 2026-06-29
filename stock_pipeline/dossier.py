@@ -89,6 +89,7 @@ def build_dossier(full_data: dict[str, Any]) -> dict[str, Any]:
                 **minute_reference_row_counts(full_data),
             },
             "fetch_errors": full_data.get("fetch_errors", []),
+            "completeness": full_data.get("completeness", {}),
         },
     }
     compact["news_context"] = _build_news_context(compact)
@@ -188,10 +189,31 @@ def _filter_announcements(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _build_news_context(dossier: dict[str, Any]) -> dict[str, Any]:
     try:
-        from .config import get_news_db_config
-        from .news.context import build_news_context
+        from .news_search import search_news_evidence
 
-        return build_news_context(get_news_db_config(), dossier)
+        company = dossier.get("company", {})
+        basic = company.get("stock_basic", {})
+        profile = company.get("stock_company", {})
+        company_terms = [
+            str(value)
+            for value in (basic.get("name"), profile.get("fullname"), basic.get("ts_code"))
+            if value
+        ]
+        industry_terms = []
+        for row in dossier.get("industry", {}).get("sw_classification", []):
+            industry_terms.extend(str(row.get(key)) for key in ("industry", "name", "l1_name", "l2_name", "l3_name") if row.get(key))
+        company_result = search_news_evidence(basic, keywords=company_terms, limit=12)
+        industry_result = search_news_evidence(basic, keywords=industry_terms, limit=12)
+        macro_result = search_news_evidence(
+            basic,
+            keywords=["宏观经济", "国际财经", "金融市场", "财经要闻"],
+            limit=12,
+        )
+        return {
+            "company_news": company_result.get("items", []),
+            "industry_news": industry_result.get("items", []),
+            "macro_news": macro_result.get("items", []),
+        }
     except Exception as exc:
         return {
             "company_news": [],

@@ -1,0 +1,18 @@
+{
+  "response": {
+    "pages": 1,
+    "results": [{
+      "id": "business/2026/jun/25/example",
+      "webUrl": "https://www.theguardian.com/business/2026/jun/25/example",
+      "webTitle": "Guardian example",
+      "webPublicationDate": "2026-06-25T09:00:00Z",
+      "sectionName": "Business",
+      "fields": {
+        "headline": "Guardian example",
+        "trailText": "<p>Example summary</p>",
+        "bodyText": "Example body",
+        "byline": "Example Author"
+      }
+    }]
+  }
+}

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>价值投机分析</title>
+    <title>ValueScope · A 股多源数据资产平台</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -18,8 +18,8 @@
       <section class="search-panel">
         <div class="title-row">
           <div>
-            <h1>价值投机</h1>
-            <p>股票检索与观察列表</p>
+            <h1>ValueScope</h1>
+            <p>A 股多源数据资产平台</p>
           </div>
         </div>
 
@@ -54,10 +54,10 @@
           <button id="redeemVipBtn" type="button">兑换 VIP</button>
           <p id="apiKeyStatus">普通用户需提供自己的 API key。</p>
         </section>
-        <div class="sidebar-footer">
-          <a id="adminPanelLink" class="admin-entry-link" href="/admin-accounts.html" hidden>
-            <span class="admin-entry-icon">A</span>
-            <strong>Admin Console</strong>
+        <div class="sidebar-footer is-user">
+          <a class="project-entry-link" href="/project.html">
+            <span class="admin-entry-icon">P</span>
+            <strong>项目介绍</strong>
           </a>
           <button id="themeToggleBtn" type="button" aria-pressed="false">深色模式</button>
           <button id="logoutBtn" type="button">退出</button>
@@ -98,7 +98,7 @@
             <button id="loadDataBtn" type="button" disabled>读取数据</button>
             <button id="readAnalysisBtn" type="button" disabled hidden>读取分析</button>
             <button id="analyzeBtn" type="button" disabled hidden>生成分析</button>
-            <button id="multiAgentBtn" type="button" disabled>多Agent分析</button>
+            <button id="multiAgentBtn" type="button" disabled>分析模块已封存</button>
           </div>
         </section>
 
@@ -108,25 +108,25 @@
             <section id="agentDashboard" class="agent-dashboard" hidden>
               <div class="agent-dashboard-head">
                 <div>
-                  <h3>多 Agent 分析</h3>
-                  <p id="agentDashboardMeta">运行完成后展示各 Agent 观点。</p>
+                  <h3>历史分析报告</h3>
+                  <p id="agentDashboardMeta">分析模块外置后，这里只展示已生成的历史报告。</p>
                 </div>
                 <div id="agentFinalScore" class="agent-final-score">-</div>
               </div>
               <div id="agentProgressPanel" class="agent-progress-panel" hidden></div>
               <div id="agentCards" class="agent-card-grid"></div>
             </section>
-            <div id="analysisOutput" class="analysis-output">选择一只股票后运行多 Agent 分析。</div>
+            <div id="analysisOutput" class="analysis-output">选择一只股票后读取本地数据；分析模块已准备拆分为独立项目。</div>
           </div>
           <aside class="agent-history-panel">
             <div>
-              <h3>多 Agent 历史</h3>
+              <h3>分析历史</h3>
               <p>选择历史运行记录后可直接读取。</p>
             </div>
-            <select id="agentRunSelect" title="多Agent历史">
-              <option value="">暂无多Agent历史</option>
+            <select id="agentRunSelect" title="分析历史">
+              <option value="">暂无分析历史</option>
             </select>
-            <button id="readAgentRunBtn" type="button" disabled>读取多Agent</button>
+            <button id="readAgentRunBtn" type="button" disabled>读取历史</button>
           </aside>
         </section>
 
