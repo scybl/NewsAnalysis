@@ -7,16 +7,23 @@ const crawlerRunsTable = document.querySelector("#crawlerRunsTable");
 const crawlerRefreshBtn = document.querySelector("#crawlerRefreshBtn");
 const crawlerAutoRefresh = document.querySelector("#crawlerAutoRefresh");
 const crawlerRunLimit = document.querySelector("#crawlerRunLimit");
+const crawlerRetryFailuresBtn = document.querySelector("#crawlerRetryFailuresBtn");
 const crawlerRunDetailCard = document.querySelector("#crawlerRunDetailCard");
 const crawlerRunDetailMeta = document.querySelector("#crawlerRunDetailMeta");
 const crawlerRunDetail = document.querySelector("#crawlerRunDetail");
 const crawlerRunDetailClose = document.querySelector("#crawlerRunDetailClose");
 
-const crawlerState = { payload: null, timer: null };
+const CRAWLER_FAILURE_RETRY_THRESHOLD = 3;
+const crawlerState = { payload: null, timer: null, failureItems: new Map() };
 
 document.addEventListener("DOMContentLoaded", () => {
   crawlerRefreshBtn?.addEventListener("click", loadCrawlerStatus);
   crawlerRunLimit?.addEventListener("change", loadCrawlerStatus);
+  crawlerRetryFailuresBtn?.addEventListener("click", () => retryFailureItems());
+  crawlerFailureStats?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-failure-action='retry']");
+    if (button) retryFailureItems(button.dataset.failureId);
+  });
   crawlerAutoRefresh?.addEventListener("change", syncAutoRefresh);
   crawlerRunDetailClose?.addEventListener("click", closeRunDetail);
   syncAutoRefresh();
@@ -107,7 +114,16 @@ function withCrawlerPlaceholders(health) {
 function renderFailureStats(stats) {
   const codes = stats.codes || {};
   const items = stats.items || [];
-  crawlerFailureMeta.textContent = `${stats.failed_articles || 0} 条失败 · ${stats.warning_articles || 0} 条警告 · 扫描 ${stats.runs_scanned || 0} 次运行`;
+  crawlerState.failureItems = new Map(items.map((item) => [String(item.id || ""), item]));
+  if (crawlerRetryFailuresBtn) {
+    const reachedThreshold = Number(stats.failed_articles || 0) >= CRAWLER_FAILURE_RETRY_THRESHOLD;
+    crawlerRetryFailuresBtn.disabled = !reachedThreshold || !items.some((item) => canRetryFailureItem(item));
+    crawlerRetryFailuresBtn.title = reachedThreshold
+      ? "对当前展示的失败分组逐个重抓一次，仍失败则归档"
+      : `待处理失败达到 ${CRAWLER_FAILURE_RETRY_THRESHOLD} 条后启用批量重抓`;
+  }
+  const archivedText = stats.archived_articles ? ` · 已归档 ${stats.archived_articles} 条` : "";
+  crawlerFailureMeta.textContent = `${stats.failed_articles || 0} 条待处理失败 · ${stats.warning_articles || 0} 条警告 · 扫描 ${stats.runs_scanned || 0} 次运行${archivedText}`;
   const normalizedCodes = normalizeIssueCodeCounts(codes);
   const orderedCodes = Object.entries(normalizedCodes).sort((left, right) => Number(right[1]) - Number(left[1]));
   const knownCards = [
@@ -173,16 +189,64 @@ function normalizeIssueCode(code) {
 
 function renderFailureItem(item) {
   const url = item.article_url || "";
+  const sampleText = (item.sample_urls || []).length > 1 ? `；样例 ${item.sample_urls.length} 条` : "";
   return `
     <article class="crawler-failure-item">
       <div class="crawler-failure-item-head">
-        <span class="crawler-run-status is-${escapeAttr(item.severity || "failed")}">${escapeHtml(issueLabel(item.code))}</span>
-        <small>${escapeHtml(sourceLabel(item.source_name))} · ${escapeHtml(formatDateTime(item.started_at))} · ${escapeHtml(shortRunId(item.run_id))}</small>
+        <div>
+          <span class="crawler-run-status is-${escapeAttr(item.severity || "failed")}">${escapeHtml(issueLabel(item.code))}</span>
+          <strong>${escapeHtml(String(item.count || 1))} 次</strong>
+        </div>
+        <small>${escapeHtml(sourceLabel(item.source_name))} · ${escapeHtml(formatDateTime(item.latest_at || item.started_at))} · ${escapeHtml(shortRunId(item.run_id))}${escapeHtml(sampleText)}</small>
       </div>
       <p>${escapeHtml(item.message || "")}</p>
       ${url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>` : `<em>无文章链接</em>`}
+      <div class="crawler-failure-item-actions">
+        <button type="button" data-failure-action="retry" data-failure-id="${escapeAttr(item.id || "")}" ${canRetryFailureItem(item) ? "" : "disabled"}>重抓一次</button>
+      </div>
     </article>
   `;
+}
+
+async function retryFailureItems(itemId = "") {
+  const items = itemId
+    ? [crawlerState.failureItems.get(String(itemId))].filter(Boolean)
+    : [...crawlerState.failureItems.values()].filter(canRetryFailureItem).slice(0, 20);
+  if (!items.length) return;
+  const label = itemId ? "重抓这个失败新闻分组" : `重抓当前 ${items.length} 个失败新闻分组`;
+  if (typeof approveDataFetch === "function" && !approveDataFetch(label)) return;
+  setFailureRetryBusy(true, "正在重抓失败 item...");
+  const totals = { retried: 0, recovered: 0, archived: 0 };
+  try {
+    for (const item of items) {
+      const response = await fetch("/api/admin/news-crawler/failure-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "retry", approved: true, item }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false) throw new Error(payload.error || "失败 item 重抓失败");
+      totals.retried += Number(payload.retried || 0);
+      totals.recovered += Number(payload.recovered || 0);
+      totals.archived += Number(payload.archived || 0);
+    }
+    setFailureRetryBusy(false, `重抓完成：处理 ${totals.retried} 条，恢复 ${totals.recovered} 条，归档 ${totals.archived} 条。`);
+    await loadCrawlerStatus();
+  } catch (error) {
+    setFailureRetryBusy(false, `重抓失败：${error.message}`);
+  }
+}
+
+function canRetryFailureItem(item) {
+  return item && item.source_name === "tonghuashun" && ((item.sample_urls || []).length || item.article_url);
+}
+
+function setFailureRetryBusy(busy, text) {
+  if (crawlerRetryFailuresBtn) {
+    crawlerRetryFailuresBtn.disabled = busy;
+    crawlerRetryFailuresBtn.textContent = busy ? "重抓中..." : "重抓可处理失败";
+  }
+  crawlerFailureMeta.textContent = text;
 }
 
 function renderCrawlerRuns(runs) {

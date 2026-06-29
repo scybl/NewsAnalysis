@@ -28,6 +28,23 @@ import time  # 添加time模块用于sleep延迟
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+def _normalize_kaipanla_date_text(value):
+    text = str(value or "").strip()
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return text
+
+
+def _to_int(value, default=0):
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def is_weekend(date_str):
     """
     判断给定日期是否为周末
@@ -3865,8 +3882,9 @@ class KaipanlaCrawler:
         
         df = pd.DataFrame(data_list)
         
-        # 按日期排序
-        df['date'] = pd.to_datetime(df['date'])
+        # 按日期排序。部分接口会返回 20260518 这类紧凑日期，先统一成 ISO 日期。
+        df['date'] = pd.to_datetime(df['date'].astype(str).apply(_normalize_kaipanla_date_text), format="%Y-%m-%d", errors="coerce")
+        df = df.dropna(subset=['date'])
         df = df.sort_values('date').reset_index(drop=True)
         
         print(f"[OK] 成功创建DataFrame: {len(df)} 条记录")
@@ -4103,11 +4121,11 @@ class KaipanlaCrawler:
             change_pct = result.get("QuoteChange", "")
             turnover_ratio = result.get("TurnoverRatio", "")
             circulating_shares = result.get("Circulation", "")
-            net_buy_amount = int(result.get("BuyIn", 0))
-            turnover = int(result.get("Turnover", 0))
-            more_turnover = int(result.get("MoreTurnover", 0))
-            on_list_count = int(result.get("ToBusinessCount", 0))
-            on_list_start = int(result.get("lbStart", 0))
+            net_buy_amount = _to_int(result.get("BuyIn", 0))
+            turnover = _to_int(result.get("Turnover", 0))
+            more_turnover = _to_int(result.get("MoreTurnover", 0))
+            on_list_count = _to_int(result.get("ToBusinessCount", 0))
+            on_list_start = _to_int(result.get("lbStart", 0))
             on_time_list = result.get("OnTimeList", [])
             
             # 解析买卖数据
@@ -4121,9 +4139,9 @@ class KaipanlaCrawler:
                     seat_info = {
                         "seat_id": buy_seat.get("ID", ""),
                         "seat_name": buy_seat.get("Name", ""),
-                        "buy_amount": int(buy_seat.get("Buy", 0)),
-                        "sell_amount": int(buy_seat.get("Sell", 0)),
-                        "rank": int(buy_seat.get("PX", 0)),
+                        "buy_amount": _to_int(buy_seat.get("Buy", 0)),
+                        "sell_amount": _to_int(buy_seat.get("Sell", 0)),
+                        "rank": _to_int(buy_seat.get("PX", 0)),
                         "group_id": buy_seat.get("GroupID", ""),
                         "group_icon": buy_seat.get("GroupIcon", [])
                     }
@@ -4135,9 +4153,9 @@ class KaipanlaCrawler:
                     seat_info = {
                         "seat_id": sell_seat.get("ID", ""),
                         "seat_name": sell_seat.get("Name", ""),
-                        "buy_amount": int(sell_seat.get("Buy", 0)),
-                        "sell_amount": int(sell_seat.get("Sell", 0)),
-                        "rank": int(sell_seat.get("PX", 0)),
+                        "buy_amount": _to_int(sell_seat.get("Buy", 0)),
+                        "sell_amount": _to_int(sell_seat.get("Sell", 0)),
+                        "rank": _to_int(sell_seat.get("PX", 0)),
                         "group_id": sell_seat.get("GroupID", ""),
                         "group_icon": sell_seat.get("GroupIcon", [])
                     }
@@ -4147,8 +4165,8 @@ class KaipanlaCrawler:
                     "buy_list": buy_list,
                     "sell_list": sell_list,
                     "up_reason": item.get("UpReason", []),
-                    "buy_total": int(item.get("BuyTotal", 0)),
-                    "sell_total": int(item.get("SellTotal", 0))
+                    "buy_total": _to_int(item.get("BuyTotal", 0)),
+                    "sell_total": _to_int(item.get("SellTotal", 0))
                 }
                 buy_sell_data.append(buy_sell_info)
             

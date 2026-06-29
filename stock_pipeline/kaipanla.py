@@ -65,7 +65,7 @@ KAIPANLA_FEATURES: dict[str, KaipanlaFeature] = {
     "multiple_sectors_strength": KaipanlaFeature("multiple_sectors_strength", "多板块强度", "板块数据", "批量获取多个板块强度。", {"sector_codes": ["801346", "801225"], "date": DEFAULT_DATE, "timeout": 20}),
     "sector_strength_history": KaipanlaFeature("sector_strength_history", "板块强度历史", "板块数据", "指定日期范围的板块强度历史。", {"sector_code": "801346", "start_date": "2026-01-12", "end_date": DEFAULT_DATE, "timeout": 20}),
     "sector_strength_dataframe": KaipanlaFeature("sector_strength_dataframe", "板块强度历史表格", "板块数据", "板块强度历史 DataFrame。", {"sector_code": "801346", "start_date": "2026-01-12", "end_date": DEFAULT_DATE, "timeout": 20}),
-    "longhubang_stock_list": KaipanlaFeature("longhubang_stock_list", "龙虎榜列表", "龙虎榜", "指定日期龙虎榜股票列表。", {"date": DEFAULT_DATE, "index": 0, "page_size": 100, "timeout": 20}),
+    "longhubang_stock_list": KaipanlaFeature("longhubang_stock_list", "龙虎榜列表", "龙虎榜", "指定日期龙虎榜股票列表。", {"date": DEFAULT_DATE, "index": 0, "page_size": 500, "timeout": 20}),
     "longhubang_stock_detail": KaipanlaFeature("longhubang_stock_detail", "龙虎榜详情", "龙虎榜", "指定股票龙虎榜明细。", {"stock_code": "002498", "date": DEFAULT_DATE, "timeout": 20}),
     "longhubang_dataframe": KaipanlaFeature("longhubang_dataframe", "龙虎榜表格", "龙虎榜", "龙虎榜列表 DataFrame。", {"date": DEFAULT_DATE, "timeout": 20}),
     "sector_constituent_stocks": KaipanlaFeature("sector_constituent_stocks", "板块成分股", "板块数据", "指定板块成分股。", {"plate_id": "801346", "date": DEFAULT_DATE, "order": 1, "timeout": 20}),
@@ -151,16 +151,27 @@ def run_kaipanla_feature(key: str, params: dict[str, Any] | None = None, *, save
     return payload
 
 
-def run_kaipanla_batch(feature_keys: list[str], params_by_feature: dict[str, dict[str, Any]] | None = None, *, save: bool = True, run_id: str = "") -> dict[str, Any]:
+def run_kaipanla_batch(
+    feature_keys: list[str],
+    params_by_feature: dict[str, dict[str, Any]] | None = None,
+    *,
+    save: bool = True,
+    run_id: str = "",
+    trade_date: str = "",
+) -> dict[str, Any]:
     selected = [key for key in feature_keys if key in KAIPANLA_FEATURES]
     if not selected:
         raise ValueError("请至少选择一个开盘啦功能。")
+    normalized_trade_date = _display_date(trade_date) if trade_date else ""
     results = []
     succeeded = 0
     failed = 0
     for key in selected:
         try:
-            result = run_kaipanla_feature(key, (params_by_feature or {}).get(key) or {}, save=save, run_id=run_id)
+            params = (params_by_feature or {}).get(key) or {}
+            if normalized_trade_date:
+                params = _params_with_trade_date(key, params, normalized_trade_date)
+            result = run_kaipanla_feature(key, params, save=save, run_id=run_id)
             results.append({"feature": key, "ok": True, "saved": result.get("saved", {})})
             succeeded += 1
         except Exception as exc:  # noqa: BLE001 - batch should keep remaining features running
@@ -169,6 +180,7 @@ def run_kaipanla_batch(feature_keys: list[str], params_by_feature: dict[str, dic
     return {
         "ok": failed == 0,
         "run_id": run_id,
+        "trade_date": normalized_trade_date,
         "total": len(selected),
         "succeeded": succeeded,
         "failed": failed,
@@ -247,6 +259,46 @@ def list_kaipanla_records(limit: int = 80, feature: str = "") -> dict[str, Any]:
     return {"items": items, "count": len(items), "data_dir": f"mongodb://{DEFAULT_DB}/{KAIPANLA_COLLECTION}"}
 
 
+def kaipanla_daily_overview(target_date: str = "") -> dict[str, Any]:
+    normalized_date = _normalize_date_text(target_date)
+    with _kaipanla_collection() as collection:
+        if not normalized_date:
+            latest = collection.find_one({"archived": {"$ne": True}}, {"_id": 0, "saved_at": 1, "params": 1}, sort=[("saved_at", DESCENDING)])
+            normalized_date = _normalize_date_text(str((latest or {}).get("saved_at") or "")[:8]) or _record_trade_date(latest or {}) or ""
+        records = _kaipanla_records_for_date(collection, normalized_date)
+    latest_by_feature: dict[str, dict[str, Any]] = {}
+    for record in records:
+        feature = str(record.get("feature") or "")
+        if feature and feature not in latest_by_feature:
+            latest_by_feature[feature] = record
+    feature_cards = [_feature_card(record) for record in latest_by_feature.values()]
+    succeeded = sum(1 for record in latest_by_feature.values() if record.get("ok"))
+    failed = sum(1 for record in latest_by_feature.values() if not record.get("ok"))
+    return {
+        "date": normalized_date,
+        "display_date": _display_date(normalized_date),
+        "coverage": {
+            "total_features": len(KAIPANLA_FEATURES),
+            "collected_features": len(latest_by_feature),
+            "succeeded": succeeded,
+            "failed": failed,
+            "missing": max(0, len(KAIPANLA_FEATURES) - len(latest_by_feature)),
+        },
+        "latest_saved_at": max((str(item.get("saved_at") or "") for item in latest_by_feature.values()), default=""),
+        "kpis": _overview_kpis(latest_by_feature),
+        "sections": {
+            "temperature": _overview_section(latest_by_feature, ["daily_data", "market_sentiment", "new_high_data", "sharp_withdrawal"]),
+            "limit_up": _overview_section(latest_by_feature, ["consecutive_limit_up", "market_limit_up_ladder", "sector_limit_up_ladder", "historical_broken_limit_up"]),
+            "sectors": _overview_section(latest_by_feature, ["sector_ranking", "sector_strength_ndays", "sector_capital_data", "sector_bidding_anomaly"]),
+            "capital": _overview_section(latest_by_feature, ["longhubang_dataframe", "longhubang_stock_list"]),
+            "etf": _overview_section(latest_by_feature, ["all_etf_ranking", "etf_ranking"]),
+            "intraday": _overview_section(latest_by_feature, ["realtime_market_mood", "realtime_rise_fall_analysis", "realtime_actual_limit_up_down", "realtime_sharp_withdrawal"]),
+        },
+        "features": feature_cards,
+        "data_dir": f"mongodb://{DEFAULT_DB}/{KAIPANLA_COLLECTION}",
+    }
+
+
 def read_kaipanla_record(path: str) -> dict[str, Any]:
     text = str(path or "").strip()
     if not text:
@@ -301,6 +353,8 @@ def parse_params(raw: str | None) -> dict[str, Any]:
 
 
 def to_jsonable(value: Any) -> Any:
+    if isinstance(value, date):
+        return value.isoformat()
     try:
         import pandas as pd
     except Exception:  # pragma: no cover - pandas is a project dependency
@@ -330,6 +384,317 @@ def to_jsonable(value: Any) -> Any:
         except Exception:
             pass
     return value
+
+
+def _kaipanla_records_for_date(collection: Any, normalized_date: str) -> list[dict[str, Any]]:
+    compact = normalized_date.replace("-", "")
+    dashed = _display_date(normalized_date)
+    query: dict[str, Any] = {"archived": {"$ne": True}}
+    if compact:
+        query = {
+            "archived": {"$ne": True},
+            "$or": [
+                {"saved_at": {"$regex": f"^{compact}"}},
+                {"params.date": {"$in": [compact, dashed]}},
+                {"params.end_date": {"$in": [compact, dashed]}},
+            ]
+        }
+    cursor = collection.find(
+        query,
+        {
+            "_id": 0,
+            "feature": 1,
+            "label": 1,
+            "category": 1,
+            "saved_at": 1,
+            "run_id": 1,
+            "path": 1,
+            "ok": 1,
+            "params": 1,
+            "payload.result": 1,
+        },
+    ).sort([("saved_at", DESCENDING), ("feature", ASCENDING)]).limit(500)
+    records = list(cursor)
+    if compact:
+        return [record for record in records if _record_matches_trade_date(record, compact)]
+    return records
+
+
+def _feature_card(record: dict[str, Any]) -> dict[str, Any]:
+    feature = str(record.get("feature") or "")
+    result = ((record.get("payload") or {}).get("result") if isinstance(record.get("payload"), dict) else None)
+    rows = _result_rows(result)
+    return {
+        "feature": feature,
+        "label": record.get("label") or KAIPANLA_FEATURES.get(feature, KaipanlaFeature(feature, feature, "", "", {})).label,
+        "category": record.get("category") or KAIPANLA_FEATURES.get(feature, KaipanlaFeature(feature, feature, "", "", {})).category,
+        "ok": bool(record.get("ok")),
+        "saved_at": record.get("saved_at") or "",
+        "run_id": record.get("run_id") or "",
+        "path": record.get("path") or "",
+        "item_count": _result_count(result, rows),
+        "summary": _result_summary(result, rows),
+        "rows": _slim_rows(rows, limit=8),
+    }
+
+
+def _overview_kpis(records: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    payloads = [((item.get("payload") or {}).get("result") if isinstance(item.get("payload"), dict) else None) for item in records.values()]
+    candidates = [
+        ("涨停", ["涨停", "zt", "limit_up"]),
+        ("跌停", ["跌停", "dt", "limit_down"]),
+        ("炸板", ["炸板", "broken", "open_board"]),
+        ("最高连板", ["最高板", "最高连板", "height", "max_board"]),
+        ("百日新高", ["百日新高", "new_high"]),
+        ("大幅回撤", ["回撤", "withdrawal", "drawdown"]),
+    ]
+    items = []
+    for label, keys in candidates:
+        value = next((found for payload in payloads if (found := _find_number(payload, keys)) is not None), None)
+        items.append({"label": label, "value": value if value is not None else "-", "hint": "从最新开盘啦记录自动识别"})
+    return items
+
+
+def _overview_section(records: dict[str, dict[str, Any]], features: list[str]) -> list[dict[str, Any]]:
+    return [_feature_card(records[key]) for key in features if key in records]
+
+
+def _result_rows(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        if value.get("type") == "series" and isinstance(value.get("index"), list) and isinstance(value.get("values"), list):
+            return [
+                {"指标": index, "值": item}
+                for index, item in zip(value.get("index") or [], value.get("values") or [])
+                if item not in (None, "")
+            ]
+        rows = value.get("rows")
+        if isinstance(rows, list):
+            return [item for item in rows if isinstance(item, dict)]
+        for key in ("data", "items", "stocks", "list", "etfs"):
+            rows = value.get(key)
+            if isinstance(rows, list):
+                return _result_row_list(rows, source_key=key)
+        for item in value.values():
+            nested = _result_rows(item)
+            if nested:
+                return nested
+    if isinstance(value, list):
+        return _result_row_list(value)
+    return []
+
+
+def _result_row_list(items: list[Any], *, source_key: str = "") -> list[dict[str, Any]]:
+    rows = []
+    for item in items:
+        row = _result_row(item, source_key=source_key)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _result_row(item: Any, *, source_key: str = "") -> dict[str, Any]:
+    if isinstance(item, dict):
+        return item
+    if source_key == "etfs" and isinstance(item, (list, tuple)):
+        return _etf_row(item)
+    return {}
+
+
+def _etf_row(item: list[Any] | tuple[Any, ...]) -> dict[str, Any]:
+    keys = [
+        "ETF代码",
+        "ETF名称",
+        "价格",
+        "涨跌幅(%)",
+        "成交额",
+        "量比",
+        "昨日增减金额",
+        "昨日增减份额",
+        "昨日增减比例(%)",
+        "一周收益(%)",
+        "一月收益(%)",
+        "三个月收益(%)",
+        "半年收益(%)",
+        "总市值",
+        "字段14",
+        "字段15",
+        "字段16",
+        "字段17",
+        "字段18",
+        "今年以来(%)",
+        "字段20",
+    ]
+    return {key: to_jsonable(item[index]) for index, key in enumerate(keys) if index < len(item)}
+
+
+def _result_count(value: Any, rows: list[dict[str, Any]]) -> int:
+    if rows:
+        return len(rows)
+    if isinstance(value, dict):
+        for key in ("row_count", "total_count", "count", "total"):
+            try:
+                return int(value.get(key) or 0)
+            except (TypeError, ValueError):
+                pass
+    if isinstance(value, list):
+        return len(value)
+    return 1 if value not in ({}, [], None) else 0
+
+
+def _result_summary(value: Any, rows: list[dict[str, Any]]) -> str:
+    if rows:
+        keys = list(rows[0])[:3]
+        return f"{len(rows)} 条 · " + " / ".join(str(rows[0].get(key, "")) for key in keys if rows[0].get(key) not in (None, ""))
+    if isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            if isinstance(item, (str, int, float, bool)) and len(parts) < 4:
+                parts.append(f"{key}: {item}")
+        return "；".join(parts) if parts else f"{len(value)} 个字段"
+    if isinstance(value, list):
+        return f"{len(value)} 条"
+    return str(value)[:120] if value not in (None, "") else "无明细"
+
+
+ROW_PRIORITY_KEYS = [
+    "股票代码",
+    "stock_code",
+    "股票名称",
+    "stock_name",
+    "首次封板时间",
+    "涨停时间",
+    "timestamp",
+    "连板天数",
+    "consecutive_days",
+    "board_type",
+    "涨停原因",
+    "limit_up_reason",
+    "主题",
+    "概念标签",
+    "concepts",
+    "总市值",
+    "total_market_cap",
+    "流通市值",
+    "circulating_market_cap",
+    "change_pct",
+    "buy_amount",
+    "ETF代码",
+    "ETF名称",
+    "价格",
+    "涨跌幅(%)",
+    "成交额",
+    "量比",
+    "一周收益(%)",
+    "一月收益(%)",
+    "今年以来(%)",
+]
+
+
+def _slim_rows(rows: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    result = []
+    for row in rows[:limit]:
+        clean = {}
+        ordered_keys = [key for key in ROW_PRIORITY_KEYS if key in row]
+        ordered_keys.extend(key for key in row if key not in ordered_keys)
+        for key in ordered_keys:
+            value = row.get(key)
+            if len(clean) >= limit:
+                break
+            if isinstance(value, (dict, list)):
+                continue
+            clean[str(key)] = to_jsonable(value)
+        result.append(clean)
+    return result
+
+
+def _find_number(value: Any, needles: list[str]) -> int | float | None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if any(needle.lower() in key_text for needle in needles):
+                number = _to_number(item)
+                if number is not None:
+                    return number
+            found = _find_number(item, needles)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value[:20]:
+            found = _find_number(item, needles)
+            if found is not None:
+                return found
+    return None
+
+
+def _to_number(value: Any) -> int | float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        text = value.replace(",", "").replace("%", "").strip()
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+            number = float(text)
+            return int(number) if number.is_integer() else number
+    return None
+
+
+def _record_trade_date(record: dict[str, Any]) -> str:
+    params = record.get("params") if isinstance(record.get("params"), dict) else {}
+    for key in ("date", "end_date", "trade_date"):
+        value = _normalize_date_text(params.get(key))
+        if value:
+            return value
+    saved = str(record.get("saved_at") or "")
+    return _normalize_date_text(saved[:8])
+
+
+def _record_matches_trade_date(record: dict[str, Any], compact_date: str) -> bool:
+    params = record.get("params") if isinstance(record.get("params"), dict) else {}
+    exact_dates = [
+        _normalize_date_text(params.get(key))
+        for key in ("date", "trade_date")
+        if params.get(key) not in (None, "")
+    ]
+    if exact_dates:
+        return compact_date in exact_dates
+
+    start_date = _normalize_date_text(params.get("start_date"))
+    end_date = _normalize_date_text(params.get("end_date"))
+    if start_date and end_date:
+        return start_date <= compact_date <= end_date
+    if end_date:
+        return compact_date == end_date
+
+    saved = _normalize_date_text(str(record.get("saved_at") or "")[:8])
+    return saved == compact_date
+
+
+def _params_with_trade_date(feature_key: str, params: dict[str, Any], trade_date: str) -> dict[str, Any]:
+    feature = KAIPANLA_FEATURES[feature_key]
+    merged = {**feature.default_params, **params}
+    for key in ("date", "end_date", "trade_date"):
+        if key not in merged:
+            continue
+        value = _normalize_date_text(merged.get(key))
+        if not value or value == _normalize_date_text(DEFAULT_DATE):
+            merged[key] = trade_date
+    return merged
+
+
+def _normalize_date_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    digits = re.sub(r"\D", "", text)
+    if len(digits) >= 8:
+        return digits[:8]
+    return ""
+
+
+def _display_date(value: str) -> str:
+    digits = _normalize_date_text(value)
+    return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}" if len(digits) == 8 else ""
 
 
 def _filter_params(method, params: dict[str, Any]) -> dict[str, Any]:

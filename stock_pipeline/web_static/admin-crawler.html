@@ -108,7 +108,10 @@
           <section class="admin-card crawler-failure-card">
             <div class="admin-card-head">
               <div><h4>失败 item 诊断</h4><p>按最近运行记录汇总失败原因、最近失败链接和高频错误消息。</p></div>
-              <span id="crawlerFailureMeta">等待数据</span>
+              <div class="crawler-failure-actions">
+                <span id="crawlerFailureMeta">等待数据</span>
+                <button id="crawlerRetryFailuresBtn" type="button">重抓可处理失败</button>
+              </div>
             </div>
             <div id="crawlerFailureStats" class="crawler-failure-stats"></div>
           </section>

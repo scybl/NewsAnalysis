@@ -71,6 +71,27 @@
         </header>
 
         <section class="admin-panel market-console">
+          <section class="admin-section-block kaipanla-overview-section">
+            <div class="admin-section-heading">
+              <div><span>DAILY MARKET OVERVIEW</span><h2>每日市场纵览</h2></div>
+              <p>按交易日汇总开盘啦市场情绪、连板梯队、板块、龙虎榜和 ETF 数据。</p>
+            </div>
+            <section class="admin-card kaipanla-overview-card">
+              <div class="admin-card-head">
+                <div>
+                  <h4>交易日截面</h4>
+                  <p id="kaipanlaOverviewMeta">读取最近开盘啦记录。</p>
+                </div>
+                <div class="admin-actions kaipanla-overview-actions">
+                  <input id="kaipanlaOverviewDate" type="date" />
+                  <button id="kaipanlaOverviewRefreshBtn" type="button">刷新纵览</button>
+                </div>
+              </div>
+              <div id="kaipanlaOverviewKpis" class="kaipanla-overview-kpis"></div>
+              <div id="kaipanlaOverviewSections" class="kaipanla-overview-sections"></div>
+            </section>
+          </section>
+
           <section class="admin-section-block">
             <div class="admin-section-heading">
               <div><span>MARKET SCHEDULE</span><h2>行情定时采集</h2></div>
@@ -139,24 +160,6 @@
                   <button id="kaipanlaSaveBtn" type="button">保存定时</button>
                   <button id="kaipanlaRunBtn" class="primary-action" type="button">立即抓取</button>
                 </div>
-                <details class="kaipanla-detail-panel">
-                  <summary>开盘啦功能配置与历史结果</summary>
-                  <div id="kaipanlaFeatureGrid" class="kaipanla-feature-grid"></div>
-                  <div class="news-filter-grid kaipanla-control-grid">
-                    <label class="news-search-field">
-                      <span>参数编辑功能</span>
-                      <select id="kaipanlaFeatureSelect"></select>
-                    </label>
-                  </div>
-                  <label class="kaipanla-param-field">
-                    <span>参数 JSON</span>
-                    <textarea id="kaipanlaParamsInput" rows="6" spellcheck="false"></textarea>
-                  </label>
-                  <div class="admin-table-wrap kaipanla-records-wrap">
-                    <table id="kaipanlaRecordsTable"></table>
-                  </div>
-                  <pre id="kaipanlaOutput" class="agent-code-sample kaipanla-output">等待操作。</pre>
-                </details>
               </section>
             </div>
           </section>

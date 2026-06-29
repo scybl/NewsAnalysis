@@ -27,10 +27,11 @@ from .config import PROJECT_ROOT, get_settings
 from .akshare_client import AkshareClient
 from .composite_client import FallbackStockClient
 from .crawler_monitor import crawler_status_snapshot
+from .crawler_failure_actions import retry_failure_group
 from .data_sources import configure_data_sources, data_source_snapshot, provider_available, provider_status
 from .deepseek_client import DeepSeekClient, DeepSeekError
 from .eastmoney_client import EastmoneyClient
-from .kaipanla import KAIPANLA_FEATURES, list_kaipanla_features, list_kaipanla_records, read_kaipanla_record, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
+from .kaipanla import KAIPANLA_FEATURES, kaipanla_daily_overview, list_kaipanla_features, list_kaipanla_records, read_kaipanla_record, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
 from .news_library import query_news_library
 from .news_search import search_related_news
 from .minute_storage import minute_reference_row_counts
@@ -111,6 +112,7 @@ DATA_FETCH_ACTIONS = {
     "/api/admin/daily-market-scheduler:run_now": "立即执行每日股票数据更新",
     "/api/admin/kaipanla/scheduler:run_now": "立即执行开盘啦数据抓取",
     "/api/admin/news-library/refetch": "重新抓取新闻并补充到新闻库",
+    "/api/admin/news-crawler/failure-action": "重抓新闻失败 item 并归档仍失败的链接",
 }
 AGENT_TOKEN_PREFIX = "na_agent_"
 AGENT_ALLOWED_SCOPES = {"R", "B"}
@@ -799,6 +801,12 @@ class StockWebApp:
                     limit = max(1, min(500, int(query.get("limit", ["80"])[0] or 80)))
                     self._json({"ok": True, **list_kaipanla_records(limit=limit, feature=query.get("feature", [""])[0])})
                     return
+                if parsed.path == "/api/admin/kaipanla/daily-overview":
+                    if not self._require_admin():
+                        return
+                    query = parse_qs(parsed.query)
+                    self._json({"ok": True, "overview": kaipanla_daily_overview(query.get("date", [""])[0])})
+                    return
                 if parsed.path == "/api/admin/kaipanla/record":
                     if not self._require_admin():
                         return
@@ -908,6 +916,11 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._handle_admin_news_refetch()
+                    return
+                if parsed.path == "/api/admin/news-crawler/failure-action":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_news_crawler_failure_action()
                     return
                 if parsed.path == "/api/admin/demo-reset":
                     if not self._require_admin():
@@ -1281,6 +1294,20 @@ class StockWebApp:
                     return
                 try:
                     self._json({"ok": True, **app.news_refetch_controller.start(payload)})
+                except (ValueError, RuntimeError) as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+
+            def _handle_admin_news_crawler_failure_action(self) -> None:
+                payload = self._read_json()
+                if not self._require_data_fetch_approval("/api/admin/news-crawler/failure-action", payload):
+                    return
+                action = str(payload.get("action") or "retry").strip()
+                session = self._current_session() or {}
+                try:
+                    if action != "retry":
+                        self._json({"ok": False, "error": "未知失败 item 操作。"}, status=400)
+                        return
+                    self._json({"ok": True, **retry_failure_group(payload.get("item") or payload, actor=session.get("username") or "admin")})
                 except (ValueError, RuntimeError) as exc:
                     self._json({"ok": False, "error": str(exc)}, status=400)
 
@@ -2760,12 +2787,13 @@ class KaipanlaScheduler:
 
     def _run_task(self, task_id: str, trigger: str, features: list[str], params_by_feature: dict[str, dict]) -> None:
         try:
-            result = run_kaipanla_batch(features, params_by_feature, save=True, run_id=task_id)
+            trade_date = today_yyyymmdd()
+            result = run_kaipanla_batch(features, params_by_feature, save=True, run_id=task_id, trade_date=trade_date)
             status = "succeeded" if result.get("ok") else "failed"
             self.task_registry.add_event(task_id, status, f"开盘啦抓取完成：成功 {result.get('succeeded', 0)}，失败 {result.get('failed', 0)}。", result)
             self.task_registry.update_task(task_id, status=status, error="" if result.get("ok") else "部分开盘啦功能抓取失败。", result=result)
             with self.lock:
-                self.config["last_run_date"] = today_yyyymmdd()
+                self.config["last_run_date"] = trade_date
                 self.config["last_run_at"] = timestamp()
                 self.config["last_result"] = {**result, "trigger": trigger}
                 self.config["last_error"] = "" if result.get("ok") else "部分开盘啦功能抓取失败。"

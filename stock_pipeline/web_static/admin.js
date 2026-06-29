@@ -75,13 +75,9 @@ const idlePrefetchLastRequest = document.querySelector("#idlePrefetchLastRequest
 const idlePrefetchLastRun = document.querySelector("#idlePrefetchLastRun");
 const idlePrefetchLastResult = document.querySelector("#idlePrefetchLastResult");
 const kaipanlaMeta = document.querySelector("#kaipanlaMeta");
-const kaipanlaFeatureSelect = document.querySelector("#kaipanlaFeatureSelect");
-const kaipanlaFeatureGrid = document.querySelector("#kaipanlaFeatureGrid");
-const kaipanlaParamsInput = document.querySelector("#kaipanlaParamsInput");
 const kaipanlaValidateBtn = document.querySelector("#kaipanlaValidateBtn");
 const kaipanlaSaveBtn = document.querySelector("#kaipanlaSaveBtn");
 const kaipanlaRunBtn = document.querySelector("#kaipanlaRunBtn");
-const kaipanlaOutput = document.querySelector("#kaipanlaOutput");
 const kaipanlaEnabled = document.querySelector("#kaipanlaEnabled");
 const kaipanlaTime = document.querySelector("#kaipanlaTime");
 const kaipanlaStateText = document.querySelector("#kaipanlaStateText");
@@ -89,7 +85,11 @@ const kaipanlaTimeText = document.querySelector("#kaipanlaTimeText");
 const kaipanlaFeatureCount = document.querySelector("#kaipanlaFeatureCount");
 const kaipanlaLastDate = document.querySelector("#kaipanlaLastDate");
 const kaipanlaLastResult = document.querySelector("#kaipanlaLastResult");
-const kaipanlaRecordsTable = document.querySelector("#kaipanlaRecordsTable");
+const kaipanlaOverviewDate = document.querySelector("#kaipanlaOverviewDate");
+const kaipanlaOverviewRefreshBtn = document.querySelector("#kaipanlaOverviewRefreshBtn");
+const kaipanlaOverviewMeta = document.querySelector("#kaipanlaOverviewMeta");
+const kaipanlaOverviewKpis = document.querySelector("#kaipanlaOverviewKpis");
+const kaipanlaOverviewSections = document.querySelector("#kaipanlaOverviewSections");
 
 let spiderPollTimer = null;
 let spiderStockSearchTimer = null;
@@ -97,8 +97,6 @@ let adminReadonly = false;
 const kaipanlaState = {
   features: [],
   scheduler: {},
-  paramsByFeature: {},
-  currentParamFeature: "",
 };
 
 initializeTheme();
@@ -412,7 +410,7 @@ runIdlePrefetchNowBtn?.addEventListener("click", async () => {
   }
 });
 
-kaipanlaFeatureSelect?.addEventListener("change", syncKaipanlaParams);
+kaipanlaOverviewRefreshBtn?.addEventListener("click", () => loadKaipanlaDailyOverview(kaipanlaOverviewDate?.value || ""));
 kaipanlaValidateBtn?.addEventListener("click", validateKaipanlaIntegration);
 kaipanlaSaveBtn?.addEventListener("click", saveKaipanlaScheduler);
 kaipanlaRunBtn?.addEventListener("click", runKaipanlaNow);
@@ -438,7 +436,8 @@ async function initializeAdminPage() {
     }
     if (dailyMarketStatus) await refreshDailyMarketScheduler();
     if (idlePrefetchStatus) await refreshIdlePrefetchScheduler();
-    if (kaipanlaFeatureSelect) await loadKaipanlaFeatures();
+    if (kaipanlaOverviewSections) await loadKaipanlaDailyOverview();
+    if (kaipanlaMeta || kaipanlaStateText) await loadKaipanlaFeatures();
     applyAdminReadonlyMode();
   } catch {
     window.location.href = "/login";
@@ -886,48 +885,160 @@ function renderIdlePrefetchScheduler(scheduler) {
   if (runIdlePrefetchNowBtn) runIdlePrefetchNowBtn.disabled = running;
 }
 
-async function loadKaipanlaFeatures() {
-  if (!kaipanlaFeatureSelect) return;
-  if (kaipanlaMeta) kaipanlaMeta.textContent = "正在读取开盘啦配置...";
+async function loadKaipanlaDailyOverview(date = "") {
+  if (!kaipanlaOverviewSections) return;
+  if (kaipanlaOverviewRefreshBtn) kaipanlaOverviewRefreshBtn.disabled = true;
+  if (kaipanlaOverviewMeta) kaipanlaOverviewMeta.textContent = "正在读取每日市场纵览...";
   try {
-    const [featuresResponse, schedulerResponse, recordsResponse] = await Promise.all([
-      fetch("/api/admin/kaipanla/features"),
-      fetch("/api/admin/kaipanla/scheduler"),
-      fetch("/api/admin/kaipanla/records?limit=20"),
-    ]);
-    const featuresPayload = await readApiPayload(featuresResponse, "读取开盘啦功能失败");
-    const schedulerPayload = await readApiPayload(schedulerResponse, "读取开盘啦定时失败");
-    const recordsPayload = await readApiPayload(recordsResponse, "读取开盘啦记录失败");
-    kaipanlaState.features = featuresPayload.items || [];
-    kaipanlaState.currentParamFeature = "";
-    renderKaipanlaScheduler(schedulerPayload.scheduler || {});
-    renderKaipanlaFeatures();
-    renderKaipanlaRecords(recordsPayload.items || []);
-    if (kaipanlaMeta) kaipanlaMeta.textContent = `${kaipanlaState.features.length} 个功能 · 行情数据`;
+    const query = date ? `?date=${encodeURIComponent(date)}` : "";
+    const response = await fetch(`/api/admin/kaipanla/daily-overview${query}`);
+    const payload = await readApiPayload(response, "读取开盘啦每日纵览失败");
+    renderKaipanlaDailyOverview(payload.overview || {});
   } catch (error) {
-    if (kaipanlaMeta) kaipanlaMeta.textContent = `读取失败：${error.message}`;
-    if (kaipanlaOutput) kaipanlaOutput.textContent = error.message;
+    if (kaipanlaOverviewMeta) kaipanlaOverviewMeta.textContent = `读取失败：${error.message}`;
+    if (kaipanlaOverviewKpis) kaipanlaOverviewKpis.innerHTML = "";
+    kaipanlaOverviewSections.innerHTML = `<div class="news-empty is-error">${escapeHtml(error.message)}</div>`;
+  } finally {
+    if (kaipanlaOverviewRefreshBtn) kaipanlaOverviewRefreshBtn.disabled = false;
   }
 }
 
-function renderKaipanlaFeatures() {
-  if (!kaipanlaFeatureGrid || !kaipanlaFeatureSelect) return;
-  const selected = new Set(kaipanlaState.scheduler.features || ["daily_data", "market_limit_up_ladder", "sector_ranking"]);
-  kaipanlaFeatureGrid.innerHTML = kaipanlaState.features.map((item) => `
-    <label class="kaipanla-feature-option">
-      <input type="checkbox" value="${escapeAttr(item.key)}" ${selected.has(item.key) ? "checked" : ""} />
-      <span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.category)}${item.requires ? ` · ${escapeHtml(item.requires)}` : ""}</small></span>
-    </label>
-  `).join("");
-  kaipanlaFeatureSelect.innerHTML = kaipanlaState.features
-    .map((item) => `<option value="${escapeAttr(item.key)}">${escapeHtml(item.category)} · ${escapeHtml(item.label)}</option>`)
-    .join("");
-  syncKaipanlaParams();
+function renderKaipanlaDailyOverview(overview) {
+  const coverage = overview.coverage || {};
+  if (kaipanlaOverviewDate && overview.display_date) kaipanlaOverviewDate.value = overview.display_date;
+  if (kaipanlaOverviewMeta) {
+    const saved = overview.latest_saved_at ? ` · 最近保存 ${overview.latest_saved_at}` : "";
+    kaipanlaOverviewMeta.textContent = `${overview.display_date || overview.date || "最近交易日"} · 已采 ${coverage.collected_features || 0}/${coverage.total_features || 0} 个功能${saved}`;
+  }
+  if (kaipanlaOverviewKpis) {
+    const kpis = [
+      { label: "采集覆盖", value: `${coverage.collected_features || 0}/${coverage.total_features || 0}`, hint: `成功 ${coverage.succeeded || 0} · 失败 ${coverage.failed || 0}` },
+      ...(overview.kpis || []),
+    ];
+    kaipanlaOverviewKpis.innerHTML = kpis.map((item) => `
+      <article>
+        <span>${escapeHtml(item.label || "")}</span>
+        <strong>${escapeHtml(String(item.value ?? "-"))}</strong>
+        <small>${escapeHtml(item.hint || "")}</small>
+      </article>
+    `).join("");
+  }
+  const sections = [
+    ["temperature", "市场温度", "涨跌停、百日新高和回撤"],
+    ["limit_up", "连板梯队", "短线高度、题材和反包"],
+    ["sectors", "板块强弱", "板块排行、强度、资金和竞价异动"],
+    ["capital", "龙虎榜", "上榜股票与席位资金"],
+    ["etf", "ETF", "ETF 排行和风险偏好"],
+    ["intraday", "盘中监控", "实时情绪、涨跌分析和回撤"],
+  ];
+  kaipanlaOverviewSections.innerHTML = sections.map(([key, title, subtitle]) => {
+    const items = overview.sections?.[key] || [];
+    return `
+      <section class="kaipanla-overview-section-card">
+        <div class="kaipanla-overview-section-head">
+          <div><h5>${escapeHtml(title)}</h5><p>${escapeHtml(subtitle)}</p></div>
+          <span>${escapeHtml(String(items.length))} 个数据集</span>
+        </div>
+        ${items.length ? items.map(renderKaipanlaOverviewFeature).join("") : `<div class="news-empty compact">当天暂无这类数据。</div>`}
+      </section>
+    `;
+  }).join("");
+}
+
+function renderKaipanlaOverviewFeature(item) {
+  return `
+    <article class="kaipanla-overview-feature">
+      <div class="kaipanla-overview-feature-head">
+        <div><strong>${escapeHtml(item.label || item.feature || "")}</strong><small>${escapeHtml(item.category || "")} · ${escapeHtml(item.saved_at || "")}</small></div>
+        <span class="${item.ok ? "is-ok" : "is-failed"}">${item.ok ? "成功" : "失败"}</span>
+      </div>
+      <p>${escapeHtml(item.summary || "无摘要")}</p>
+      ${renderKaipanlaOverviewRows(item.rows || [], item.item_count || 0, item.feature || "")}
+    </article>
+  `;
+}
+
+function renderKaipanlaOverviewRows(rows, totalCount = 0, feature = "") {
+  if (!rows.length) return "";
+  const columns = overviewColumns(rows, feature);
+  if (!columns.length) return "";
+  const previewRows = rows.slice(0, 5);
+  const total = Math.max(Number(totalCount) || 0, rows.length);
+  return `
+    <div class="kaipanla-overview-table">
+      <table>
+        <thead><tr>${columns.map((key) => `<th>${escapeHtml(key)}</th>`).join("")}</tr></thead>
+        <tbody>${previewRows.map((row) => `
+          <tr>${columns.map((key) => `<td>${escapeHtml(formatOverviewCell(row[key]))}</td>`).join("")}</tr>
+        `).join("")}</tbody>
+      </table>
+      <small>预览 ${previewRows.length} / 共 ${total} 条</small>
+    </div>
+  `;
+}
+
+function overviewColumns(rows, feature = "") {
+  const keys = [...new Set(rows.flatMap((row) => Object.keys(row || {})))];
+  const featureColumns = {
+    sector_ranking: ["股票代码", "股票名称", "首次封板时间", "连板天数", "涨停原因"],
+    market_limit_up_ladder: ["stock_code", "stock_name", "timestamp", "consecutive_days", "limit_up_reason"],
+    sector_limit_up_ladder: ["stock_code", "stock_name", "timestamp", "consecutive_days", "limit_up_reason"],
+    consecutive_limit_up: ["stock_code", "stock_name", "consecutive_days", "concepts", "limit_up_reason"],
+    longhubang_dataframe: ["stock_code", "stock_name", "change_pct", "buy_amount", "turnover"],
+    longhubang_stock_list: ["stock_code", "stock_name", "change_pct", "buy_amount", "turnover"],
+    all_etf_ranking: ["ETF代码", "ETF名称", "涨跌幅(%)", "成交额", "量比"],
+    etf_ranking: ["ETF代码", "ETF名称", "涨跌幅(%)", "成交额", "量比"],
+  };
+  const defaults = [
+    "股票代码",
+    "stock_code",
+    "股票名称",
+    "stock_name",
+    "日期",
+    "date",
+    "指标",
+    "值",
+    "limit_up_reason",
+    "涨停原因",
+    "change_pct",
+    "buy_amount",
+    "ETF代码",
+    "ETF名称",
+    "涨跌幅(%)",
+    "成交额",
+  ];
+  const preferred = [...(featureColumns[feature] || []), ...defaults];
+  const columns = preferred.filter((key, index) => keys.includes(key) && preferred.indexOf(key) === index);
+  columns.push(...keys.filter((key) => !columns.includes(key) && key !== "reason_type"));
+  return columns.slice(0, 5);
+}
+
+function formatOverviewCell(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  return String(value);
+}
+
+async function loadKaipanlaFeatures() {
+  if (!kaipanlaMeta && !kaipanlaStateText) return;
+  if (kaipanlaMeta) kaipanlaMeta.textContent = "正在读取开盘啦配置...";
+  try {
+    const [featuresResponse, schedulerResponse] = await Promise.all([
+      fetch("/api/admin/kaipanla/features"),
+      fetch("/api/admin/kaipanla/scheduler"),
+    ]);
+    const featuresPayload = await readApiPayload(featuresResponse, "读取开盘啦功能失败");
+    const schedulerPayload = await readApiPayload(schedulerResponse, "读取开盘啦定时失败");
+    kaipanlaState.features = featuresPayload.items || [];
+    renderKaipanlaScheduler(schedulerPayload.scheduler || {});
+    if (kaipanlaMeta) kaipanlaMeta.textContent = `${kaipanlaState.features.length} 个功能 · 行情数据`;
+  } catch (error) {
+    if (kaipanlaMeta) kaipanlaMeta.textContent = `读取失败：${error.message}`;
+  }
 }
 
 function renderKaipanlaScheduler(scheduler) {
   kaipanlaState.scheduler = scheduler || {};
-  kaipanlaState.paramsByFeature = scheduler.params_by_feature || {};
   const running = !!scheduler.running;
   if (kaipanlaEnabled) kaipanlaEnabled.value = scheduler.enabled ? "1" : "0";
   if (kaipanlaTime) kaipanlaTime.value = scheduler.time || "21:45";
@@ -940,56 +1051,29 @@ function renderKaipanlaScheduler(scheduler) {
   if (kaipanlaRunBtn) kaipanlaRunBtn.disabled = running;
 }
 
-function syncKaipanlaParams() {
-  try {
-    persistKaipanlaParams();
-  } catch (error) {
-    if (kaipanlaOutput) kaipanlaOutput.textContent = `参数格式错误：${error.message}`;
-    return;
-  }
-  const feature = selectedKaipanlaFeature();
-  if (!feature || !kaipanlaParamsInput) return;
-  kaipanlaParamsInput.value = JSON.stringify(kaipanlaState.paramsByFeature[feature.key] || feature.default_params || {}, null, 2);
-  if (kaipanlaOutput) kaipanlaOutput.textContent = `${feature.description || ""}${feature.requires ? `\n需要：${feature.requires}` : ""}`;
-  kaipanlaState.currentParamFeature = feature.key;
-}
-
-function persistKaipanlaParams() {
-  const key = kaipanlaState.currentParamFeature;
-  if (!key || !kaipanlaParamsInput?.value) return;
-  const params = JSON.parse(kaipanlaParamsInput.value || "{}");
-  if (!params || Array.isArray(params) || typeof params !== "object") throw new Error("参数必须是 JSON object");
-  kaipanlaState.paramsByFeature[key] = params;
-}
-
-function selectedKaipanlaFeature() {
-  const key = kaipanlaFeatureSelect?.value || "";
-  return kaipanlaState.features.find((item) => item.key === key) || null;
-}
-
 async function validateKaipanlaIntegration() {
-  if (!kaipanlaOutput || !kaipanlaValidateBtn) return;
+  if (!kaipanlaValidateBtn) return;
   kaipanlaValidateBtn.disabled = true;
-  kaipanlaOutput.textContent = "正在验证开盘啦功能映射...";
+  if (kaipanlaMeta) kaipanlaMeta.textContent = "正在验证开盘啦功能映射...";
   try {
     const response = await fetch("/api/admin/kaipanla/validate");
     const payload = await readApiPayload(response, "验证开盘啦功能失败");
-    kaipanlaOutput.textContent = JSON.stringify(payload, null, 2);
+    const valid = payload.ok === false ? "验证失败" : "验证通过";
+    if (kaipanlaMeta) kaipanlaMeta.textContent = `${valid} · ${kaipanlaState.features.length || 0} 个功能`;
   } catch (error) {
-    kaipanlaOutput.textContent = `验证失败：${error.message}`;
+    if (kaipanlaMeta) kaipanlaMeta.textContent = `验证失败：${error.message}`;
   } finally {
     kaipanlaValidateBtn.disabled = adminReadonly;
   }
 }
 
 function kaipanlaSchedulerPayload() {
-  persistKaipanlaParams();
   return {
     action: "save",
     enabled: kaipanlaEnabled?.value === "1",
     time: kaipanlaTime?.value || "21:45",
-    features: [...(kaipanlaFeatureGrid?.querySelectorAll("input[type='checkbox']:checked") || [])].map((input) => input.value),
-    params_by_feature: { ...kaipanlaState.paramsByFeature },
+    features: kaipanlaState.scheduler.features || [],
+    params_by_feature: kaipanlaState.scheduler.params_by_feature || {},
   };
 }
 
@@ -1004,10 +1088,10 @@ async function saveKaipanlaScheduler() {
     });
     const payload = await readApiPayload(response, "保存开盘啦定时失败");
     renderKaipanlaScheduler(payload.scheduler || {});
-    if (kaipanlaOutput) kaipanlaOutput.textContent = "开盘啦行情数据定时配置已保存。";
+    if (kaipanlaMeta) kaipanlaMeta.textContent = "开盘啦行情数据定时配置已保存。";
     return true;
   } catch (error) {
-    if (kaipanlaOutput) kaipanlaOutput.textContent = `保存失败：${error.message}`;
+    if (kaipanlaMeta) kaipanlaMeta.textContent = `保存失败：${error.message}`;
     return false;
   } finally {
     kaipanlaSaveBtn.disabled = adminReadonly;
@@ -1017,7 +1101,7 @@ async function saveKaipanlaScheduler() {
 async function runKaipanlaNow() {
   if (!kaipanlaRunBtn || !approveDataFetch("立即执行开盘啦行情数据抓取")) return;
   kaipanlaRunBtn.disabled = true;
-  if (kaipanlaOutput) kaipanlaOutput.textContent = "正在启动开盘啦行情数据任务...";
+  if (kaipanlaMeta) kaipanlaMeta.textContent = "正在启动开盘啦行情数据任务...";
   try {
     if (!(await saveKaipanlaScheduler())) return;
     const response = await fetch("/api/admin/kaipanla/scheduler", {
@@ -1027,36 +1111,12 @@ async function runKaipanlaNow() {
     });
     const payload = await readApiPayload(response, "启动开盘啦抓取失败");
     renderKaipanlaScheduler(payload.scheduler || {});
-    if (kaipanlaOutput) kaipanlaOutput.textContent = "开盘啦行情数据任务已启动。";
+    if (kaipanlaMeta) kaipanlaMeta.textContent = "开盘啦行情数据任务已启动。";
     window.setTimeout(loadKaipanlaFeatures, 2500);
   } catch (error) {
-    if (kaipanlaOutput) kaipanlaOutput.textContent = `启动失败：${error.message}`;
+    if (kaipanlaMeta) kaipanlaMeta.textContent = `启动失败：${error.message}`;
   } finally {
     kaipanlaRunBtn.disabled = adminReadonly;
-  }
-}
-
-function renderKaipanlaRecords(items) {
-  if (!kaipanlaRecordsTable) return;
-  kaipanlaRecordsTable.innerHTML = `
-    <thead><tr><th>保存时间</th><th>功能</th><th>分类</th><th>Run</th><th>操作</th></tr></thead>
-    <tbody>${items.length ? items.map((item) => `
-      <tr><td>${escapeHtml(item.saved_at || "")}</td><td>${escapeHtml(item.label || item.feature || "")}</td><td>${escapeHtml(item.category || "")}</td><td><code>${escapeHtml(item.run_id || "")}</code></td><td><button type="button" data-record-path="${escapeAttr(item.path || "")}">查看</button></td></tr>
-    `).join("") : `<tr><td colspan="5" class="news-empty">暂无本地记录</td></tr>`}</tbody>
-  `;
-  kaipanlaRecordsTable.querySelectorAll("[data-record-path]").forEach((button) => {
-    button.addEventListener("click", () => readKaipanlaRecord(button.dataset.recordPath));
-  });
-}
-
-async function readKaipanlaRecord(path) {
-  if (!path || !kaipanlaOutput) return;
-  try {
-    const response = await fetch(`/api/admin/kaipanla/record?path=${encodeURIComponent(path)}`);
-    const payload = await readApiPayload(response, "读取开盘啦记录失败");
-    kaipanlaOutput.textContent = JSON.stringify(payload.record || {}, null, 2);
-  } catch (error) {
-    kaipanlaOutput.textContent = `读取记录失败：${error.message}`;
   }
 }
 

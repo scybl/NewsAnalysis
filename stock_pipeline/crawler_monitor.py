@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
+import re
 from typing import Any
 
 from .raw_news import raw_news_config
@@ -41,6 +43,11 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
         running = database["crawl_runs"].count_documents(
             {"status": {"$in": ["queued", "running"]}}
         )
+        archived_failures = {
+            str(row.get("article_url") or ""): row
+            for row in database["failed_article_archive"].find({"status": "archived"}, {"_id": 0, "article_url": 1, "archived_at": 1})
+            if row.get("article_url")
+        }
         runs_by_source = {}
         for run in runs:
             runs_by_source.setdefault(run.get("source_name"), []).append(run)
@@ -57,7 +64,8 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
                 item["recent_success_rate"] = sum(run.get("status") == "succeeded" for run in source_runs) / len(source_runs)
             if item.get("status") == "online" and item["latest_status"] == "partial":
                 item["status"] = "warning"
-        failure_stats = _failure_stats(failure_runs, item_limit=120)
+        failure_stats = _failure_stats(failure_runs, item_limit=120, archived_urls=set(archived_failures))
+        failure_stats["archived_articles"] = len(archived_failures)
         return {
             "enabled": True,
             "database": config.database,
@@ -96,14 +104,17 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
         client.close()
 
 
-def _failure_stats(runs: list[dict[str, Any]], *, item_limit: int = 80) -> dict[str, Any]:
+def _failure_stats(runs: list[dict[str, Any]], *, item_limit: int = 80, archived_urls: set[str] | None = None) -> dict[str, Any]:
     code_counts: Counter[str] = Counter()
     source_counts: dict[str, Counter[str]] = {}
     message_counts: Counter[tuple[str, str]] = Counter()
     items: list[dict[str, Any]] = []
+    item_groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    archived_urls = archived_urls or set()
     failed_runs = 0
     failed_articles = 0
     warning_articles = 0
+    archived_articles = 0
     for run in runs:
         source = str(run.get("source_name") or "unknown")
         source_counts.setdefault(source, Counter())
@@ -111,9 +122,12 @@ def _failure_stats(runs: list[dict[str, Any]], *, item_limit: int = 80) -> dict[
         warnings = list(run.get("warnings") or [])
         if errors or run.get("failed"):
             failed_runs += 1
-        failed_articles += int(run.get("failed") or len(errors) or 0)
         warning_articles += len(warnings)
         for issue in errors:
+            if str(issue.get("article_url") or "") in archived_urls:
+                archived_articles += 1
+                continue
+            failed_articles += 1
             _record_issue(
                 issue,
                 run,
@@ -123,9 +137,13 @@ def _failure_stats(runs: list[dict[str, Any]], *, item_limit: int = 80) -> dict[
                 source_counts[source],
                 message_counts,
                 items,
+                item_groups,
                 item_limit,
             )
         for issue in warnings:
+            if str(issue.get("article_url") or "") in archived_urls:
+                archived_articles += 1
+                continue
             _record_issue(
                 issue,
                 run,
@@ -135,6 +153,7 @@ def _failure_stats(runs: list[dict[str, Any]], *, item_limit: int = 80) -> dict[
                 source_counts[source],
                 message_counts,
                 items,
+                item_groups,
                 item_limit,
             )
     return {
@@ -142,6 +161,7 @@ def _failure_stats(runs: list[dict[str, Any]], *, item_limit: int = 80) -> dict[
         "failed_runs": failed_runs,
         "failed_articles": failed_articles,
         "warning_articles": warning_articles,
+        "archived_articles": archived_articles,
         "codes": dict(code_counts),
         "by_source": {source: dict(counts) for source, counts in sorted(source_counts.items()) if counts},
         "top_messages": [
@@ -161,26 +181,58 @@ def _record_issue(
     source_counts: Counter[str],
     message_counts: Counter[tuple[str, str]],
     items: list[dict[str, Any]],
+    item_groups: dict[tuple[str, str, str, str], dict[str, Any]],
     item_limit: int,
 ) -> None:
     message = str(issue.get("message") or "").strip()
     code = _issue_category(str(issue.get("code") or ""), message)
+    message_key = _message_group_key(message)
+    article_url = str(issue.get("article_url") or "")
     code_counts[code] += 1
     source_counts[code] += 1
     if message:
-        message_counts[(code, message[:180])] += 1
+        message_counts[(code, message_key[:180])] += 1
+    group_key = (source, severity, code, message_key)
+    if group_key in item_groups:
+        item_groups[group_key]["count"] += 1
+        item_groups[group_key]["latest_at"] = run.get("started_at") or item_groups[group_key].get("latest_at") or ""
+        if article_url and len(item_groups[group_key]["sample_urls"]) < 5:
+            item_groups[group_key]["sample_urls"].append(article_url)
+        return
     if len(items) < item_limit:
-        items.append({
+        item = {
+            "id": _failure_item_id(source, severity, code, message_key),
             "source_name": source,
             "run_id": run.get("run_id") or "",
             "started_at": run.get("started_at") or "",
+            "latest_at": run.get("started_at") or "",
             "severity": severity,
             "code": code,
             "raw_code": issue.get("code") or "",
             "message": message,
-            "article_url": issue.get("article_url") or "",
+            "message_group": message_key,
+            "article_url": article_url,
+            "sample_urls": [article_url] if article_url else [],
+            "count": 1,
             "retryable": bool(issue.get("retryable")),
-        })
+        }
+        item_groups[group_key] = item
+        items.append(item)
+
+
+def _message_group_key(message: str) -> str:
+    text = " ".join(str(message or "").split())
+    if not text:
+        return ""
+    text = re.sub(r"https?://\S+", "<url>", text)
+    text = re.sub(r"\b20\d{6,}\b", "<date>", text)
+    text = re.sub(r"\bc\d{6,}\b", "c<id>", text)
+    return text[:240]
+
+
+def _failure_item_id(source: str, severity: str, code: str, message_key: str) -> str:
+    seed = "|".join([source, severity, code, message_key])
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
 
 
 def _issue_category(raw_code: str, message: str) -> str:
@@ -209,6 +261,7 @@ def _empty_failure_stats() -> dict[str, Any]:
         "failed_runs": 0,
         "failed_articles": 0,
         "warning_articles": 0,
+        "archived_articles": 0,
         "codes": {},
         "by_source": {},
         "top_messages": [],

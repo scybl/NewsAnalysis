@@ -87,15 +87,27 @@ def test_market_and_data_source_pages_have_explicit_layout_sections():
     market = (STATIC / "admin-market.html").read_text(encoding="utf-8")
     stock_sources = (STATIC / "admin-news.html").read_text(encoding="utf-8")
     news_sources = (STATIC / "admin-crawler.html").read_text(encoding="utf-8")
+    admin_script = (STATIC / "admin.js").read_text(encoding="utf-8")
     styles = (STATIC / "styles.css").read_text(encoding="utf-8")
     assert "market-schedule-grid" in market
     assert ".market-schedule-grid" in styles
+    assert "每日市场纵览" in market
+    assert "kaipanlaOverviewKpis" in market
+    assert "/api/admin/kaipanla/daily-overview" in admin_script
+    assert "renderKaipanlaDailyOverview" in admin_script
+    assert "个数据集" in admin_script
+    assert "预览 ${previewRows.length} / 共 ${total} 条" in admin_script
+    assert ".kaipanla-overview-kpis" in styles
+    assert ".kaipanla-overview-table small" in styles
     for class_name in ("market-primary-grid", "market-observability-grid"):
         assert class_name in stock_sources
         assert f".{class_name}" in styles
     for heading in ("行情定时采集", "全市场股票列表", "开盘啦行情数据"):
         assert heading in market
-    assert "开盘啦功能配置与历史结果" in market
+    assert "开盘啦功能配置与历史结果" not in market
+    assert "kaipanla-config-section" not in market
+    assert "参数 JSON" not in market
+    assert "kaipanla-detail-panel" not in market
     assert "手动行情补采" not in market
     assert "每日自动刷新全市场股票列表" in market
     assert "每日自动刷新股票列表" not in stock_sources
@@ -129,3 +141,14 @@ def test_crawler_run_table_matches_crawl_result_metrics():
         "run_id",
     ):
         assert f"item.{field}" in script
+
+
+def test_crawler_failure_diagnostics_support_retry_and_grouping():
+    html = (STATIC / "admin-crawler.html").read_text(encoding="utf-8")
+    script = (STATIC / "admin-crawler.js").read_text(encoding="utf-8")
+
+    assert "crawlerRetryFailuresBtn" in html
+    assert "/api/admin/news-crawler/failure-action" in script
+    assert "重抓一次" in script
+    assert "item.count" in script
+    assert "sample_urls" in script

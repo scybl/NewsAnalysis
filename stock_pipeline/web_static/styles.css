@@ -3019,6 +3019,38 @@ body:has(.admin-shell) {
   padding: 14px;
 }
 
+.crawler-failure-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.crawler-failure-actions span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crawler-failure-actions button,
+.crawler-failure-item-actions button {
+  min-height: 32px;
+  border: 1px solid #d0d7e2;
+  border-radius: 7px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: #17202a;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.crawler-failure-actions button:disabled,
+.crawler-failure-item-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .crawler-failure-overview {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -3094,6 +3126,19 @@ body:has(.admin-shell) {
   gap: 10px;
 }
 
+.crawler-failure-item-head > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crawler-failure-item-head strong {
+  color: #344054;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .crawler-failure-item-head small {
   overflow: hidden;
   color: #8b96a5;
@@ -3118,6 +3163,12 @@ body:has(.admin-shell) {
 .crawler-failure-item a {
   color: #245cc5;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.crawler-failure-item-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
 }
 
 .crawler-message-list h5 {
@@ -3381,143 +3432,203 @@ body:has(.admin-shell) {
   white-space: nowrap;
 }
 
-.kaipanla-control-grid {
-  grid-template-columns: minmax(240px, 1fr) minmax(110px, 0.18fr) minmax(90px, 0.16fr);
+.kaipanla-overview-section {
+  margin-bottom: 18px;
 }
 
-.kaipanla-param-field {
+.kaipanla-overview-card {
   display: grid;
-  gap: 8px;
-  border-bottom: 1px solid #eef1f5;
+  gap: 14px;
   padding: 14px;
-  color: #667085;
-  font-size: 12px;
-  font-weight: 760;
 }
 
-.kaipanla-param-field textarea {
-  width: 100%;
-  min-width: 0;
-  resize: vertical;
+.kaipanla-overview-actions {
+  display: grid;
+  grid-template-columns: minmax(150px, 180px) auto;
+  gap: 10px;
+}
+
+.kaipanla-overview-actions input {
+  min-height: 36px;
   border: 1px solid #d0d7e2;
-  border-radius: 8px;
-  padding: 12px;
-  background: #f9fbfd;
-  color: #17202a;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  outline: none;
-}
-
-.kaipanla-param-field textarea:focus {
-  border-color: #2f6fed;
+  border-radius: 7px;
+  padding: 0 10px;
   background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.14);
-}
-
-.kaipanla-output {
-  max-height: 420px;
-  margin: 0;
-  overflow: auto;
-  border-radius: 0;
-}
-
-.kaipanla-detail-panel {
-  border-top: 1px solid #eef1f5;
-}
-
-.kaipanla-detail-panel summary {
-  cursor: pointer;
-  list-style: none;
-  padding: 13px 14px;
-  color: #344054;
-  font-size: 12px;
-  font-weight: 850;
-}
-
-.kaipanla-detail-panel summary::-webkit-details-marker {
-  display: none;
-}
-
-.kaipanla-detail-panel summary::after {
-  float: right;
-  color: #667085;
-  content: "展开";
-  font-size: 11px;
+  color: #17202a;
   font-weight: 800;
 }
 
-.kaipanla-detail-panel[open] summary {
-  border-bottom: 1px solid #eef1f5;
-}
-
-.kaipanla-detail-panel[open] summary::after {
-  content: "收起";
-}
-
-.kaipanla-schedule-form {
-  grid-template-columns: minmax(120px, 0.2fr) minmax(140px, 0.2fr);
-}
-
-.kaipanla-feature-grid {
+.kaipanla-overview-kpis {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  max-height: 360px;
-  overflow: auto;
-  padding: 14px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border: 1px solid #e5eaf1;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.kaipanla-overview-kpis article {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border-right: 1px solid #e5eaf1;
+  padding: 12px;
   background: #f9fbfd;
 }
 
-.kaipanla-feature-option {
-  position: relative;
-  display: block;
-  min-width: 0;
+.kaipanla-overview-kpis article:last-child {
+  border-right: 0;
 }
 
-.kaipanla-feature-option input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
+.kaipanla-overview-kpis span,
+.kaipanla-overview-kpis small {
+  overflow: hidden;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.kaipanla-feature-option span {
+.kaipanla-overview-kpis strong {
+  color: #17202a;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.kaipanla-overview-sections {
   display: grid;
-  gap: 5px;
-  min-height: 58px;
-  border: 1px solid #d7deea;
-  border-radius: 8px;
-  padding: 10px;
-  background: #ffffff;
-  color: #344054;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.kaipanla-feature-option strong,
-.kaipanla-feature-option small {
-  display: block;
+.kaipanla-overview-section-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
   min-width: 0;
+  border: 1px solid #e5eaf1;
+  border-radius: 8px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.kaipanla-overview-section-head,
+.kaipanla-overview-feature-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.kaipanla-overview-section-head h5 {
+  margin: 0;
+  color: #17202a;
+  font-size: 14px;
+}
+
+.kaipanla-overview-section-head p,
+.kaipanla-overview-feature p {
+  margin: 4px 0 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.kaipanla-overview-section-head span {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eef4ff;
+  color: #245cc5;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.kaipanla-overview-feature {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border-top: 1px solid #eef1f5;
+  padding-top: 10px;
+}
+
+.kaipanla-overview-feature-head strong,
+.kaipanla-overview-feature-head small {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.kaipanla-feature-option strong {
+.kaipanla-overview-feature-head strong {
   color: #17202a;
   font-size: 13px;
 }
 
-.kaipanla-feature-option small {
-  color: #667085;
+.kaipanla-overview-feature-head small {
+  margin-top: 3px;
+  color: #8b96a5;
+  font-size: 10px;
+}
+
+.kaipanla-overview-feature-head span {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.kaipanla-overview-feature-head .is-ok {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.kaipanla-overview-feature-head .is-failed {
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.kaipanla-overview-table {
+  overflow: auto;
+  border: 1px solid #eef1f5;
+  border-radius: 7px;
+}
+
+.kaipanla-overview-table table {
+  width: 100%;
+  border-collapse: collapse;
   font-size: 11px;
 }
 
-.kaipanla-feature-option input:checked + span {
-  border-color: #2f6fed;
-  background: #f3f7ff;
-  box-shadow: inset 3px 0 0 #2f6fed;
+.kaipanla-overview-table small {
+  display: block;
+  padding: 7px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.kaipanla-overview-table th,
+.kaipanla-overview-table td {
+  max-width: 160px;
+  border-bottom: 1px solid #eef1f5;
+  padding: 6px 8px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kaipanla-overview-table th {
+  background: #f9fbfd;
+  color: #667085;
+  font-weight: 850;
+}
+
+.kaipanla-schedule-form {
+  grid-template-columns: minmax(120px, 0.2fr) minmax(140px, 0.2fr);
 }
 
 .news-kpis {
@@ -4080,15 +4191,46 @@ html.theme-dark .news-filter-grid input,
 html.theme-dark .news-filter-grid select,
 html.theme-dark .news-filter-grid button,
 html.theme-dark .news-pager button,
-html.theme-dark .kaipanla-param-field textarea {
+html.theme-dark .kaipanla-overview-actions input {
   background: #151f2b;
   border-color: #344154;
   color: #dbe5ee;
 }
 
+html.theme-dark .kaipanla-overview-kpis,
+html.theme-dark .kaipanla-overview-section-card,
+html.theme-dark .kaipanla-overview-table {
+  border-color: #293445;
+}
+
+html.theme-dark .kaipanla-overview-kpis article,
+html.theme-dark .kaipanla-overview-table th {
+  background: #0d141d;
+}
+
+html.theme-dark .kaipanla-overview-section-card {
+  background: #111821;
+}
+
+html.theme-dark .kaipanla-overview-kpis strong,
+html.theme-dark .kaipanla-overview-section-head h5,
+html.theme-dark .kaipanla-overview-feature-head strong {
+  color: #e6edf3;
+}
+
+html.theme-dark .kaipanla-overview-kpis span,
+html.theme-dark .kaipanla-overview-kpis small,
+html.theme-dark .kaipanla-overview-section-head p,
+html.theme-dark .kaipanla-overview-feature p,
+html.theme-dark .kaipanla-overview-feature-head small,
+html.theme-dark .kaipanla-overview-table small,
+html.theme-dark .kaipanla-overview-table td,
+html.theme-dark .kaipanla-overview-table th {
+  color: #9aa7b5;
+}
+
 html.theme-dark .news-filter-grid input:focus,
-html.theme-dark .news-filter-grid select:focus,
-html.theme-dark .kaipanla-param-field textarea:focus {
+html.theme-dark .news-filter-grid select:focus {
   background: #111821;
   border-color: #528eff;
   box-shadow: 0 0 0 3px rgba(82, 142, 255, 0.16);
@@ -4198,27 +4340,6 @@ html.theme-dark .agent-unavailable-banner {
   color: #f3c16b;
 }
 
-html.theme-dark .kaipanla-feature-grid {
-  background: #0f1722;
-}
-
-html.theme-dark .kaipanla-detail-panel {
-  border-color: #293445;
-}
-
-html.theme-dark .kaipanla-detail-panel summary {
-  color: #d5dee8;
-}
-
-html.theme-dark .kaipanla-detail-panel summary::after {
-  color: #9aa7b5;
-}
-
-html.theme-dark .kaipanla-detail-panel[open] summary {
-  border-color: #293445;
-}
-
-html.theme-dark .kaipanla-feature-option span,
 html.theme-dark .data-source-provider,
 html.theme-dark .data-source-provider dl div {
   background: #111821;
@@ -4226,22 +4347,15 @@ html.theme-dark .data-source-provider dl div {
   color: #d5dee8;
 }
 
-html.theme-dark .kaipanla-feature-option strong,
 html.theme-dark .data-source-provider h5,
 html.theme-dark .data-source-provider dd {
   color: #e6edf3;
 }
 
-html.theme-dark .kaipanla-feature-option small,
 html.theme-dark .data-source-provider p,
 html.theme-dark .data-source-provider small,
 html.theme-dark .standard-data-card td p {
   color: #9aa7b5;
-}
-
-html.theme-dark .kaipanla-feature-option input:checked + span {
-  background: rgba(82, 142, 255, 0.16);
-  border-color: #528eff;
 }
 
 html.theme-dark .agent-scope-strip strong {
@@ -4345,10 +4459,11 @@ html.theme-dark .agent-code-sample {
   .market-primary-grid,
   .market-schedule-grid,
   .market-observability-grid,
+  .kaipanla-overview-kpis,
+  .kaipanla-overview-sections,
   .data-source-overview-grid,
   .agent-gateway-grid,
-  .agent-token-form,
-  .kaipanla-feature-grid {
+  .agent-token-form {
     grid-template-columns: 1fr;
   }
 
@@ -4371,8 +4486,7 @@ html.theme-dark .agent-code-sample {
   }
 
   .news-filter-grid,
-  .stock-data-filter-grid,
-  .kaipanla-control-grid {
+  .stock-data-filter-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -4406,8 +4520,7 @@ html.theme-dark .agent-code-sample {
 
   .news-distribution,
   .news-filter-grid,
-  .stock-data-filter-grid,
-  .kaipanla-control-grid {
+  .stock-data-filter-grid {
     grid-template-columns: 1fr;
   }
 
@@ -5594,8 +5707,7 @@ body:has(.admin-shell) {
 .admin-table-wrap,
 .data-source-provider,
 .news-item,
-.news-dist-card,
-.kaipanla-feature-option span {
+.news-dist-card {
   border-color: rgba(126, 146, 176, 0.20);
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.78);
@@ -5781,8 +5893,7 @@ textarea:focus {
 .admin-table-wrap,
 .news-item,
 .news-dist-card,
-.data-source-provider,
-.kaipanla-feature-option span {
+.data-source-provider {
   border: 1px solid var(--scn-border) !important;
   border-radius: var(--scn-radius) !important;
   background: var(--scn-card) !important;
@@ -6718,7 +6829,6 @@ body:has(.admin-shell) {
 .crawler-failure-item,
 .crawler-message-list article,
 .spider-task-card,
-.kaipanla-feature-option span,
 .agent-scope-strip,
 .agent-endpoint-list div {
   border: 1px solid var(--fin-border) !important;
@@ -6865,8 +6975,7 @@ body:has(.admin-shell) {
 
 .news-filter-grid,
 .spider-form,
-.inline-admin-form,
-.kaipanla-control-grid {
+.inline-admin-form {
   border: 0 !important;
   background: transparent !important;
 }
@@ -6901,8 +7010,7 @@ body:has(.admin-shell) {
 }
 
 .spider-logs,
-.agent-code-sample,
-.kaipanla-output {
+.agent-code-sample {
   border: 1px solid var(--fin-border) !important;
   border-radius: var(--fin-radius) !important;
   background: #0d1117 !important;
