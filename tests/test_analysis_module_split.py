@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from stock_pipeline.config import get_settings
 from stock_pipeline.web import ANALYSIS_MODULE_STATUS_TEXT, StockWebApp
 
@@ -43,12 +45,16 @@ def test_frontend_marks_analysis_entry_as_archived():
 
 def test_analysis_implementation_lives_in_separate_project():
     assert not (ROOT / "StockAnalysisModule").exists()
-    assert (ANALYSIS_ROOT / "pyproject.toml").exists()
-    assert (ANALYSIS_ROOT / "stock_analysis_module" / "agents" / "multi_agent.py").exists()
 
     bridge = (ROOT / "stock_pipeline" / "agents" / "multi_agent.py").read_text(encoding="utf-8")
     assert "import_analysis_module" in bridge
     assert len(bridge.splitlines()) < 20
+
+    if not ANALYSIS_ROOT.exists():
+        pytest.skip("External Analysis project is not checked out in this environment.")
+
+    assert (ANALYSIS_ROOT / "pyproject.toml").exists()
+    assert (ANALYSIS_ROOT / "stock_analysis_module" / "agents" / "multi_agent.py").exists()
 
 
 def test_analysis_bridge_uses_external_project_path(monkeypatch):
@@ -57,6 +63,10 @@ def test_analysis_bridge_uses_external_project_path(monkeypatch):
     monkeypatch.delenv("STOCK_ANALYSIS_PROJECT_DIR", raising=False)
 
     assert analysis_bridge.analysis_project_dir() == ANALYSIS_ROOT
+
+    if not ANALYSIS_ROOT.exists():
+        pytest.skip("External Analysis project is not checked out in this environment.")
+
     assert analysis_bridge.analysis_project_available() is True
 
 
