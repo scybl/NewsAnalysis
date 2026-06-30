@@ -487,6 +487,17 @@ def test_politico_provider_uses_curl_when_requests_fails():
     assert refs[0].url == "https://www.politico.com/news/2026/06/28/first-politico-browser-story-00976940"
 
 
+def test_politico_provider_applies_cookie_json_and_proxy_to_requests():
+    provider = PoliticoProvider(
+        discovery_mode="site",
+        proxy="http://proxy.example:8080",
+        cookies_json='{"cookies":[{"name":"cf_clearance","value":"token","domain":".politico.com"}]}',
+    )
+
+    assert provider.session.headers["Cookie"] == "cf_clearance=token"
+    assert provider.session.proxies["https"] == "http://proxy.example:8080"
+
+
 def test_politico_browser_extracts_news_urls():
     news_html = (FIXTURES / "politico_browser_news.html").read_text()
     assert extract_politico_news_urls(news_html, "https://www.politico.com/news/") == [

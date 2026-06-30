@@ -38,7 +38,7 @@ def main() -> None:
     crawl.add_argument(
         "--source",
         default="all",
-        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico", "politico_rss", "politico_browser", "politico_chrome"],
+        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico_rss", "politico_browser", "politico_chrome"],
     )
     crawl.add_argument("--latest", action="store_true", help="抓取最新新闻")
     crawl.add_argument("--since", default="", help="历史补采开始时间，ISO 8601")
@@ -65,7 +65,7 @@ def main() -> None:
     schedule.add_argument(
         "--source",
         default="all",
-        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico", "politico_rss", "politico_browser", "politico_chrome"],
+        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico_rss", "politico_browser", "politico_chrome"],
     )
     schedule.add_argument("--interval", type=int, default=1800)
     schedule.add_argument("--max-pages", type=int, default=10)
@@ -224,17 +224,6 @@ def _registry(settings, checkpoint_repository=None):
                 require_login_cookie=settings.bloomberg_require_login_cookie,
             ),
         )
-    if "politico" not in disabled_sources:
-        registry.register(
-            "politico",
-            lambda: PoliticoProvider(
-                _parse_politico_feed_urls(settings.politico_feed_urls),
-                fetch_article_pages=settings.politico_fetch_article_pages,
-                discovery_mode="site",
-                news_url=settings.politico_news_url,
-                source_name="politico",
-            ),
-        )
     if "politico_rss" not in disabled_sources:
         registry.register(
             "politico_rss",
@@ -242,8 +231,10 @@ def _registry(settings, checkpoint_repository=None):
                 _parse_politico_feed_urls(settings.politico_feed_urls),
                 fetch_article_pages=settings.politico_fetch_article_pages,
                 discovery_mode="rss",
-                news_url=settings.politico_news_url,
+                news_url=settings.politico_browser_news_url,
                 source_name="politico_rss",
+                proxy=settings.politico_browser_proxy,
+                cookies_json=settings.politico_browser_cookies_json,
             ),
         )
     if "politico_browser" not in disabled_sources:
@@ -255,6 +246,8 @@ def _registry(settings, checkpoint_repository=None):
                 discovery_mode="site",
                 news_url=settings.politico_browser_news_url,
                 source_name="politico_browser",
+                proxy=settings.politico_browser_proxy,
+                cookies_json=settings.politico_browser_cookies_json,
             ),
         )
     if "politico_chrome" not in disabled_sources:

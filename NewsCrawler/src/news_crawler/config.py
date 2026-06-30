@@ -22,8 +22,6 @@ class Settings:
     bloomberg_use_api: bool = True
     bloomberg_require_login_cookie: bool = False
     politico_feed_urls: str = ""
-    politico_discovery_mode: str = "site"
-    politico_news_url: str = "https://www.politico.com/"
     politico_fetch_article_pages: bool = False
     politico_browser_news_url: str = "https://www.politico.com/"
     politico_browser_headless: bool = True
@@ -51,8 +49,6 @@ def get_settings() -> Settings:
         bloomberg_use_api=_env_bool_or_file("BLOOMBERG_USE_API", True),
         bloomberg_require_login_cookie=_env_bool_or_file("BLOOMBERG_REQUIRE_LOGIN_COOKIE", False),
         politico_feed_urls=os.getenv("POLITICO_FEED_URLS", ""),
-        politico_discovery_mode=os.getenv("POLITICO_DISCOVERY_MODE", "site").strip().lower() or "site",
-        politico_news_url=os.getenv("POLITICO_NEWS_URL", "https://www.politico.com/"),
         politico_fetch_article_pages=_env_bool("POLITICO_FETCH_ARTICLE_PAGES", False),
         politico_browser_news_url=os.getenv("POLITICO_BROWSER_NEWS_URL", "https://www.politico.com/"),
         politico_browser_headless=_env_bool("POLITICO_BROWSER_HEADLESS", True),
@@ -63,7 +59,7 @@ def get_settings() -> Settings:
         max_runtime_seconds=max(0.0, float(os.getenv("NEWS_CRAWLER_MAX_RUNTIME_SECONDS", "300"))),
         disabled_sources=frozenset(
             item.strip()
-            for item in os.getenv("NEWS_CRAWLER_DISABLED_SOURCES", "bloomberg,politico,politico_rss,politico_chrome").split(",")
+            for item in os.getenv("NEWS_CRAWLER_DISABLED_SOURCES", "bloomberg,politico_rss,politico_chrome").split(",")
             if item.strip()
         ),
     )

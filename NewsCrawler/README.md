@@ -15,7 +15,7 @@ python3 -m venv .venv
 news-crawler sources
 news-crawler crawl --source tonghuashun --latest --max-pages 1 --dry-run
 news-crawler crawl --source guardian --latest --max-pages 1
-news-crawler crawl --source politico --latest --max-articles 10 --dry-run
+news-crawler crawl --source politico_browser --latest --max-articles 10 --dry-run
 news-crawler crawl --source all --latest
 news-crawler crawl --source guardian --since 2026-01-01T00:00:00Z --until 2026-01-31T23:59:59Z
 ```
@@ -60,7 +60,7 @@ news-crawler crawl --source politico_browser --latest --max-articles 10 --dry-ru
 RSS 默认分类为 `picks`，对应 Politico 首页公开暴露的 `https://www.politico.com/rss/politicopicks.xml`。如需追加或覆盖分类，可配置：
 
 ```bash
-NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico,politico_chrome \
+NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico_chrome \
 POLITICO_FEED_URLS="custom=https://rss.politico.com/example.xml" \
 news-crawler crawl --source politico_rss --categories custom --dry-run
 ```
@@ -68,7 +68,7 @@ news-crawler crawl --source politico_rss --categories custom --dry-run
 RSS 模式默认只使用 feed 内的标题、摘要、正文片段和链接。确实需要尝试补全文章页时，可显式打开：
 
 ```bash
-NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico,politico_chrome \
+NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico_chrome \
 POLITICO_FETCH_ARTICLE_PAGES=1 \
 news-crawler crawl --source politico_rss --latest --max-articles 10 --dry-run
 ```
@@ -108,7 +108,7 @@ news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-article
 
 ```bash
 NEWS_CRAWLER_INSTALL_BROWSER=1 \
-NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico,politico_rss,guardian \
+NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico_rss,guardian \
 POLITICO_BROWSER_HEADLESS=1 \
 POLITICO_BROWSER_PROFILE_DIR=/app/local_data/politico_chrome_profile \
 docker compose run --rm news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-articles 5 --dry-run
@@ -118,7 +118,7 @@ docker compose run --rm news-crawler crawl --source politico_chrome --latest --m
 
 ```bash
 NEWS_CRAWLER_INSTALL_BROWSER=1 \
-NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico,politico_rss,guardian \
+NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico_rss,guardian \
 POLITICO_BROWSER_PROXY=http://host:port \
 docker compose run --rm news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-articles 5 --dry-run
 ```

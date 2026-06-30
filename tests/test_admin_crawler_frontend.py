@@ -35,11 +35,14 @@ def test_crawler_console_is_dedicated_and_read_only():
     assert "issueLabel(item.code))} ·" not in script
     assert "normalizeIssueCodeCounts" in script
     assert 'const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss"]' in script
+    assert 'const CRAWLER_IGNORED_SOURCES = new Set(["politico"])' in script
+    assert "filter(isVisibleCrawlerSource)" in script
     assert "maintenance: true" in script
     assert "暂停维护" in script
     assert "sourceName" in script
     assert 'guardian: { label: "Guardian", initial: "G" }' in script
     assert 'bloomberg: { label: "Bloomberg", initial: "B", maintenance: true }' in script
+    assert "Politico Legacy" not in script
     assert 'politico_browser: { label: "Politico Web", initial: "P" }' in script
     assert 'politico_rss: { label: "Politico RSS", initial: "R", maintenance: true }' in script
     assert "等待首次采集运行记录。" in script
@@ -65,8 +68,8 @@ def test_guardian_news_cards_can_request_machine_translation():
 
 def test_politico_browser_is_enabled_while_rss_and_bloomberg_stay_disabled():
     compose = (STATIC.parents[1] / "docker-compose.prod.yml").read_text(encoding="utf-8")
-    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico,politico_rss,politico_chrome,guardian}" in compose
-    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico,politico_rss,politico_browser,politico_chrome,tonghuashun}" in compose
+    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico_rss,politico_chrome,guardian}" in compose
+    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico_rss,politico_browser,politico_chrome,tonghuashun}" in compose
     assert 'command: ["schedule", "--source", "guardian", "--interval", "${GUARDIAN_CRAWLER_INTERVAL_SECONDS:-3600}"' in compose
 
 

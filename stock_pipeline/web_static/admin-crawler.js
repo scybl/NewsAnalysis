@@ -15,11 +15,11 @@ const crawlerRunDetailClose = document.querySelector("#crawlerRunDetailClose");
 
 const CRAWLER_FAILURE_RETRY_THRESHOLD = 3;
 const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss"];
+const CRAWLER_IGNORED_SOURCES = new Set(["politico"]);
 const CRAWLER_SOURCE_CONFIG = {
   tonghuashun: { label: "同花顺", initial: "同" },
   guardian: { label: "Guardian", initial: "G" },
   bloomberg: { label: "Bloomberg", initial: "B", maintenance: true },
-  politico: { label: "Politico Legacy", initial: "P" },
   politico_browser: { label: "Politico Web", initial: "P" },
   politico_rss: { label: "Politico RSS", initial: "R", maintenance: true },
   politico_chrome: { label: "Politico Chrome", initial: "C", maintenance: true },
@@ -67,10 +67,10 @@ async function loadCrawlerStatus() {
 }
 
 function renderCrawlerConsole(payload) {
-  const runs = payload.runs || [];
+  const runs = (payload.runs || []).filter(isVisibleCrawlerSource);
   renderCrawlerAlerts(payload.alerts || []);
 
-  const health = payload.health || [];
+  const health = (payload.health || []).filter(isVisibleCrawlerSource);
   const healthWithPlaceholders = withCrawlerPlaceholders(health);
   crawlerHealthMeta.textContent = healthWithPlaceholders.length ? `${healthWithPlaceholders.length} 个来源投影` : "尚无投影";
   crawlerHealthGrid.innerHTML = healthWithPlaceholders.length
@@ -83,6 +83,7 @@ function renderCrawlerConsole(payload) {
 function renderCrawlerAlerts(alerts) {
   const existing = document.querySelector(".crawler-runtime-alerts");
   existing?.remove();
+  alerts = alerts.filter(isVisibleCrawlerSource);
   if (!alerts.length) return;
   const target = document.querySelector(".crawler-console");
   if (!target) return;
@@ -382,6 +383,10 @@ function syncAutoRefresh() {
 
 function sourceLabel(value) {
   return CRAWLER_SOURCE_CONFIG[value]?.label || value || "未知来源";
+}
+
+function isVisibleCrawlerSource(item) {
+  return !CRAWLER_IGNORED_SOURCES.has(String(item?.source_name || ""));
 }
 
 function sourceInitial(value) {

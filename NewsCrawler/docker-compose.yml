@@ -45,7 +45,7 @@ services:
       POLITICO_BROWSER_COOKIES_JSON_FILE: ${POLITICO_BROWSER_COOKIES_JSON_FILE:-/app/local_data/secure/news_crawler/politico_browser_cookies_json.txt}
       POLITICO_BROWSER_PROFILE_DIR: ${POLITICO_BROWSER_PROFILE_DIR:-/app/local_data/politico_chrome_profile}
       POLITICO_BROWSER_HEADLESS: ${POLITICO_BROWSER_HEADLESS:-1}
-      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico,politico_rss,politico_chrome,guardian}
+      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico_rss,politico_chrome,guardian}
       NEWS_CRAWLER_TONGHUASHUN_CATEGORY_PAGES: ${NEWS_CRAWLER_TONGHUASHUN_CATEGORY_PAGES:-产经新闻=30,区域经济=18,公司新闻=16,国际财经=12,财经评论=6,财经要闻=5,宏观经济=3,金融市场=3,财经人物=2}
     volumes:
       - crawler_local_data:/app/local_data
@@ -68,7 +68,7 @@ services:
       MONGODB_RUNS_COLLECTION: crawl_runs
       GUARDIAN_API_KEY: ${GUARDIAN_API_KEY:-}
       GUARDIAN_API_KEY_FILE: ${GUARDIAN_API_KEY_FILE:-/app/local_data/secure/news_crawler/guardian_api_key.txt}
-      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico,politico_rss,politico_browser,politico_chrome,tonghuashun}
+      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico_rss,politico_browser,politico_chrome,tonghuashun}
     volumes:
       - crawler_local_data:/app/local_data
     command: ["schedule", "--source", "guardian", "--interval", "${GUARDIAN_CRAWLER_INTERVAL_SECONDS:-3600}", "--max-pages", "${GUARDIAN_CRAWLER_MAX_PAGES:-1}", "--max-runtime-seconds", "${GUARDIAN_CRAWLER_MAX_RUNTIME_SECONDS:-300}"]

@@ -19,29 +19,53 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = PROJECT_ROOT / "local_data" / "secure" / "news_crawler" / "bloomberg_cookies_json.txt"
 LOGIN_COOKIE_NAMES = ("_pxhd", "_px2", "session_id", "agent_id", "_breg-uid")
+PRESETS = {
+    "bloomberg": {
+        "label": "Bloomberg",
+        "domain": "bloomberg.com",
+        "debug_url_env": "BLOOMBERG_CHROME_DEBUG_URL",
+        "output_env": "BLOOMBERG_COOKIES_JSON_FILE",
+        "default_output": DEFAULT_OUTPUT,
+        "pause_sources": ("bloomberg",),
+    },
+    "politico_browser": {
+        "label": "Politico",
+        "domain": "politico.com",
+        "debug_url_env": "POLITICO_BROWSER_CHROME_DEBUG_URL",
+        "output_env": "POLITICO_BROWSER_COOKIES_JSON_FILE",
+        "default_output": PROJECT_ROOT / "local_data" / "secure" / "news_crawler" / "politico_browser_cookies_json.txt",
+        "pause_sources": ("politico_browser", "politico_rss"),
+    },
+}
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Refresh Bloomberg cookies from a logged-in Chrome debugging session.")
-    parser.add_argument("--debug-url", default=os.getenv("BLOOMBERG_CHROME_DEBUG_URL", "http://127.0.0.1:9222"))
-    parser.add_argument("--output", default=os.getenv("BLOOMBERG_COOKIES_JSON_FILE", str(DEFAULT_OUTPUT)))
-    parser.add_argument("--domain", default="bloomberg.com")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Refresh NewsCrawler provider cookies from a logged-in Chrome debugging session.")
+    parser.add_argument("--preset", choices=sorted(PRESETS), default=os.getenv("NEWS_CRAWLER_COOKIE_PRESET", "bloomberg"))
+    parser.add_argument("--debug-url", default="")
+    parser.add_argument("--output", default="")
+    parser.add_argument("--domain", default="")
     parser.add_argument("--require-login", action="store_true", default=_env_bool("BLOOMBERG_REQUIRE_LOGIN_COOKIE", False))
-    parser.add_argument("--write-require-login-flag", action="store_true", help="Write BLOOMBERG_REQUIRE_LOGIN_COOKIE_FILE=1 after cookie refresh.")
-    parser.add_argument("--clear-pause", action=argparse.BooleanOptionalAction, default=True, help="Clear active Bloomberg source pause in MongoDB after refresh.")
-    args = parser.parse_args()
+    parser.add_argument("--write-require-login-flag", action="store_true", help="For Bloomberg, write BLOOMBERG_REQUIRE_LOGIN_COOKIE_FILE=1 after cookie refresh.")
+    parser.add_argument("--clear-pause", action=argparse.BooleanOptionalAction, default=True, help="Clear active source pause in MongoDB after refresh.")
+    args = parser.parse_args(argv)
+    preset = PRESETS[args.preset]
+    label = str(preset["label"])
+    domain = args.domain or str(preset["domain"])
+    debug_url = args.debug_url or os.getenv(str(preset["debug_url_env"]), "http://127.0.0.1:9222")
+    output_path = args.output or os.getenv(str(preset["output_env"]), str(preset["default_output"]))
 
     try:
-        cookies = get_bloomberg_cookies(args.debug_url, args.domain)
+        cookies = get_bloomberg_cookies(debug_url, domain)
     except Exception as exc:
         raise SystemExit(f"读取 Chrome 调试 cookie 失败：{exc}") from exc
     if not cookies:
-        raise SystemExit("未从 Chrome 调试会话获取到 Bloomberg cookie，请确认 Chrome 已登录 Bloomberg。")
+        raise SystemExit(f"未从 Chrome 调试会话获取到 {label} cookie，请确认 Chrome 已通过 {label} 验证。")
     summary = login_cookie_summary(cookies)
-    if args.require_login and not summary["valid"]:
+    if args.preset == "bloomberg" and args.require_login and not summary["valid"]:
         raise SystemExit(f"Bloomberg 登录 cookie 不完整：{summary['valid_count']}/{len(LOGIN_COOKIE_NAMES)}，缺失 {', '.join(summary['missing'])}")
 
-    output = Path(args.output)
+    output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(output, 0o600)
@@ -52,17 +76,19 @@ def main() -> int:
         os.chmod(flag_path, 0o600)
 
     if args.clear_pause:
-        clear_bloomberg_pause()
+        clear_source_pauses(tuple(preset["pause_sources"]))
 
     print(
         json.dumps(
             {
                 "ok": True,
+                "preset": args.preset,
+                "domain": domain,
                 "cookie_count": len(cookies),
                 "output": str(output),
-                "login_cookie_valid": summary["valid"],
-                "login_cookie_count": summary["valid_count"],
-                "missing_login_cookies": summary["missing"],
+                "login_cookie_valid": summary["valid"] if args.preset == "bloomberg" else None,
+                "login_cookie_count": summary["valid_count"] if args.preset == "bloomberg" else None,
+                "missing_login_cookies": summary["missing"] if args.preset == "bloomberg" else [],
             },
             ensure_ascii=False,
             indent=2,
@@ -252,6 +278,10 @@ def login_cookie_summary(cookies: list[dict]) -> dict:
 
 
 def clear_bloomberg_pause() -> None:
+    clear_source_pauses(("bloomberg",))
+
+
+def clear_source_pauses(source_names: tuple[str, ...]) -> None:
     try:
         import pymongo
     except ImportError:
@@ -263,7 +293,7 @@ def clear_bloomberg_pause() -> None:
     try:
         database = os.getenv("MONGODB_DATABASE", "news")
         client[database]["source_pauses"].update_many(
-            {"source_name": "bloomberg", "active": True},
+            {"source_name": {"$in": list(source_names)}, "active": True},
             {"$set": {"active": False, "cleared_at": _utc_now()}},
         )
     except Exception:

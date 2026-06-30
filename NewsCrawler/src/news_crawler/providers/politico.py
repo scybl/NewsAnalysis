@@ -39,6 +39,8 @@ class PoliticoProvider:
         discovery_mode: str = "site",
         news_url: str = DEFAULT_NEWS_URL,
         source_name: str = "politico",
+        proxy: str = "",
+        cookies_json: str = "",
         curl_getter=None,
     ):
         self.name = source_name
@@ -48,7 +50,8 @@ class PoliticoProvider:
         self.fetch_article_pages = fetch_article_pages
         self.discovery_mode = discovery_mode
         self.news_url = news_url
-        self.curl_getter = curl_getter or _curl_get
+        self.proxy = proxy
+        self.curl_getter = curl_getter or (lambda url, headers, timeout: _curl_get(url, headers, timeout, proxy=self.proxy))
         self.session.headers.update(
             {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36",
@@ -57,6 +60,11 @@ class PoliticoProvider:
                 "Referer": "https://www.politico.com/",
             }
         )
+        if proxy:
+            self.session.proxies.update({"http": proxy, "https": proxy})
+        cookie_header = _cookie_header(cookies_json)
+        if cookie_header:
+            self.session.headers["Cookie"] = cookie_header
 
     def discover(self, request: NewsCrawlRequest) -> Iterable[ArticleRef]:
         if self.discovery_mode == "site":
@@ -302,13 +310,47 @@ def _needs_curl_fallback(response) -> bool:
     )
 
 
-def _curl_get(url: str, headers: dict[str, str], timeout: float) -> str:
+def _curl_get(url: str, headers: dict[str, str], timeout: float, *, proxy: str = "") -> str:
     command = ["curl", "-L", "--max-time", str(max(1, int(timeout))), "--silent", "--show-error"]
+    if proxy:
+        command.extend(["--proxy", proxy])
+    for name in ("User-Agent", "Accept", "Accept-Language", "Referer", "Cookie"):
+        value = str(headers.get(name) or "").strip()
+        if value:
+            command.extend(["-H", f"{name}: {value}"])
     command.append(url)
     result = subprocess.run(command, capture_output=True, text=True, timeout=max(2, timeout + 5), check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or f"curl failed with exit code {result.returncode}")
     return result.stdout
+
+
+def _cookie_header(cookies_json: str) -> str:
+    text = str(cookies_json or "").strip()
+    if not text:
+        return ""
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        return text if "=" in text else ""
+    if isinstance(raw, dict):
+        if isinstance(raw.get("cookies"), list):
+            raw = raw["cookies"]
+        elif raw.get("name") and raw.get("value"):
+            raw = [raw]
+        else:
+            raw = [{"name": key, "value": value} for key, value in raw.items()]
+    if not isinstance(raw, list):
+        return ""
+    pairs = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        value = str(item.get("value") or "")
+        if name and value:
+            pairs.append(f"{name}={value}")
+    return "; ".join(pairs)
 
 
 def _json_ld_article(soup) -> dict[str, Any]:
