@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 from typing import Any
@@ -20,6 +21,7 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
     )
     try:
         database = client[config.database]
+        expired_runs = _expire_stale_runs(database["crawl_runs"])
         health = list(
             database["source_health"]
             .find({}, {"_id": 0})
@@ -80,6 +82,7 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
                 "warning_count": sum(item.get("status") == "warning" for item in health),
                 "offline_count": sum(item.get("status") == "offline" for item in health),
                 "running_count": running,
+                "expired_running_count": expired_runs,
             },
             "health": health,
             "runs": runs,
@@ -102,6 +105,34 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
         }
     finally:
         client.close()
+
+
+def _expire_stale_runs(runs_collection, *, max_age_seconds: int = 300) -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+    cutoff_iso = cutoff.isoformat().replace("+00:00", "Z")
+    issue = {
+        "code": "timeout",
+        "message": f"crawl run exceeded max runtime of {max_age_seconds} seconds",
+        "article_url": None,
+        "retryable": True,
+    }
+    result = runs_collection.update_many(
+        {
+            "status": {"$in": ["queued", "running"]},
+            "started_at": {"$lt": cutoff_iso},
+        },
+        {
+            "$set": {
+                "status": "failed",
+                "finished_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "errors": [issue],
+                "failed": 1,
+                "cancel_requested": True,
+            },
+            "$inc": {"metrics.timeout": 1},
+        },
+    )
+    return int(getattr(result, "modified_count", 0) or 0)
 
 
 def _failure_stats(runs: list[dict[str, Any]], *, item_limit: int = 80, archived_urls: set[str] | None = None) -> dict[str, Any]:

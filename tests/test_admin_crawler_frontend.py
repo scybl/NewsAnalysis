@@ -34,11 +34,24 @@ def test_crawler_console_is_dedicated_and_read_only():
     assert "empty_response: \"返回空\"" in script
     assert "issueLabel(item.code))} ·" not in script
     assert "normalizeIssueCodeCounts" in script
-    assert 'source_name: "politico"' in script
-    assert 'politico: "Politico"' in script
+    assert 'const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico"]' in script
+    assert "maintenance: true" in script
+    assert "暂停维护" in script
+    assert "sourceName" in script
+    assert 'guardian: { label: "Guardian", initial: "G" }' in script
+    assert 'bloomberg: { label: "Bloomberg", initial: "B", maintenance: true }' in script
+    assert 'politico: { label: "Politico", initial: "P", maintenance: true }' in script
+    assert "等待首次采集运行记录。" in script
     assert 'code !== "empty_response"' in script
     assert "connection_closed: \"主动断连\"" in script
     assert "item.article_url" in script
+
+
+def test_bloomberg_and_politico_are_disabled_while_guardian_runs_separately():
+    compose = (STATIC.parents[1] / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico,politico_browser,guardian}" in compose
+    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico,politico_browser,tonghuashun}" in compose
+    assert 'command: ["schedule", "--source", "guardian", "--interval", "${GUARDIAN_CRAWLER_INTERVAL_SECONDS:-3600}"' in compose
 
 
 def test_all_admin_pages_link_to_crawler_console():

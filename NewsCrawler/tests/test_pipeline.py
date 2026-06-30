@@ -204,6 +204,31 @@ def test_failure_is_structured():
     assert result.errors[0].code == "timeout"
 
 
+def test_executor_fails_run_when_total_runtime_expires():
+    clock = {"now": 0.0}
+
+    class SlowProvider(FakeProvider):
+        def fetch(self, ref):
+            clock["now"] = 301.0
+            return super().fetch(ref)
+
+    repository = MemoryRepository()
+    result = TaskExecutor(
+        repository,
+        repository,
+        DedupeService(),
+        LoggingRunObserver(),
+        retries=1,
+        monotonic_fn=lambda: clock["now"],
+    ).execute(SlowProvider(), NewsCrawlRequest(max_runtime_seconds=300))
+
+    assert result.status == "failed"
+    assert result.finished_at is not None
+    assert result.failed == 1
+    assert result.metrics["timeout"] == 1
+    assert result.errors[0].code == "timeout"
+
+
 def test_failure_reason_classification_is_specific():
     assert _issue_code(RuntimeError("404 Client Error: Not Found for url")) == "stale_link"
     assert _issue_code(ValueError("article title or content not found")) == "extraction_missing"

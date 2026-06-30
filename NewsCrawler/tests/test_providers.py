@@ -3,8 +3,10 @@ from pathlib import Path
 
 from news_crawler.models import NewsCrawlRequest
 from news_crawler.models import ArticleRef
-from news_crawler.providers.bloomberg import BloombergProvider, extract_bloomberg_urls, parse_bloomberg_article
+from news_crawler.providers.bloomberg import BloombergProvider, extract_bloomberg_api_urls, extract_bloomberg_urls, parse_bloomberg_article
 from news_crawler.providers.guardian import GuardianProvider
+from news_crawler.providers.politico import PoliticoProvider, parse_politico_feed
+from news_crawler.providers.politico_browser import PoliticoBrowserProvider, extract_politico_news_urls, parse_browser_cookies
 from news_crawler.providers.tonghuashun import DEFAULT_CATEGORY_HARD_LIMITS, TonghuashunProvider, _image_urls, _normalize_ocr_text, _usable_ocr_text
 from news_crawler.providers.tonghuashun import _mobile_url
 
@@ -46,6 +48,29 @@ class RecordingSession:
     def get(self, url, **_kwargs):
         self.urls.append(url)
         return self.response
+
+
+class FakeBrowser:
+    def __init__(self, pages):
+        self.pages = dict(pages)
+        self.current_url = ""
+        self.page_source = ""
+        self.closed = False
+        self.scripts = []
+        self.cookies = []
+
+    def get(self, url):
+        self.current_url = url
+        self.page_source = self.pages[url]
+
+    def execute_script(self, script):
+        self.scripts.append(script)
+
+    def add_cookie(self, cookie):
+        self.cookies.append(cookie)
+
+    def quit(self):
+        self.closed = True
 
 
 def test_tonghuashun_provider_parses_fixture():
@@ -183,12 +208,43 @@ def test_guardian_provider_parses_fixture():
 
 def test_bloomberg_provider_parsers():
     latest = (FIXTURES / "bloomberg_latest.html").read_text()
+    api = (FIXTURES / "bloomberg_api.json").read_text()
     article_html = (FIXTURES / "bloomberg_article.html").read_text()
     urls = extract_bloomberg_urls(latest)
     assert len(urls) == 2
+    assert extract_bloomberg_api_urls(api) == [
+        "https://www.bloomberg.com/news/articles/2026-06-25/api-story",
+        "https://www.bloomberg.com/news/articles/2026-06-25/path-story",
+    ]
     article = parse_bloomberg_article(article_html, urls[0])
     assert article["title"] == "Bloomberg example"
     assert article["section"] == "Markets"
+
+
+def test_bloomberg_parses_next_story_article():
+    article_html = (FIXTURES / "bloomberg_next_article.html").read_text()
+    article = parse_bloomberg_article(article_html, "https://www.bloomberg.com/news/articles/2026-06-25/api-story")
+    assert article["title"] == "Bloomberg Next example"
+    assert article["summary"] == "Summary from Next data"
+    assert article["author"] == "Next Author"
+    assert article["section"] == "markets"
+    assert article["tags"] == ["markets", "bonds"]
+    assert article["content"] == "First Bloomberg paragraph.\nDetails Second paragraph with a link ."
+
+
+def test_bloomberg_provider_uses_api_before_latest_page():
+    api = (FIXTURES / "bloomberg_api.json").read_text()
+    provider = BloombergProvider()
+    provider.session = RecordingSession(Response(text=api, url="https://www.bloomberg.com/lineup-next/api/stories"))
+    provider.uses_curl_cffi = False
+
+    refs = list(provider.discover(NewsCrawlRequest(max_pages=1)))
+
+    assert [ref.url for ref in refs] == [
+        "https://www.bloomberg.com/news/articles/2026-06-25/api-story",
+        "https://www.bloomberg.com/news/articles/2026-06-25/path-story",
+    ]
+    assert provider.session.urls[-1] == "https://www.bloomberg.com/lineup-next/api/stories"
 
 
 def test_bloomberg_checkpoint_removes_successful_url():
@@ -211,3 +267,99 @@ def test_bloomberg_checkpoint_removes_successful_url():
     ])
     provider.fetch(ArticleRef("bloomberg", checkpoints.value["pending_urls"][0]))
     assert checkpoints.value["pending_urls"] == []
+
+
+def test_politico_provider_parses_feed_fixture():
+    feed_xml = (FIXTURES / "politico_feed.xml").read_text()
+    refs = parse_politico_feed(feed_xml, "https://rss.politico.com/politics-news.xml", "politics")
+    assert len(refs) == 1
+    assert refs[0].external_id == "0000019f-example"
+    assert refs[0].metadata["author"] == "Jane Reporter"
+    assert refs[0].metadata["content"] == "First paragraph from the feed.\nSecond paragraph with markup."
+
+    provider = PoliticoProvider({"politics": "https://rss.politico.com/politics-news.xml"})
+    provider.session = QueueSession([Response(text=feed_xml)])
+    ref = next(iter(provider.discover(NewsCrawlRequest(categories=("politics",), max_articles=1))))
+    article = provider.fetch(ref)
+    assert article.title == "Politico example"
+    assert article.section == "politics"
+    assert article.raw_metadata["media_url"] == "https://static.politico.com/example.jpg"
+
+
+def test_politico_browser_extracts_news_urls():
+    news_html = (FIXTURES / "politico_browser_news.html").read_text()
+    assert extract_politico_news_urls(news_html, "https://www.politico.com/news/") == [
+        "https://www.politico.com/news/2026/06/28/first-politico-browser-story-00976940",
+        "https://www.politico.com/news/2026/06/28/second-politico-browser-story-00976941",
+    ]
+
+
+def test_politico_browser_provider_discovers_and_fetches_article():
+    news_html = (FIXTURES / "politico_browser_news.html").read_text()
+    article_html = (FIXTURES / "politico_browser_article.html").read_text()
+    browser = FakeBrowser({
+        "https://www.politico.com/news/": news_html,
+        "https://www.politico.com/news/2026/06/28/first-politico-browser-story-00976940": article_html,
+    })
+    provider = PoliticoBrowserProvider(
+        browser_factory=lambda: browser,
+        wait_seconds=0,
+    )
+    ref = next(iter(provider.discover(NewsCrawlRequest(max_articles=1))))
+    article = provider.fetch(ref)
+    assert ref.source_name == "politico_browser"
+    assert article.title == "Politico browser example"
+    assert article.source_name == "politico_browser"
+    assert article.author == "Browser Reporter"
+    assert article.published_at.isoformat() == "2026-06-28T18:50:21+00:00"
+    provider.close()
+    assert browser.closed
+
+
+def test_politico_browser_applies_cookies_before_discovery():
+    news_html = (FIXTURES / "politico_browser_news.html").read_text()
+    browser = FakeBrowser({
+        "https://www.politico.com/": "<html><body>home</body></html>",
+        "https://www.politico.com/news/": news_html,
+    })
+    provider = PoliticoBrowserProvider(
+        browser_factory=lambda: browser,
+        cookies_json='{"name": "cf_clearance", "value": "token", "domain": ".politico.com", "path": "/"}',
+        wait_seconds=0,
+    )
+    ref = next(iter(provider.discover(NewsCrawlRequest(max_articles=1))))
+    assert ref.url.endswith("first-politico-browser-story-00976940")
+    assert browser.cookies == [
+        {"name": "cf_clearance", "value": "token", "domain": ".politico.com", "path": "/"}
+    ]
+
+
+def test_parse_browser_cookies_accepts_export_shapes():
+    assert parse_browser_cookies('{"cookies":[{"name":"a","value":"b","expirationDate":1800000000.2}]}') == [
+        {"name": "a", "value": "b", "expiry": 1800000000}
+    ]
+
+
+def test_politico_browser_detects_cloudflare_challenge():
+    provider = PoliticoBrowserProvider(browser_factory=lambda: FakeBrowser({}), wait_seconds=0)
+    for html in (
+        '<html><title>Just a moment...</title><script src="https://challenges.cloudflare.com"></script></html>',
+        "<html><title>请稍候...</title><body>正在进行安全验证 由 Cloudflare 提供</body></html>",
+    ):
+        try:
+            provider._raise_if_blocked(html, "https://www.politico.com/news/")
+        except RuntimeError as exc:
+            assert "Cloudflare" in str(exc)
+        else:
+            raise AssertionError("expected Cloudflare challenge to be detected")
+
+
+def test_politico_browser_fails_when_no_news_links_are_found():
+    browser = FakeBrowser({"https://www.politico.com/news/": "<html><body>No articles</body></html>"})
+    provider = PoliticoBrowserProvider(browser_factory=lambda: browser, wait_seconds=0)
+    try:
+        list(provider.discover(NewsCrawlRequest(max_articles=1)))
+    except RuntimeError as exc:
+        assert "no news links" in str(exc)
+    else:
+        raise AssertionError("expected empty discovery to fail")

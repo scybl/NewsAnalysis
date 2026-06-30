@@ -14,6 +14,13 @@ const crawlerRunDetail = document.querySelector("#crawlerRunDetail");
 const crawlerRunDetailClose = document.querySelector("#crawlerRunDetailClose");
 
 const CRAWLER_FAILURE_RETRY_THRESHOLD = 3;
+const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico"];
+const CRAWLER_SOURCE_CONFIG = {
+  tonghuashun: { label: "同花顺", initial: "同" },
+  guardian: { label: "Guardian", initial: "G" },
+  bloomberg: { label: "Bloomberg", initial: "B", maintenance: true },
+  politico: { label: "Politico", initial: "P", maintenance: true },
+};
 const crawlerState = { payload: null, timer: null, failureItems: new Map() };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -94,21 +101,40 @@ function renderCrawlerHealth(item) {
 
 function withCrawlerPlaceholders(health) {
   const items = [...(health || [])];
-  if (!items.some((item) => item.source_name === "politico")) {
-    items.push({
-      source_name: "politico",
-      status: "offline",
-      recent_success_rate: 0,
-      consecutive_failures: 0,
-      last_inserted_count: 0,
-      average_duration_seconds: 0,
-      last_success_at: "",
-      last_failure_at: "",
-      latest_error: "占位数据源，暂未接入采集。",
-      placeholder: true,
-    });
+  for (const sourceName of CRAWLER_EXPECTED_SOURCES) {
+    if (!items.some((item) => item.source_name === sourceName)) {
+      items.push({
+        source_name: sourceName,
+        status: "offline",
+        recent_success_rate: 0,
+        consecutive_failures: 0,
+        last_inserted_count: 0,
+        average_duration_seconds: 0,
+        last_success_at: "",
+        last_failure_at: "",
+        latest_error: "等待首次采集运行记录。",
+        placeholder: true,
+      });
+    }
   }
-  return items;
+  return items.map((item) => {
+    const config = CRAWLER_SOURCE_CONFIG[item.source_name] || {};
+    if (!config.maintenance) return item;
+    return {
+      ...item,
+      status: "maintenance",
+      latest_status: "maintenance",
+      latest_error: "已暂停自动采集，后续需要时再开启。",
+    };
+  }).sort((left, right) => {
+    const leftIndex = CRAWLER_EXPECTED_SOURCES.indexOf(left.source_name);
+    const rightIndex = CRAWLER_EXPECTED_SOURCES.indexOf(right.source_name);
+    const normalizedLeft = leftIndex === -1 ? CRAWLER_EXPECTED_SOURCES.length : leftIndex;
+    const normalizedRight = rightIndex === -1 ? CRAWLER_EXPECTED_SOURCES.length : rightIndex;
+    return normalizedLeft === normalizedRight
+      ? String(left.source_name || "").localeCompare(String(right.source_name || ""))
+      : normalizedLeft - normalizedRight;
+  });
 }
 
 function renderFailureStats(stats) {
@@ -313,15 +339,15 @@ function syncAutoRefresh() {
 }
 
 function sourceLabel(value) {
-  return { tonghuashun: "同花顺", guardian: "Guardian", bloomberg: "Bloomberg", politico: "Politico" }[value] || value || "未知来源";
+  return CRAWLER_SOURCE_CONFIG[value]?.label || value || "未知来源";
 }
 
 function sourceInitial(value) {
-  return { tonghuashun: "同", guardian: "G", bloomberg: "B", politico: "P" }[value] || String(value || "?").slice(0, 1).toUpperCase();
+  return CRAWLER_SOURCE_CONFIG[value]?.initial || String(value || "?").slice(0, 1).toUpperCase();
 }
 
 function healthLabel(status) {
-  return { online: "正常", warning: "有异常", offline: "不可用" }[status] || "未知";
+  return { online: "正常", warning: "有异常", offline: "不可用", maintenance: "暂停维护" }[status] || "未知";
 }
 
 function statusLabel(status) {

@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from news_crawler.cli import _failure_stats, _parse_category_pages
 
@@ -73,3 +74,8 @@ def test_parse_category_pages_validates_tonghuashun_categories():
     assert _parse_category_pages("金融市场=0") == {"金融市场": 1}
     with pytest.raises(ValueError, match="未知同花顺分类"):
         _parse_category_pages("不存在=2")
+
+
+def test_scheduler_reloads_settings_before_each_crawl_round():
+    source = (Path(__file__).resolve().parents[1] / "src" / "news_crawler" / "cli.py").read_text(encoding="utf-8")
+    assert "_run_crawl(args, get_settings(), fail_on_error=False)" in source

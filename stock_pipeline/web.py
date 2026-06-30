@@ -118,6 +118,92 @@ AGENT_TOKEN_PREFIX = "na_agent_"
 AGENT_ALLOWED_SCOPES = {"R", "B"}
 ADMIN_ROLES = {"admin", "admin_readonly"}
 READONLY_ADMIN_ROLE = "admin_readonly"
+CRAWLER_SECRET_DIR = PROJECT_ROOT / "local_data" / "secure" / "news_crawler"
+CREDENTIAL_PUBLIC_FIELDS = {
+    "name",
+    "source",
+    "label",
+    "kind",
+    "env",
+    "description",
+    "status_note",
+    "status_tone",
+    "reloads_next_run",
+}
+ADMIN_CREDENTIALS = (
+    {
+        "name": "tushare.api_token",
+        "label": "Tushare Token",
+        "source": "Tushare",
+        "kind": "api_key",
+        "storage": "secret_store",
+        "env": "TUSHARE_API",
+        "description": "Tushare 回退数据源使用的 token。",
+        "status_note": "暂停维护",
+        "status_tone": "danger",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "guardian.api_key",
+        "label": "Guardian API Key",
+        "source": "Guardian",
+        "kind": "api_key",
+        "storage": "file",
+        "env": "GUARDIAN_API_KEY",
+        "file_env": "GUARDIAN_API_KEY_FILE",
+        "path": "guardian_api_key.txt",
+        "description": "Guardian provider 的 API key。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "bloomberg.cookie",
+        "label": "Bloomberg Cookie",
+        "source": "Bloomberg",
+        "kind": "cookie",
+        "storage": "file",
+        "env": "BLOOMBERG_COOKIE",
+        "file_env": "BLOOMBERG_COOKIE_FILE",
+        "path": "bloomberg_cookie.txt",
+        "description": "Bloomberg 请求头 Cookie，适合粘贴完整 cookie 字符串。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "bloomberg.proxy",
+        "label": "Bloomberg Proxy",
+        "source": "Bloomberg",
+        "kind": "proxy",
+        "storage": "file",
+        "env": "BLOOMBERG_PROXY",
+        "file_env": "BLOOMBERG_PROXY_FILE",
+        "path": "bloomberg_proxy.txt",
+        "description": "Bloomberg 出站代理，例如 http://user:pass@host:port。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "politico_browser.proxy",
+        "label": "Politico Browser Proxy",
+        "source": "Politico",
+        "kind": "proxy",
+        "storage": "file",
+        "env": "POLITICO_BROWSER_PROXY",
+        "file_env": "POLITICO_BROWSER_PROXY_FILE",
+        "path": "politico_browser_proxy.txt",
+        "description": "Politico 浏览器 provider 使用的代理。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "politico_browser.cookies_json",
+        "label": "Politico Cookies JSON",
+        "source": "Politico",
+        "kind": "cookie_json",
+        "storage": "file",
+        "env": "POLITICO_BROWSER_COOKIES_JSON",
+        "file_env": "POLITICO_BROWSER_COOKIES_JSON_FILE",
+        "path": "politico_browser_cookies_json.txt",
+        "description": "Playwright cookies JSON 数组，用于复用已验证会话。",
+        "reloads_next_run": True,
+    },
+)
 AGENT_SCOPE_LABELS = {
     "R": "读取本地股票、新闻、报告和任务状态",
     "B": "提交模型消耗型多 Agent 分析任务",
@@ -167,6 +253,79 @@ def _public_stock_client(settings) -> FallbackStockClient:
         EastmoneyClient(pause=settings.tushare_pause_seconds),
         [AkshareClient(pause=settings.tushare_pause_seconds)],
     )
+
+
+def _credential_spec(name: str) -> dict[str, Any]:
+    for spec in ADMIN_CREDENTIALS:
+        if spec["name"] == name:
+            return spec
+    raise KeyError("未知凭据。")
+
+
+def _credential_file_path(spec: dict[str, Any]) -> Path:
+    path_name = str(spec.get("path") or "")
+    path = (CRAWLER_SECRET_DIR / path_name).resolve()
+    if CRAWLER_SECRET_DIR.resolve() not in path.parents:
+        raise ValueError("凭据文件路径无效。")
+    return path
+
+
+def _credential_file_state(spec: dict[str, Any]) -> dict[str, Any]:
+    path = _credential_file_path(spec)
+    if not path.exists() or path.stat().st_size == 0:
+        return {"configured": False, "updated_at": ""}
+    updated_at = datetime.fromtimestamp(path.stat().st_mtime, tz=CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "configured": True,
+        "updated_at": updated_at,
+    }
+
+
+def admin_credentials_snapshot(user_store=None) -> dict[str, Any]:
+    secret_store = get_secret_store()
+    items: list[dict[str, Any]] = []
+    for spec in ADMIN_CREDENTIALS:
+        item = {key: value for key, value in spec.items() if key in CREDENTIAL_PUBLIC_FIELDS}
+        storage = str(spec.get("storage") or "")
+        if storage == "file":
+            item.update(_credential_file_state(spec))
+        else:
+            state = secret_store.state(str(spec["name"]))
+            item.update({"configured": state.configured, "updated_at": state.updated_at})
+        items.append(item)
+    return {"items": items}
+
+
+def set_admin_credential(name: str, value: str, *, updated_by: str, user_store=None) -> dict[str, Any]:
+    spec = _credential_spec(name)
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        raise ValueError("凭据值不能为空。")
+    if len(raw_value) > 100_000:
+        raise ValueError("凭据值过大，请拆分或使用文件方式手动配置。")
+    storage = str(spec.get("storage") or "")
+    if storage == "file":
+        path = _credential_file_path(spec)
+        ensure_dir(path.parent)
+        path.write_text(raw_value, encoding="utf-8")
+        os.chmod(path, 0o600)
+        return _credential_file_state(spec)
+    get_secret_store().set(str(spec["name"]), raw_value, updated_by=updated_by)
+    state = get_secret_store().state(str(spec["name"]))
+    return {"configured": state.configured, "updated_at": state.updated_at}
+
+
+def delete_admin_credential(name: str, *, updated_by: str, user_store=None) -> dict[str, Any]:
+    spec = _credential_spec(name)
+    storage = str(spec.get("storage") or "")
+    if storage == "file":
+        path = _credential_file_path(spec)
+        if path.exists():
+            path.unlink()
+        return _credential_file_state(spec)
+    get_secret_store().delete(str(spec["name"]))
+    state = get_secret_store().state(str(spec["name"]))
+    return {"configured": state.configured, "updated_at": state.updated_at}
 
 
 class StockWebApp:
@@ -779,6 +938,11 @@ class StockWebApp:
                         return
                     self._json({"ok": True, **data_source_snapshot(app.settings)})
                     return
+                if parsed.path == "/api/admin/credentials":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **admin_credentials_snapshot(app.user_store)})
+                    return
                 if parsed.path == "/api/admin/kaipanla/features":
                     if not self._require_admin():
                         return
@@ -882,6 +1046,11 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._handle_admin_system_api_key()
+                    return
+                if parsed.path == "/api/admin/credentials":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_credentials()
                     return
                 if parsed.path == "/api/admin/data-distribution/send":
                     if not self._require_admin():
@@ -1228,6 +1397,24 @@ class StockWebApp:
                     state = app.user_store.save_system_api_keys({"deepseek": token}, session.get("username") or "admin")
                     self._json({"ok": True, "validation": validation, "system_api_keys": state})
                 except (ValueError, PermissionError, RuntimeError) as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+
+            def _handle_admin_credentials(self) -> None:
+                payload = self._read_json()
+                action = str(payload.get("action") or "save").strip()
+                name = str(payload.get("name") or "").strip()
+                session = self._current_session() or {}
+                updated_by = session.get("username") or "admin"
+                try:
+                    if action == "delete":
+                        delete_admin_credential(name, updated_by=updated_by, user_store=app.user_store)
+                    elif action in {"save", "set"}:
+                        value = str(payload.get("value") or "")
+                        set_admin_credential(name, value, updated_by=updated_by, user_store=app.user_store)
+                    else:
+                        raise ValueError("未知凭据操作。")
+                    self._json({"ok": True, **admin_credentials_snapshot(app.user_store)})
+                except (KeyError, ValueError, PermissionError, RuntimeError, OSError) as exc:
                     self._json({"ok": False, "error": str(exc)}, status=400)
 
             def _handle_admin_agent_token(self) -> None:

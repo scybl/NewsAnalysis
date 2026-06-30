@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:media="http://search.yahoo.com/mrss/" version="2.0">
+  <channel>
+    <title>Politics</title>
+    <item>
+      <title>Politico example</title>
+      <link>https://www.politico.com/news/2026/06/28/example-story-00976940</link>
+      <description><![CDATA[<p>Short feed summary.</p>]]></description>
+      <guid isPermaLink="false">0000019f-example</guid>
+      <pubDate>Sun, 28 Jun 2026 18:50:21 EST</pubDate>
+      <media:content type="image/jpeg" url="https://static.politico.com/example.jpg" />
+      <dc:creator>By Jane Reporter</dc:creator>
+      <content:encoded><![CDATA[
+        <p>First paragraph from the feed.</p>
+        <p>Second paragraph with <strong>markup</strong>.</p>
+      ]]></content:encoded>
+    </item>
+  </channel>
+</rss>

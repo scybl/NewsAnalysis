@@ -2736,6 +2736,12 @@ body:has(.admin-shell) {
   color: #b42318;
 }
 
+.crawler-health-item.is-maintenance .crawler-health-status {
+  border-color: #d0d5dd;
+  background: #f2f4f7;
+  color: #475467;
+}
+
 .crawler-runs-wrap {
   max-height: 330px;
   border-top: 1px solid #eef1f5;
@@ -2936,7 +2942,7 @@ body:has(.admin-shell) {
 }
 
 .crawler-health-card .crawler-health-grid {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .crawler-health-title > div {
@@ -2960,7 +2966,7 @@ body:has(.admin-shell) {
 
 .crawler-health-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
   border: 1px solid #e5eaf1;
@@ -2990,23 +2996,26 @@ body:has(.admin-shell) {
 
 .crawler-health-times {
   display: grid;
-  gap: 5px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
   margin: 0;
 }
 
 .crawler-health-times > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .crawler-last-error {
-  overflow: hidden;
   border-left: 3px solid #f04438;
   padding-left: 8px;
   color: #b42318 !important;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 .crawler-runs-detailed {
@@ -6766,6 +6775,159 @@ body:has(.admin-shell) {
   background: color-mix(in srgb, var(--fin-primary) 86%, var(--fin-accent)) !important;
 }
 
+.credentials-console {
+  align-content: start !important;
+}
+
+.credential-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 16px !important;
+}
+
+.credential-section {
+  min-width: 0 !important;
+}
+
+.credential-list {
+  display: grid !important;
+  gap: 12px !important;
+  padding: 14px !important;
+}
+
+.credential-item {
+  display: grid !important;
+  gap: 12px !important;
+  border: 1px solid var(--fin-border) !important;
+  border-radius: 8px !important;
+  background: var(--fin-background) !important;
+  padding: 14px !important;
+}
+
+.credential-item-head {
+  display: flex !important;
+  align-items: start !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+}
+
+.credential-item h5 {
+  margin: 0 !important;
+  color: var(--fin-foreground) !important;
+  font-size: 14px !important;
+  line-height: 1.25 !important;
+  letter-spacing: 0 !important;
+}
+
+.credential-item p {
+  margin: 4px 0 0 !important;
+  color: var(--fin-muted-foreground) !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+
+.credential-status-list {
+  display: flex !important;
+  flex: 0 0 auto !important;
+  flex-wrap: wrap !important;
+  justify-content: flex-end !important;
+  gap: 6px !important;
+}
+
+.credential-status {
+  flex: 0 0 auto !important;
+  border: 1px solid var(--fin-border) !important;
+  border-radius: 999px !important;
+  padding: 4px 8px !important;
+  color: var(--fin-muted-foreground) !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
+}
+
+.credential-status.is-success {
+  border-color: color-mix(in srgb, var(--fin-success) 35%, var(--fin-border)) !important;
+  color: var(--fin-success) !important;
+}
+
+.credential-status.is-muted {
+  border-color: var(--fin-border) !important;
+  color: var(--fin-muted-foreground) !important;
+}
+
+.credential-status.is-danger {
+  border-color: color-mix(in srgb, var(--fin-danger) 40%, var(--fin-border)) !important;
+  color: var(--fin-danger) !important;
+}
+
+.credential-meta {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  margin: 0 !important;
+}
+
+.credential-meta div {
+  min-width: 0 !important;
+  border: 1px solid var(--fin-border) !important;
+  border-radius: 8px !important;
+  background: var(--fin-card) !important;
+  padding: 8px !important;
+}
+
+.credential-meta dt {
+  color: var(--fin-muted-foreground) !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+}
+
+.credential-meta dd {
+  margin: 3px 0 0 !important;
+  overflow: hidden !important;
+  color: var(--fin-foreground) !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-size: 12px !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.credential-input {
+  display: grid !important;
+  gap: 6px !important;
+  color: var(--fin-muted-foreground) !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+}
+
+.credential-input textarea {
+  width: 100% !important;
+  min-height: 92px !important;
+  resize: vertical !important;
+  border: 1px solid var(--fin-border) !important;
+  border-radius: 8px !important;
+  background: var(--fin-card) !important;
+  padding: 10px !important;
+  color: var(--fin-foreground) !important;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+
+.credential-actions {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto auto !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.credential-actions small {
+  min-width: 0 !important;
+  color: var(--fin-muted-foreground) !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+}
+
+.credential-actions small.is-error {
+  color: var(--fin-danger) !important;
+}
+
 .admin-panel,
 .market-console,
 .data-library-console,
@@ -7119,7 +7281,7 @@ body:has(.admin-shell) {
 .crawler-console .crawler-ops-grid-detailed {
   display: grid !important;
   width: 100% !important;
-  grid-template-columns: minmax(320px, 0.9fr) minmax(520px, 1.4fr) !important;
+  grid-template-columns: minmax(620px, 1.15fr) minmax(460px, 0.85fr) !important;
   align-items: start !important;
   gap: 16px !important;
 }
@@ -7132,7 +7294,7 @@ body:has(.admin-shell) {
 }
 
 .crawler-console .crawler-health-grid-detailed {
-  grid-template-columns: 1fr !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
 }
 
 .crawler-console .crawler-runs-detailed {
@@ -7141,6 +7303,10 @@ body:has(.admin-shell) {
 
 @media (max-width: 1120px) {
   .crawler-console .crawler-ops-grid-detailed {
+    grid-template-columns: 1fr !important;
+  }
+
+  .crawler-console .crawler-health-grid-detailed {
     grid-template-columns: 1fr !important;
   }
 }

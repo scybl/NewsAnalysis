@@ -49,6 +49,9 @@ services:
   news-crawler:
     build:
       context: ./NewsCrawler
+      args:
+        NEWS_CRAWLER_INSTALL_BROWSER: ${NEWS_CRAWLER_INSTALL_BROWSER:-0}
+        NEWS_CRAWLER_INSTALL_BLOOMBERG: ${NEWS_CRAWLER_INSTALL_BLOOMBERG:-0}
     labels:
       com.newsanalysis.release: ${RELEASE_VERSION:-unknown}
       com.newsanalysis.release-time: ${RELEASE_TIME:-unknown}
@@ -64,12 +67,60 @@ services:
       MONGODB_RAW_COLLECTION: ${MONGODB_RAW_COLLECTION:-raw_articles}
       MONGODB_RUNS_COLLECTION: ${MONGODB_RUNS_COLLECTION:-crawl_runs}
       GUARDIAN_API_KEY: ${GUARDIAN_API_KEY:-}
+      GUARDIAN_API_KEY_FILE: ${GUARDIAN_API_KEY_FILE:-/app/local_data/secure/news_crawler/guardian_api_key.txt}
       BLOOMBERG_COOKIE: ${BLOOMBERG_COOKIE:-}
-      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg}
+      BLOOMBERG_COOKIE_FILE: ${BLOOMBERG_COOKIE_FILE:-/app/local_data/secure/news_crawler/bloomberg_cookie.txt}
+      BLOOMBERG_PROXY: ${BLOOMBERG_PROXY:-}
+      BLOOMBERG_PROXY_FILE: ${BLOOMBERG_PROXY_FILE:-/app/local_data/secure/news_crawler/bloomberg_proxy.txt}
+      BLOOMBERG_API_URL: ${BLOOMBERG_API_URL:-https://www.bloomberg.com/lineup-next/api/stories}
+      BLOOMBERG_USE_API: ${BLOOMBERG_USE_API:-1}
+      POLITICO_BROWSER_PROXY: ${POLITICO_BROWSER_PROXY:-}
+      POLITICO_BROWSER_PROXY_FILE: ${POLITICO_BROWSER_PROXY_FILE:-/app/local_data/secure/news_crawler/politico_browser_proxy.txt}
+      POLITICO_BROWSER_COOKIES_JSON: ${POLITICO_BROWSER_COOKIES_JSON:-}
+      POLITICO_BROWSER_COOKIES_JSON_FILE: ${POLITICO_BROWSER_COOKIES_JSON_FILE:-/app/local_data/secure/news_crawler/politico_browser_cookies_json.txt}
+      POLITICO_BROWSER_PROFILE_DIR: ${POLITICO_BROWSER_PROFILE_DIR:-/app/local_data/politico_chrome_profile}
+      POLITICO_BROWSER_HEADLESS: ${POLITICO_BROWSER_HEADLESS:-1}
+      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico,politico_browser,guardian}
       NEWS_CRAWLER_TONGHUASHUN_CATEGORY_PAGES: ${NEWS_CRAWLER_TONGHUASHUN_CATEGORY_PAGES:-产经新闻=30,区域经济=18,公司新闻=16,国际财经=12,财经评论=6,财经要闻=5,宏观经济=3,金融市场=3,财经人物=2}
     secrets:
       - mongo_root_password
-    command: ["schedule", "--source", "all", "--interval", "${NEWS_CRAWLER_INTERVAL_SECONDS:-1800}", "--max-pages", "${NEWS_CRAWLER_MAX_PAGES:-10}"]
+    volumes:
+      - ./local_data:/app/local_data
+    command: ["schedule", "--source", "all", "--interval", "${NEWS_CRAWLER_INTERVAL_SECONDS:-1800}", "--max-pages", "${NEWS_CRAWLER_MAX_PAGES:-10}", "--max-runtime-seconds", "${NEWS_CRAWLER_MAX_RUNTIME_SECONDS:-300}"]
+    healthcheck:
+      test: ["CMD", "news-crawler", "health"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+
+  news-crawler-guardian:
+    build:
+      context: ./NewsCrawler
+      args:
+        NEWS_CRAWLER_INSTALL_BROWSER: ${NEWS_CRAWLER_INSTALL_BROWSER:-0}
+        NEWS_CRAWLER_INSTALL_BLOOMBERG: ${NEWS_CRAWLER_INSTALL_BLOOMBERG:-0}
+    labels:
+      com.newsanalysis.release: ${RELEASE_VERSION:-unknown}
+      com.newsanalysis.release-time: ${RELEASE_TIME:-unknown}
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      MONGO_HOST: mongo
+      MONGO_PORT: 27017
+      MONGO_USER: ${MONGO_USER:-admin}
+      MONGO_PASSWORD_FILE: /run/secrets/mongo_root_password
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-news}
+      MONGODB_RAW_COLLECTION: ${MONGODB_RAW_COLLECTION:-raw_articles}
+      MONGODB_RUNS_COLLECTION: ${MONGODB_RUNS_COLLECTION:-crawl_runs}
+      GUARDIAN_API_KEY: ${GUARDIAN_API_KEY:-}
+      GUARDIAN_API_KEY_FILE: ${GUARDIAN_API_KEY_FILE:-/app/local_data/secure/news_crawler/guardian_api_key.txt}
+      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico,politico_browser,tonghuashun}
+    secrets:
+      - mongo_root_password
+    volumes:
+      - ./local_data:/app/local_data
+    command: ["schedule", "--source", "guardian", "--interval", "${GUARDIAN_CRAWLER_INTERVAL_SECONDS:-3600}", "--max-pages", "${GUARDIAN_CRAWLER_MAX_PAGES:-1}", "--max-runtime-seconds", "${GUARDIAN_CRAWLER_MAX_RUNTIME_SECONDS:-300}"]
     healthcheck:
       test: ["CMD", "news-crawler", "health"]
       interval: 60s

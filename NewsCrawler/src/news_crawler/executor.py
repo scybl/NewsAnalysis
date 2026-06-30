@@ -21,6 +21,7 @@ class TaskExecutor:
         observer: RunObserver,
         retries: int = 2,
         sleep_fn=time.sleep,
+        monotonic_fn=time.monotonic,
     ):
         self.news_repository = news_repository
         self.run_repository = run_repository
@@ -28,9 +29,11 @@ class TaskExecutor:
         self.observer = observer
         self.retries = max(1, retries)
         self.sleep_fn = sleep_fn
+        self.monotonic_fn = monotonic_fn
 
     def execute(self, provider: NewsProvider, request: NewsCrawlRequest) -> CrawlResult:
         result = CrawlResult(source_name=provider.name, run_id=uuid.uuid4().hex)
+        deadline = _deadline(self.monotonic_fn(), request.max_runtime_seconds)
         if self.run_repository:
             self.run_repository.start(result)
         self.observer.on_run_started(result)
@@ -39,6 +42,7 @@ class TaskExecutor:
         stopped_groups = set()
         try:
             for ref in provider.discover(request):
+                _raise_if_timed_out(deadline, self.monotonic_fn, provider.name)
                 page_key = _page_key(ref)
                 if page_key != current_page_key:
                     _finalize_page_boundary(request, result, current_page_key, current_page_stats, stopped_groups)
@@ -54,7 +58,8 @@ class TaskExecutor:
                     break
                 result.discovered += 1
                 current_page_stats["discovered"] += 1
-                article = self._fetch_with_retry(provider, ref, result)
+                article = self._fetch_with_retry(provider, ref, result, deadline)
+                _raise_if_timed_out(deadline, self.monotonic_fn, provider.name)
                 if article is None:
                     continue
                 result.fetched += 1
@@ -84,9 +89,16 @@ class TaskExecutor:
                     self.observer.on_article_duplicated(article, _duplicate_reason(existing, keys))
                 if request.request_delay_seconds > 0:
                     self.sleep_fn(request.request_delay_seconds)
+                    _raise_if_timed_out(deadline, self.monotonic_fn, provider.name)
             _finalize_page_boundary(request, result, current_page_key, current_page_stats, stopped_groups)
             if result.status != "cancelled":
                 result.status = "succeeded" if not result.errors else "partial"
+        except CrawlRunTimeout as exc:
+            result.failed += 1
+            result.metrics["timeout"] = int(result.metrics.get("timeout", 0)) + 1
+            result.errors.append(CrawlIssue("timeout", str(exc), retryable=True))
+            result.status = "failed"
+            self.observer.on_provider_failed(provider.name, result.errors[-1])
         except Exception as exc:  # provider discovery failure
             issue = CrawlIssue("provider_error", str(exc), retryable=False)
             result.errors.append(issue)
@@ -101,9 +113,10 @@ class TaskExecutor:
             self.observer.on_run_finished(result)
         return result
 
-    def _fetch_with_retry(self, provider, ref, result):
+    def _fetch_with_retry(self, provider, ref, result, deadline):
         for attempt in range(1, self.retries + 1):
             try:
+                _raise_if_timed_out(deadline, self.monotonic_fn, provider.name)
                 return provider.fetch(ref)
             except ArticleSkipped as exc:
                 result.skipped += 1
@@ -115,11 +128,27 @@ class TaskExecutor:
                 if attempt < self.retries:
                     result.metrics["retry"] = int(result.metrics.get("retry", 0)) + 1
                     self.sleep_fn(min(2 ** (attempt - 1), 4))
+                    _raise_if_timed_out(deadline, self.monotonic_fn, provider.name)
                     continue
                 result.failed += 1
                 result.metrics[issue_code] = int(result.metrics.get(issue_code, 0)) + 1
                 result.errors.append(CrawlIssue(issue_code, str(exc), ref.url, retryable=True))
                 return None
+
+
+class CrawlRunTimeout(TimeoutError):
+    pass
+
+
+def _deadline(now: float, max_runtime_seconds: float) -> float | None:
+    if max_runtime_seconds <= 0:
+        return None
+    return now + max_runtime_seconds
+
+
+def _raise_if_timed_out(deadline: float | None, monotonic_fn, source_name: str) -> None:
+    if deadline is not None and monotonic_fn() >= deadline:
+        raise CrawlRunTimeout(f"{source_name} crawl exceeded max runtime")
 
 
 def _duplicate_reason(existing, keys) -> str:

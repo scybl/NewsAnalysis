@@ -20,6 +20,9 @@ from .observer import LoggingRunObserver
 from .pipeline import CrawlPipeline
 from .providers.guardian import GuardianProvider
 from .providers.bloomberg import BloombergProvider
+from .providers.politico import DEFAULT_FEEDS as POLITICO_DEFAULT_FEEDS
+from .providers.politico import PoliticoProvider
+from .providers.politico_browser import PoliticoBrowserProvider
 from .providers.tonghuashun import CATEGORIES, TonghuashunProvider
 from .registry import ProviderRegistry
 
@@ -32,7 +35,11 @@ def main() -> None:
     migrate.add_argument("--source-collection", default="articles")
     migrate.add_argument("--limit", type=int, default=0)
     crawl = sub.add_parser("crawl", help="抓取新闻")
-    crawl.add_argument("--source", default="all", choices=["all", "tonghuashun", "guardian", "bloomberg"])
+    crawl.add_argument(
+        "--source",
+        default="all",
+        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico", "politico_browser"],
+    )
     crawl.add_argument("--latest", action="store_true", help="抓取最新新闻")
     crawl.add_argument("--since", default="", help="历史补采开始时间，ISO 8601")
     crawl.add_argument("--until", default="", help="历史补采结束时间，ISO 8601")
@@ -42,6 +49,7 @@ def main() -> None:
     crawl.add_argument("--category-pages", default="", help="按分类覆盖最大页数，例如：产经新闻=3,财经要闻=10")
     crawl.add_argument("--dry-run", action="store_true")
     crawl.add_argument("--request-delay", type=float, default=0)
+    crawl.add_argument("--max-runtime-seconds", type=float, default=None, help="单个来源本次采集最大运行秒数，0 表示不限制")
     crawl.add_argument("--stop-after-existing-page", action="store_true", help="最新采集时某页出现已入库文章后停止该分组后续页")
     cancel = sub.add_parser("cancel", help="请求取消一个运行中的采集任务")
     cancel.add_argument("run_id")
@@ -54,11 +62,16 @@ def main() -> None:
     failures.add_argument("--source", default="")
     failures.add_argument("--limit", type=int, default=50)
     schedule = sub.add_parser("schedule", help="常驻循环执行采集任务")
-    schedule.add_argument("--source", default="all", choices=["all", "tonghuashun", "guardian", "bloomberg"])
+    schedule.add_argument(
+        "--source",
+        default="all",
+        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico", "politico_browser"],
+    )
     schedule.add_argument("--interval", type=int, default=1800)
     schedule.add_argument("--max-pages", type=int, default=10)
     schedule.add_argument("--category-pages", default="")
     schedule.add_argument("--request-delay", type=float, default=0)
+    schedule.add_argument("--max-runtime-seconds", type=float, default=None, help="单个来源本次采集最大运行秒数，0 表示不限制")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -127,7 +140,7 @@ def main() -> None:
         signal.signal(signal.SIGINT, request_stop)
         while not stop:
             try:
-                _run_crawl(args, settings, fail_on_error=False)
+                _run_crawl(args, get_settings(), fail_on_error=False)
             except Exception:
                 logging.exception("scheduled crawl failed")
             deadline = time.monotonic() + max(1, args.interval)
@@ -166,6 +179,12 @@ def _run_crawl(args, settings, *, fail_on_error: bool = True):
             dry_run=args.dry_run,
             request_delay_seconds=max(0, args.request_delay),
             stop_after_existing_page=bool(getattr(args, "stop_after_existing_page", False)),
+            max_runtime_seconds=max(
+                0.0,
+                settings.max_runtime_seconds
+                if getattr(args, "max_runtime_seconds", None) is None
+                else args.max_runtime_seconds,
+            ),
         )
         results = CrawlPipeline(registry, executor).run(request)
         print(json.dumps([_public_result(item) for item in results], ensure_ascii=False, indent=2))
@@ -193,6 +212,26 @@ def _registry(settings, checkpoint_repository=None):
                 settings.bloomberg_latest_url,
                 settings.bloomberg_cookie,
                 checkpoint_repository,
+                api_url=settings.bloomberg_api_url,
+                proxy=settings.bloomberg_proxy,
+                use_api=settings.bloomberg_use_api,
+            ),
+        )
+    if "politico" not in settings.disabled_sources:
+        registry.register(
+            "politico",
+            lambda: PoliticoProvider(_parse_politico_feed_urls(settings.politico_feed_urls)),
+        )
+    if "politico_browser" not in settings.disabled_sources:
+        registry.register(
+            "politico_browser",
+            lambda: PoliticoBrowserProvider(
+                settings.politico_browser_news_url,
+                headless=settings.politico_browser_headless,
+                wait_seconds=settings.politico_browser_wait_seconds,
+                profile_dir=settings.politico_browser_profile_dir,
+                proxy=settings.politico_browser_proxy,
+                cookies_json=settings.politico_browser_cookies_json,
             ),
         )
     return registry
@@ -304,6 +343,23 @@ def _parse_category_pages(value: str) -> dict[str, int]:
     unknown = sorted(set(result) - set(CATEGORIES))
     if unknown:
         raise ValueError("未知同花顺分类：" + ",".join(unknown))
+    return result
+
+
+def _parse_politico_feed_urls(value: str) -> dict[str, str]:
+    result = dict(POLITICO_DEFAULT_FEEDS)
+    for raw_item in str(value or "").split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Politico feed 配置格式错误：{item}")
+        category, url = item.split("=", 1)
+        category = category.strip()
+        url = url.strip()
+        if not category or not url:
+            raise ValueError(f"Politico feed 配置缺少分类或 URL：{item}")
+        result[category] = url
     return result
 
 

@@ -57,6 +57,7 @@ class NewsCrawlRequest:
     request_delay_seconds: float = 0
     dry_run: bool = False
     stop_after_existing_page: bool = False
+    max_runtime_seconds: float = 300
 
 
 @dataclass(frozen=True)

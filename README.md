@@ -154,7 +154,20 @@ scripts/mongo_ping.sh
 .venv/bin/news-crawler crawl --source all --latest --max-pages 1
 ```
 
-Guardian 需要在 NewsCrawler 自己的环境中配置 `GUARDIAN_API_KEY`。Bloomberg 已作为正式 Provider 接入；若公开页面触发登录墙或反爬，可通过部署 secret 设置 `BLOOMBERG_COOKIE`。
+Guardian 需要在 NewsCrawler 自己的环境中配置 `GUARDIAN_API_KEY`。Bloomberg 已作为正式 Provider 接入，默认优先使用 Bloomberg `lineup-next` API 获取 URL，并解析文章页 `__NEXT_DATA__` 正文；若服务器无法直连或触发登录墙/反爬，可通过部署 secret 设置 `BLOOMBERG_PROXY`、`BLOOMBERG_COOKIE`，或对应的 `BLOOMBERG_PROXY_FILE` / `BLOOMBERG_COOKIE_FILE`。Politico 使用公开 RSS feed 接入，可直接运行：
+
+```bash
+.venv/bin/news-crawler crawl --source politico --latest --max-articles 10 --dry-run
+```
+
+同时提供实验性的 `politico_browser` Provider，可用 Selenium/Chrome 直接尝试抓取 `https://www.politico.com/news/`。该源默认禁用；启用时需要 browser 依赖和可通过 Politico Cloudflare 验证的浏览器环境：
+
+```bash
+NEWS_CRAWLER_DISABLED_SOURCES= .venv/bin/news-crawler crawl --source politico_browser --latest --max-pages 1 --max-articles 5 --dry-run
+```
+
+`politico_browser` 支持 `POLITICO_BROWSER_PROFILE_DIR`、`POLITICO_BROWSER_PROXY` 和 `POLITICO_BROWSER_COOKIES_JSON`，用于复用已验证 profile、代理或注入 `cf_clearance` 等 Cookie。
+服务器 Docker 启用该源时还需要设置 `NEWS_CRAWLER_INSTALL_BROWSER=1` 重新构建 crawler 镜像，并将 `POLITICO_BROWSER_PROFILE_DIR` 指向持久化目录，例如 `/app/local_data/politico_chrome_profile`。
 
 NewsAnalysis 仍可独立检索已采集新闻：
 
@@ -189,6 +202,8 @@ python -m stock_pipeline kaipanla run daily_data --params '{"end_date":"2026-01-
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
+
+NewsCrawler 单个来源的单次采集默认最多运行 300 秒，超时会把本次运行标记为 `failed`，错误码为 `timeout`，避免后台页面长期残留 `running`。如需调整，可设置 `NEWS_CRAWLER_MAX_RUNTIME_SECONDS=600`。
 
 生产环境同样不要把 key 写入 `.env`。部署后在服务器目录执行：
 

@@ -1,0 +1,14 @@
+[
+  {
+    "url": "/news/articles/2026-06-25/api-story",
+    "headline": "API story"
+  },
+  {
+    "path": "news/articles/2026-06-25/path-story",
+    "headline": "Path story"
+  },
+  {
+    "url": "/markets",
+    "headline": "Not an article"
+  }
+]
