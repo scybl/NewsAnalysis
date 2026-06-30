@@ -14,7 +14,7 @@ const crawlerRunDetail = document.querySelector("#crawlerRunDetail");
 const crawlerRunDetailClose = document.querySelector("#crawlerRunDetailClose");
 
 const CRAWLER_FAILURE_RETRY_THRESHOLD = 3;
-const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss"];
+const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss", "gdelt", "alpha_vantage_news"];
 const CRAWLER_IGNORED_SOURCES = new Set(["politico"]);
 const CRAWLER_SOURCE_CONFIG = {
   tonghuashun: { label: "同花顺", initial: "同" },
@@ -23,6 +23,8 @@ const CRAWLER_SOURCE_CONFIG = {
   politico_browser: { label: "Politico Web", initial: "P" },
   politico_rss: { label: "Politico RSS", initial: "R", maintenance: true },
   politico_chrome: { label: "Politico Chrome", initial: "C", maintenance: true },
+  gdelt: { label: "GDELT", initial: "G", maintenance: true },
+  alpha_vantage_news: { label: "Alpha Vantage News", initial: "A", maintenance: true },
 };
 const crawlerState = { payload: null, timer: null, failureItems: new Map() };
 
@@ -114,6 +116,8 @@ function showStoredRuntimeAlerts() {
 function renderCrawlerHealth(item) {
   const status = item.status || "unknown";
   const rate = Math.round(Number(item.recent_success_rate || 0) * 100);
+  const noteLabel = status === "maintenance" ? "状态说明" : "最近文章异常";
+  const noteClass = status === "maintenance" ? " is-neutral" : "";
   return `
     <article class="crawler-health-item is-${escapeAttr(status)}">
       <div class="crawler-health-title">
@@ -130,7 +134,7 @@ function renderCrawlerHealth(item) {
         <div><dt>最近成功</dt><dd>${escapeHtml(formatDateTime(item.last_success_at))}</dd></div>
         <div><dt>最近失败</dt><dd>${escapeHtml(formatDateTime(item.last_failure_at))}</dd></div>
       </dl>
-      ${item.latest_error ? `<p class="crawler-last-error" title="${escapeAttr(item.latest_error)}"><strong>最近文章异常：</strong>${escapeHtml(item.latest_error)}</p>` : ""}
+      ${item.latest_error ? `<p class="crawler-last-error${noteClass}" title="${escapeAttr(item.latest_error)}"><strong>${escapeHtml(noteLabel)}：</strong>${escapeHtml(item.latest_error)}</p>` : ""}
     </article>
   `;
 }

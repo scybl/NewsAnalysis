@@ -7430,9 +7430,9 @@ body:has(.admin-shell) {
 .crawler-console .crawler-ops-grid-detailed {
   display: grid !important;
   width: 100% !important;
-  grid-template-columns: minmax(620px, 1.15fr) minmax(460px, 0.85fr) !important;
+  grid-template-columns: 1fr !important;
   align-items: start !important;
-  gap: 16px !important;
+  gap: 14px !important;
 }
 
 .crawler-console .crawler-health-card,
@@ -7443,11 +7443,50 @@ body:has(.admin-shell) {
 }
 
 .crawler-console .crawler-health-grid-detailed {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)) !important;
+  gap: 12px !important;
 }
 
 .crawler-console .crawler-runs-detailed {
+  max-height: 340px !important;
   overflow-x: auto !important;
+}
+
+.crawler-console .crawler-health-grid-detailed .crawler-health-item {
+  gap: 10px !important;
+  padding: 12px !important;
+}
+
+.crawler-console .crawler-health-title {
+  gap: 10px !important;
+}
+
+.crawler-console .crawler-health-title strong {
+  font-size: 16px !important;
+}
+
+.crawler-console .crawler-health-metrics > div {
+  padding: 7px 8px !important;
+}
+
+.crawler-console .crawler-health-times {
+  gap: 6px !important;
+}
+
+.crawler-console .crawler-last-error {
+  margin: 0 !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+
+.crawler-console .crawler-last-error.is-neutral {
+  border-left-color: #98a2b3 !important;
+  color: #667085 !important;
+}
+
+html.theme-dark .crawler-console .crawler-last-error.is-neutral {
+  border-left-color: #64748b !important;
+  color: #a7b0bf !important;
 }
 
 @media (max-width: 1120px) {

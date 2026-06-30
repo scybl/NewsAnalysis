@@ -34,7 +34,7 @@ def test_crawler_console_is_dedicated_and_read_only():
     assert "empty_response: \"返回空\"" in script
     assert "issueLabel(item.code))} ·" not in script
     assert "normalizeIssueCodeCounts" in script
-    assert 'const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss"]' in script
+    assert 'const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss", "gdelt", "alpha_vantage_news"]' in script
     assert 'const CRAWLER_IGNORED_SOURCES = new Set(["politico"])' in script
     assert "filter(isVisibleCrawlerSource)" in script
     assert "maintenance: true" in script
@@ -45,6 +45,8 @@ def test_crawler_console_is_dedicated_and_read_only():
     assert "Politico Legacy" not in script
     assert 'politico_browser: { label: "Politico Web", initial: "P" }' in script
     assert 'politico_rss: { label: "Politico RSS", initial: "R", maintenance: true }' in script
+    assert 'gdelt: { label: "GDELT", initial: "G", maintenance: true }' in script
+    assert 'alpha_vantage_news: { label: "Alpha Vantage News", initial: "A", maintenance: true }' in script
     assert "等待首次采集运行记录。" in script
     assert 'code !== "empty_response"' in script
     assert "connection_closed: \"主动断连\"" in script
