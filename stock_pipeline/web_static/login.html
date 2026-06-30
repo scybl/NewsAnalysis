@@ -401,6 +401,11 @@
           });
           const payload = await response.json();
           if (!payload.ok) throw new Error(payload.error || "操作失败");
+          if (payload.alerts?.length) {
+            try {
+              sessionStorage.setItem("adminRuntimeAlerts", JSON.stringify(payload.alerts));
+            } catch {}
+          }
           window.location.href = "/";
         } catch (err) {
           message.textContent = err.message;

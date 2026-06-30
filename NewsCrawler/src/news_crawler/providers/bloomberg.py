@@ -31,10 +31,13 @@ class BloombergProvider:
         api_url: str = "https://www.bloomberg.com/lineup-next/api/stories",
         proxy: str = "",
         use_api: bool = True,
+        cookies_json: str = "",
+        require_login_cookie: bool = False,
     ):
         self.latest_url = latest_url
         self.api_url = api_url
         self.use_api = use_api
+        self.require_login_cookie = require_login_cookie
         self.checkpoints = checkpoint_repository
         self.timeout = timeout
         self.uses_curl_cffi = bool(curl_requests and session is None)
@@ -47,10 +50,14 @@ class BloombergProvider:
         )
         if cookie_header:
             self.session.headers["Cookie"] = cookie_header
+        self.cookies_dict = parse_browser_cookies(cookies_json) if cookies_json else {}
+        if self.cookies_dict and hasattr(self.session, "cookies"):
+            self.session.cookies.update(self.cookies_dict)
         if proxy:
             self.session.proxies.update({"http": proxy, "https": proxy})
 
     def discover(self, request: NewsCrawlRequest) -> Iterable[ArticleRef]:
+        self._validate_credentials()
         seen = set()
         checkpoint = self.checkpoints.load_checkpoint(self.name, "discovery") if self.checkpoints else None
         pending = list((checkpoint or {}).get("pending_urls") or [])
@@ -85,10 +92,11 @@ class BloombergProvider:
                 break
 
     def fetch(self, ref: ArticleRef) -> NewsArticle:
+        self._validate_credentials()
         response = self._get(ref.url, headers=_article_headers())
         response.raise_for_status()
         if _blocked(response.text):
-            raise RuntimeError("Bloomberg anti-bot or paywall challenge detected")
+            raise BloombergCredentialExpired("Bloomberg 返回登录、反爬或验证码页面，已自动暂停 Bloomberg。")
         payload = parse_bloomberg_article(response.text, response.url)
         article = NewsArticle(
             source_name=self.name,
@@ -138,7 +146,7 @@ class BloombergProvider:
 
     def _warm_session(self) -> None:
         for url, referer in (
-            ("https://www.bloomberg.com/", ""),
+            ("https://www.bloomberg.com/asia", ""),
             (self.latest_url, "https://www.bloomberg.com/"),
         ):
             try:
@@ -151,6 +159,56 @@ class BloombergProvider:
         if self.uses_curl_cffi:
             kwargs.setdefault("impersonate", "chrome120")
         return self.session.get(url, **kwargs)
+
+    def _validate_credentials(self) -> None:
+        if self.require_login_cookie:
+            validate_bloomberg_login_cookies(self.cookies_dict or _cookie_header_dict(self.session.headers.get("Cookie", "")))
+
+
+class BloombergCredentialExpired(RuntimeError):
+    pause_source = True
+    issue_code = "credential_expired"
+
+
+def parse_browser_cookies(cookies_json: str) -> dict[str, str]:
+    text = str(cookies_json or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Bloomberg cookies JSON 格式无效。") from exc
+    if not isinstance(data, list):
+        raise ValueError("Bloomberg cookies JSON 必须是数组。")
+    cookies: dict[str, str] = {}
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        domain = str(item.get("domain") or "")
+        name = str(item.get("name") or "")
+        value = str(item.get("value") or "")
+        if name and value and "bloomberg.com" in domain.lower():
+            cookies[name] = value
+    return cookies
+
+
+def validate_bloomberg_login_cookies(cookies: dict[str, str]) -> None:
+    indicators = ("_pxhd", "_px2", "session_id", "agent_id", "_breg-uid")
+    valid = [name for name in indicators if len(str(cookies.get(name) or "")) > 10]
+    if "_breg-uid" not in valid:
+        raise BloombergCredentialExpired("缺少 Bloomberg 登录 Cookie _breg-uid，疑似未登录或 cookie 已过期，已自动暂停 Bloomberg。")
+    if len(valid) < 4:
+        raise BloombergCredentialExpired(f"Bloomberg 登录 Cookie 不完整：{len(valid)}/{len(indicators)} 个关键 cookie 有效，已自动暂停 Bloomberg。")
+
+
+def _cookie_header_dict(cookie_header: str) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for item in str(cookie_header or "").split(";"):
+        if "=" not in item:
+            continue
+        name, value = item.split("=", 1)
+        cookies[name.strip()] = value.strip()
+    return cookies
 
 
 def extract_bloomberg_api_urls(json_text: str) -> list[str]:
@@ -356,7 +414,18 @@ def _keywords(value: Any) -> list[str]:
 
 def _blocked(html: str) -> bool:
     lower = html.lower()
-    return any(marker in lower for marker in ("px-captcha", "verify you are human", "access denied"))
+    return any(
+        marker in lower
+        for marker in (
+            "px-captcha",
+            "verify you are human",
+            "access denied",
+            "sign in to continue",
+            "login.bloomberg.com",
+            "subscribe to continue",
+            "please enable cookies",
+        )
+    )
 
 
 def _page_headers(referer: str = "") -> dict[str, str]:

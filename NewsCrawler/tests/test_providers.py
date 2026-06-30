@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
 
+import requests
+
 from news_crawler.models import NewsCrawlRequest
 from news_crawler.models import ArticleRef
-from news_crawler.providers.bloomberg import BloombergProvider, extract_bloomberg_api_urls, extract_bloomberg_urls, parse_bloomberg_article
+from news_crawler.providers.bloomberg import BloombergCredentialExpired, BloombergProvider, extract_bloomberg_api_urls, extract_bloomberg_urls, parse_bloomberg_article, parse_browser_cookies as parse_bloomberg_cookies, validate_bloomberg_login_cookies
 from news_crawler.providers.guardian import GuardianProvider
+from news_crawler.providers.politico import DEFAULT_FEEDS as POLITICO_DEFAULT_FEEDS
 from news_crawler.providers.politico import PoliticoProvider, parse_politico_feed
 from news_crawler.providers.politico_browser import PoliticoBrowserProvider, extract_politico_news_urls, parse_browser_cookies
 from news_crawler.providers.tonghuashun import DEFAULT_CATEGORY_HARD_LIMITS, TonghuashunProvider, _image_urls, _normalize_ocr_text, _usable_ocr_text
@@ -37,6 +40,15 @@ class QueueSession:
 
     def get(self, *_args, **_kwargs):
         return next(self.responses)
+
+
+class FailingSession:
+    def __init__(self, exc):
+        self.exc = exc
+        self.headers = {}
+
+    def get(self, *_args, **_kwargs):
+        raise self.exc
 
 
 class RecordingSession:
@@ -247,6 +259,32 @@ def test_bloomberg_provider_uses_api_before_latest_page():
     assert provider.session.urls[-1] == "https://www.bloomberg.com/lineup-next/api/stories"
 
 
+def test_bloomberg_parses_chrome_cookies_json_and_validates_login():
+    cookies = parse_bloomberg_cookies(json.dumps([
+        {"domain": ".bloomberg.com", "name": "_pxhd", "value": "x" * 12},
+        {"domain": ".bloomberg.com", "name": "_px2", "value": "x" * 12},
+        {"domain": ".bloomberg.com", "name": "session_id", "value": "x" * 12},
+        {"domain": ".bloomberg.com", "name": "agent_id", "value": "x" * 12},
+        {"domain": ".bloomberg.com", "name": "_breg-uid", "value": "x" * 12},
+        {"domain": ".example.com", "name": "ignored", "value": "x" * 12},
+    ]))
+
+    assert "ignored" not in cookies
+    assert cookies["_breg-uid"] == "x" * 12
+    validate_bloomberg_login_cookies(cookies)
+
+
+def test_bloomberg_login_cookie_validation_requires_breg_uid():
+    try:
+        validate_bloomberg_login_cookies({"_pxhd": "x" * 12, "_px2": "x" * 12, "session_id": "x" * 12, "agent_id": "x" * 12})
+    except BloombergCredentialExpired as exc:
+        assert "_breg-uid" in str(exc)
+        assert exc.pause_source is True
+        assert exc.issue_code == "credential_expired"
+    else:
+        raise AssertionError("expected missing _breg-uid to fail")
+
+
 def test_bloomberg_checkpoint_removes_successful_url():
     article_html = (FIXTURES / "bloomberg_article.html").read_text()
 
@@ -277,13 +315,176 @@ def test_politico_provider_parses_feed_fixture():
     assert refs[0].metadata["author"] == "Jane Reporter"
     assert refs[0].metadata["content"] == "First paragraph from the feed.\nSecond paragraph with markup."
 
-    provider = PoliticoProvider({"politics": "https://rss.politico.com/politics-news.xml"})
+    provider = PoliticoProvider({"politics": "https://rss.politico.com/politics-news.xml"}, discovery_mode="rss")
     provider.session = QueueSession([Response(text=feed_xml)])
     ref = next(iter(provider.discover(NewsCrawlRequest(categories=("politics",), max_articles=1))))
     article = provider.fetch(ref)
     assert article.title == "Politico example"
     assert article.section == "politics"
     assert article.raw_metadata["media_url"] == "https://static.politico.com/example.jpg"
+
+
+def test_politico_rss_source_uses_separate_source_name():
+    feed_xml = (FIXTURES / "politico_feed.xml").read_text()
+    refs = parse_politico_feed(
+        feed_xml,
+        "https://www.politico.com/rss/politicopicks.xml",
+        "picks",
+        source_name="politico_rss",
+    )
+    provider = PoliticoProvider(
+        {"picks": "https://www.politico.com/rss/politicopicks.xml"},
+        discovery_mode="rss",
+        source_name="politico_rss",
+    )
+    provider.session = QueueSession([Response(text=feed_xml)])
+
+    ref = next(iter(provider.discover(NewsCrawlRequest(categories=("picks",), max_articles=1))))
+    article = provider.fetch(ref)
+
+    assert refs[0].source_name == "politico_rss"
+    assert ref.source_name == "politico_rss"
+    assert article.source_name == "politico_rss"
+
+
+def test_politico_default_feed_uses_current_public_rss_url():
+    assert POLITICO_DEFAULT_FEEDS == {"picks": "https://www.politico.com/rss/politicopicks.xml"}
+
+
+def test_politico_provider_uses_summary_when_feed_has_no_body_without_fetching_page():
+    feed_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Politico summary only</title>
+      <link>https://www.politico.com/news/2026/06/30/summary-only-00970000</link>
+      <description><![CDATA[<p>Summary from free RSS.</p>]]></description>
+      <guid isPermaLink="false">summary-only</guid>
+      <pubDate>Tue, 30 Jun 2026 09:00:00 EST</pubDate>
+    </item>
+  </channel>
+</rss>"""
+    provider = PoliticoProvider({"politics": "https://rss.politico.com/politics-news.xml"}, discovery_mode="rss")
+    session = RecordingSession(Response(text=feed_xml))
+    provider.session = session
+
+    ref = next(iter(provider.discover(NewsCrawlRequest(categories=("politics",), max_articles=1))))
+    article = provider.fetch(ref)
+
+    assert session.urls == ["https://rss.politico.com/politics-news.xml"]
+    assert article.title == "Politico summary only"
+    assert article.summary == "Summary from free RSS."
+    assert article.content == "Summary from free RSS."
+
+
+def test_politico_provider_falls_back_to_curl_for_cloudflare_blocked_rss():
+    feed_xml = (FIXTURES / "politico_feed.xml").read_text()
+    provider = PoliticoProvider(
+        {"politics": "https://www.politico.com/rss/politicopicks.xml"},
+        discovery_mode="rss",
+        curl_getter=lambda url, _headers, _timeout: feed_xml,
+    )
+    provider.session = RecordingSession(Response(text="<html><title>Just a moment...</title></html>", status_code=200))
+
+    ref = next(iter(provider.discover(NewsCrawlRequest(categories=("politics",), max_articles=1))))
+
+    assert ref.url == "https://www.politico.com/news/2026/06/28/example-story-00976940"
+    assert provider.session.urls == ["https://www.politico.com/rss/politicopicks.xml"]
+
+
+def test_politico_provider_discovers_and_fetches_from_news_site():
+    news_html = (FIXTURES / "politico_browser_news.html").read_text()
+    article_html = (FIXTURES / "politico_browser_article.html").read_text()
+    provider = PoliticoProvider(discovery_mode="site", news_url="https://www.politico.com/news/")
+    provider.session = QueueSession([
+        Response(text=news_html, url="https://www.politico.com/news/"),
+        Response(text=article_html, url="https://www.politico.com/news/2026/06/28/first-politico-browser-story-00976940"),
+    ])
+
+    ref = next(iter(provider.discover(NewsCrawlRequest(max_articles=1))))
+    article = provider.fetch(ref)
+
+    assert ref.source_name == "politico"
+    assert ref.url == "https://www.politico.com/news/2026/06/28/first-politico-browser-story-00976940"
+    assert article.source_name == "politico"
+    assert article.title == "Politico browser example"
+    assert article.content == "Politico browser example body."
+    assert article.raw_metadata["discovered_from"] == "https://www.politico.com/news/"
+
+
+def test_politico_site_provider_can_be_named_politico_browser():
+    news_html = (FIXTURES / "politico_browser_news.html").read_text()
+    article_html = (FIXTURES / "politico_browser_article.html").read_text()
+    provider = PoliticoProvider(
+        discovery_mode="site",
+        news_url="https://www.politico.com/news/",
+        source_name="politico_browser",
+    )
+    provider.session = QueueSession([
+        Response(text=news_html, url="https://www.politico.com/news/"),
+        Response(text=article_html, url="https://www.politico.com/news/2026/06/28/first-politico-browser-story-00976940"),
+    ])
+
+    ref = next(iter(provider.discover(NewsCrawlRequest(max_articles=1))))
+    article = provider.fetch(ref)
+
+    assert ref.source_name == "politico_browser"
+    assert article.source_name == "politico_browser"
+    assert article.title == "Politico browser example"
+
+
+def test_politico_article_parser_handles_magazine_body_paragraphs():
+    article_html = (FIXTURES / "politico_magazine_article.html").read_text()
+    provider = PoliticoProvider(discovery_mode="site")
+    provider.session = QueueSession([
+        Response(text=article_html, url="https://www.politico.com/news/magazine/2026/06/26/example-magazine-00969739"),
+    ])
+
+    article = provider.fetch(
+        ArticleRef(
+            "politico",
+            "https://www.politico.com/news/magazine/2026/06/26/example-magazine-00969739",
+            section="news",
+        )
+    )
+
+    assert article.title == "Politico magazine example"
+    assert article.summary == "Magazine summary."
+    assert article.content == "First magazine paragraph.\nSecond magazine paragraph."
+    assert article.section == "Magazine"
+
+
+def test_politico_provider_retries_article_with_curl_when_parsing_is_empty():
+    article_html = (FIXTURES / "politico_magazine_article.html").read_text()
+    provider = PoliticoProvider(
+        discovery_mode="site",
+        curl_getter=lambda url, _headers, _timeout: article_html,
+    )
+    provider.session = QueueSession([
+        Response(text="<html><body>No article here</body></html>", url="https://www.politico.com/news/magazine/2026/06/26/example-magazine-00969739"),
+    ])
+
+    article = provider.fetch(
+        ArticleRef(
+            "politico",
+            "https://www.politico.com/news/magazine/2026/06/26/example-magazine-00969739",
+            section="news",
+        )
+    )
+
+    assert article.title == "Politico magazine example"
+
+
+def test_politico_provider_uses_curl_when_requests_fails():
+    provider = PoliticoProvider(
+        discovery_mode="site",
+        session=FailingSession(requests.ConnectionError("dns failed")),
+        curl_getter=lambda url, _headers, _timeout: (FIXTURES / "politico_browser_news.html").read_text(),
+    )
+
+    refs = list(provider.discover(NewsCrawlRequest(max_articles=1)))
+
+    assert refs[0].url == "https://www.politico.com/news/2026/06/28/first-politico-browser-story-00976940"
 
 
 def test_politico_browser_extracts_news_urls():
@@ -314,6 +515,26 @@ def test_politico_browser_provider_discovers_and_fetches_article():
     assert article.published_at.isoformat() == "2026-06-28T18:50:21+00:00"
     provider.close()
     assert browser.closed
+
+
+def test_politico_chrome_provider_can_use_separate_source_name():
+    news_html = (FIXTURES / "politico_browser_news.html").read_text()
+    article_html = (FIXTURES / "politico_browser_article.html").read_text()
+    browser = FakeBrowser({
+        "https://www.politico.com/news/": news_html,
+        "https://www.politico.com/news/2026/06/28/first-politico-browser-story-00976940": article_html,
+    })
+    provider = PoliticoBrowserProvider(
+        browser_factory=lambda: browser,
+        wait_seconds=0,
+        source_name="politico_chrome",
+    )
+
+    ref = next(iter(provider.discover(NewsCrawlRequest(max_articles=1))))
+    article = provider.fetch(ref)
+
+    assert ref.source_name == "politico_chrome"
+    assert article.source_name == "politico_chrome"
 
 
 def test_politico_browser_applies_cookies_before_discovery():

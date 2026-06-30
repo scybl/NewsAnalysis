@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from xml.etree import ElementTree
 
 import requests
@@ -15,10 +16,9 @@ from ..models import ArticleRef, NewsArticle, NewsCrawlRequest, ProviderCapabili
 
 
 DEFAULT_FEEDS = {
-    "politics": "https://rss.politico.com/politics-news.xml",
-    "healthcare": "https://rss.politico.com/healthcare.xml",
-    "energy": "https://rss.politico.com/morningenergy.xml",
+    "picks": "https://www.politico.com/rss/politicopicks.xml",
 }
+DEFAULT_NEWS_URL = "https://www.politico.com/"
 
 RSS_NAMESPACES = {
     "content": "http://purl.org/rss/1.0/modules/content/",
@@ -35,18 +35,36 @@ class PoliticoProvider:
         feed_urls: dict[str, str] | None = None,
         timeout: float = 30,
         session=None,
+        fetch_article_pages: bool = False,
+        discovery_mode: str = "site",
+        news_url: str = DEFAULT_NEWS_URL,
+        source_name: str = "politico",
+        curl_getter=None,
     ):
+        self.name = source_name
         self.feed_urls = dict(feed_urls or DEFAULT_FEEDS)
         self.timeout = timeout
         self.session = session or requests.Session()
+        self.fetch_article_pages = fetch_article_pages
+        self.discovery_mode = discovery_mode
+        self.news_url = news_url
+        self.curl_getter = curl_getter or _curl_get
         self.session.headers.update(
             {
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+                "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.7",
                 "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.politico.com/",
             }
         )
 
     def discover(self, request: NewsCrawlRequest) -> Iterable[ArticleRef]:
+        if self.discovery_mode == "site":
+            yield from self._discover_site(request)
+            return
+        if self.discovery_mode != "rss":
+            raise ValueError(f"unknown Politico discovery mode: {self.discovery_mode}")
+
         seen = set()
         categories = tuple(request.categories or self.feed_urls.keys())
         max_items = request.max_articles or 0
@@ -55,9 +73,8 @@ class PoliticoProvider:
             feed_url = self.feed_urls.get(category, category if category.startswith(("http://", "https://")) else "")
             if not feed_url:
                 raise ValueError(f"unknown Politico category: {category}")
-            response = self.session.get(feed_url, timeout=self.timeout)
-            response.raise_for_status()
-            for item in parse_politico_feed(response.text, feed_url, category):
+            feed_text = self._fetch_feed(feed_url)
+            for item in parse_politico_feed(feed_text, feed_url, category, source_name=self.name):
                 if item.url in seen:
                     continue
                 seen.add(item.url)
@@ -66,14 +83,37 @@ class PoliticoProvider:
                 if max_items and emitted >= max_items:
                     return
 
+    def _discover_site(self, request: NewsCrawlRequest) -> Iterable[ArticleRef]:
+        seen = set()
+        max_items = request.max_articles or 0
+        emitted = 0
+        page_count = max(1, request.max_pages)
+        for page in range(1, page_count + 1):
+            html = self._fetch_text(self.news_url)
+            for url in extract_politico_news_urls(html, self.news_url):
+                if url in seen:
+                    continue
+                seen.add(url)
+                emitted += 1
+                yield ArticleRef(
+                    self.name,
+                    url,
+                    external_id=_external_id(url),
+                    section="news",
+                    metadata={"discovered_from": self.news_url, "crawl_group": "news", "crawl_page": page},
+                )
+                if max_items and emitted >= max_items:
+                    return
+            if emitted:
+                return
+        raise RuntimeError("Politico site found no news links; page may be blocked or not fully loaded")
+
     def fetch(self, ref: ArticleRef) -> NewsArticle:
         payload = dict(ref.metadata)
-        if not payload.get("content"):
-            response = self.session.get(ref.url, timeout=self.timeout)
-            response.raise_for_status()
-            payload.update(parse_politico_article(response.text, response.url))
+        if self.discovery_mode == "site" or (not payload.get("content") and self.fetch_article_pages):
+            payload.update(self._fetch_article_payload(ref.url))
         title = str(payload.get("title") or "").strip()
-        content = str(payload.get("content") or "").strip()
+        content = str(payload.get("content") or payload.get("summary") or title).strip()
         if not title or not content:
             raise ValueError("Politico article title or content not found")
         return NewsArticle(
@@ -93,11 +133,47 @@ class PoliticoProvider:
                 "feed_url": payload.get("feed_url", ""),
                 "guid": payload.get("guid", ""),
                 "media_url": payload.get("media_url", ""),
+                "discovered_from": payload.get("discovered_from", ref.metadata.get("discovered_from", "")),
+                "crawl_group": payload.get("crawl_group", ref.metadata.get("crawl_group", "")),
             },
         )
 
+    def _fetch_feed(self, feed_url: str) -> str:
+        return self._fetch_text(feed_url)
 
-def parse_politico_feed(xml_text: str, feed_url: str, section: str = "") -> list[ArticleRef]:
+    def _fetch_text(self, url: str) -> str:
+        try:
+            response = self.session.get(url, timeout=self.timeout)
+        except requests.RequestException:
+            return self.curl_getter(url, dict(self.session.headers), self.timeout)
+        if _needs_curl_fallback(response):
+            try:
+                return self.curl_getter(url, dict(self.session.headers), self.timeout)
+            except Exception:
+                response.raise_for_status()
+                raise
+        response.raise_for_status()
+        return response.text
+
+    def _fetch_article_payload(self, url: str) -> dict[str, Any]:
+        html = self._fetch_text(url)
+        payload = parse_politico_article(html, url)
+        if payload.get("title") and payload.get("content"):
+            return payload
+        try:
+            fallback_payload = parse_politico_article(self.curl_getter(url, {}, self.timeout), url)
+        except Exception:
+            return payload
+        return fallback_payload if fallback_payload.get("title") or fallback_payload.get("content") else payload
+
+
+def parse_politico_feed(
+    xml_text: str,
+    feed_url: str,
+    section: str = "",
+    *,
+    source_name: str = "politico",
+) -> list[ArticleRef]:
     root = ElementTree.fromstring(xml_text)
     refs: list[ArticleRef] = []
     for item in root.findall("./channel/item"):
@@ -110,7 +186,7 @@ def parse_politico_feed(xml_text: str, feed_url: str, section: str = "") -> list
             continue
         refs.append(
             ArticleRef(
-                "politico",
+                source_name,
                 url,
                 external_id=guid or _external_id(url),
                 section=section,
@@ -138,11 +214,7 @@ def parse_politico_article(html: str, url: str) -> dict[str, Any]:
     title = str(article.get("headline") or _meta(soup, "og:title") or "").strip()
     content = str(article.get("articleBody") or "").strip()
     if not content:
-        paragraphs = [
-            node.get_text(" ", strip=True)
-            for node in soup.select("article p, [data-testid='BodyWrapper'] p, .story-text p")
-        ]
-        content = "\n".join(item for item in paragraphs if item)
+        content = _article_paragraph_text(soup)
     raw_time = article.get("datePublished") or _meta(soup, "article:published_time")
     canonical_node = soup.find("link", rel="canonical")
     return {
@@ -159,16 +231,112 @@ def parse_politico_article(html: str, url: str) -> dict[str, Any]:
     }
 
 
+def _article_paragraph_text(soup) -> str:
+    paragraphs = []
+    seen = set()
+    selectors = (
+        "article p",
+        "[data-testid='BodyWrapper'] p",
+        "[data-module='ArticleBody'] p",
+        ".article__content p",
+        ".body-content p",
+        ".story-content p",
+        ".story-text__paragraph",
+        ".story-text p",
+        "[class*='RichText'] p",
+        "[class*='story-text'] p",
+        "p.is-magazine",
+    )
+    for selector in selectors:
+        for node in soup.select(selector):
+            marker = id(node)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            text = _normalize_text(node.get_text(" ", strip=True))
+            if text:
+                paragraphs.append(text)
+    return "\n".join(paragraphs)
+
+
+def extract_politico_news_urls(html: str, base_url: str = DEFAULT_NEWS_URL) -> list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    urls: list[str] = []
+    seen = set()
+    for node in soup.select("a[href]"):
+        raw_url = node.get("href") or ""
+        url = _canonical_news_url(urljoin(base_url, raw_url))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+def _canonical_news_url(url: str) -> str:
+    parsed = urlsplit(url)
+    if not parsed.netloc.endswith("politico.com"):
+        return ""
+    path = parsed.path.rstrip("/")
+    if not path.startswith("/news/"):
+        return ""
+    if path in {"/news", "/news/"}:
+        return ""
+    if not re.search(r"/\d{4}/\d{2}/\d{2}/", path):
+        return ""
+    return f"{parsed.scheme or 'https'}://{parsed.netloc}{path}"
+
+
+def _needs_curl_fallback(response) -> bool:
+    if getattr(response, "status_code", 200) in {403, 429}:
+        return True
+    text = str(getattr(response, "text", "") or "")[:2000].lower()
+    return any(
+        marker in text
+        for marker in (
+            "just a moment",
+            "challenges.cloudflare.com",
+            "enable javascript and cookies",
+            "cf-browser-verification",
+        )
+    )
+
+
+def _curl_get(url: str, headers: dict[str, str], timeout: float) -> str:
+    command = ["curl", "-L", "--max-time", str(max(1, int(timeout))), "--silent", "--show-error"]
+    command.append(url)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=max(2, timeout + 5), check=False)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or f"curl failed with exit code {result.returncode}")
+    return result.stdout
+
+
 def _json_ld_article(soup) -> dict[str, Any]:
     for node in soup.select('script[type="application/ld+json"]'):
         try:
             value = json.loads(node.string or node.get_text())
         except (json.JSONDecodeError, TypeError):
             continue
-        candidates = value if isinstance(value, list) else [value]
-        for item in candidates:
-            if isinstance(item, dict) and str(item.get("@type", "")).lower() in {"newsarticle", "article"}:
-                return item
+        article = _find_json_ld_article(value)
+        if article:
+            return article
+    return {}
+
+
+def _find_json_ld_article(value: Any) -> dict[str, Any]:
+    if isinstance(value, list):
+        for item in value:
+            article = _find_json_ld_article(item)
+            if article:
+                return article
+    if isinstance(value, dict):
+        item_type = value.get("@type")
+        types = item_type if isinstance(item_type, list) else [item_type]
+        if {str(item).lower() for item in types} & {"newsarticle", "article"}:
+            return value
+        graph_article = _find_json_ld_article(value.get("@graph"))
+        if graph_article:
+            return graph_article
     return {}
 
 

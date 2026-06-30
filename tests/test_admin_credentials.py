@@ -14,12 +14,26 @@ def test_credentials_page_does_not_render_secret_values():
     assert "/api/admin/credentials" in script
     assert "明文不会在页面回显" in script
     assert "data-credential-value" in script
+    assert "credential-row-head" in script
+    assert "credential-env" in script
+    assert "credential-meta" not in script
     assert 'value="' not in html
     assert "POLITICO_BROWSER_COOKIES_JSON" in web
     assert "BLOOMBERG_PROXY" in web
+    assert "BLOOMBERG_COOKIES_JSON" in web
+    assert "BLOOMBERG_LATEST_URL" in web
+    assert "BLOOMBERG_API_URL" in web
+    assert "BLOOMBERG_USE_API" in web
+    assert "BLOOMBERG_REQUIRE_LOGIN_COOKIE" in web
     assert "DeepSeek API Key" not in web
     assert "deepseek.api_key" not in web
     assert '"source": "Tushare"' in web
+    assert '"source": "Guardian"' in web
+    assert '"source": "Baidu Translate"' in web
+    assert "BAIDU_TRANSLATE_APP_ID" in web
+    assert "BAIDU_TRANSLATE_SECRET_KEY" in web
+    assert "baidu_translate_app_id.txt" in web
+    assert "baidu_translate_secret_key.txt" in web
     assert '"source": "Bloomberg"' in web
     assert '"source": "Politico"' in web
     assert '"status_note": "暂停维护"' in web
@@ -52,7 +66,12 @@ def test_compose_uses_page_managed_crawler_secret_files():
     expected = (
         "GUARDIAN_API_KEY_FILE: ${GUARDIAN_API_KEY_FILE:-/app/local_data/secure/news_crawler/guardian_api_key.txt}",
         "BLOOMBERG_COOKIE_FILE: ${BLOOMBERG_COOKIE_FILE:-/app/local_data/secure/news_crawler/bloomberg_cookie.txt}",
+        "BLOOMBERG_COOKIES_JSON_FILE: ${BLOOMBERG_COOKIES_JSON_FILE:-/app/local_data/secure/news_crawler/bloomberg_cookies_json.txt}",
         "BLOOMBERG_PROXY_FILE: ${BLOOMBERG_PROXY_FILE:-/app/local_data/secure/news_crawler/bloomberg_proxy.txt}",
+        "BLOOMBERG_LATEST_URL_FILE: ${BLOOMBERG_LATEST_URL_FILE:-/app/local_data/secure/news_crawler/bloomberg_latest_url.txt}",
+        "BLOOMBERG_API_URL_FILE: ${BLOOMBERG_API_URL_FILE:-/app/local_data/secure/news_crawler/bloomberg_api_url.txt}",
+        "BLOOMBERG_USE_API_FILE: ${BLOOMBERG_USE_API_FILE:-/app/local_data/secure/news_crawler/bloomberg_use_api.txt}",
+        "BLOOMBERG_REQUIRE_LOGIN_COOKIE_FILE: ${BLOOMBERG_REQUIRE_LOGIN_COOKIE_FILE:-/app/local_data/secure/news_crawler/bloomberg_require_login_cookie.txt}",
         "POLITICO_BROWSER_PROXY_FILE: ${POLITICO_BROWSER_PROXY_FILE:-/app/local_data/secure/news_crawler/politico_browser_proxy.txt}",
         "POLITICO_BROWSER_COOKIES_JSON_FILE: ${POLITICO_BROWSER_COOKIES_JSON_FILE:-/app/local_data/secure/news_crawler/politico_browser_cookies_json.txt}",
     )

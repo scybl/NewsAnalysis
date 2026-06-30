@@ -34,23 +34,39 @@ def test_crawler_console_is_dedicated_and_read_only():
     assert "empty_response: \"返回空\"" in script
     assert "issueLabel(item.code))} ·" not in script
     assert "normalizeIssueCodeCounts" in script
-    assert 'const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico"]' in script
+    assert 'const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss"]' in script
     assert "maintenance: true" in script
     assert "暂停维护" in script
     assert "sourceName" in script
     assert 'guardian: { label: "Guardian", initial: "G" }' in script
     assert 'bloomberg: { label: "Bloomberg", initial: "B", maintenance: true }' in script
-    assert 'politico: { label: "Politico", initial: "P", maintenance: true }' in script
+    assert 'politico_browser: { label: "Politico Web", initial: "P" }' in script
+    assert 'politico_rss: { label: "Politico RSS", initial: "R", maintenance: true }' in script
     assert "等待首次采集运行记录。" in script
     assert 'code !== "empty_response"' in script
     assert "connection_closed: \"主动断连\"" in script
     assert "item.article_url" in script
+    assert "adminRuntimeAlerts" in (STATIC / "login.html").read_text(encoding="utf-8")
+    assert "crawler-runtime-alerts" in script
+    assert "自动暂停" in script
+    assert "凭据过期" in script
 
 
-def test_bloomberg_and_politico_are_disabled_while_guardian_runs_separately():
+def test_guardian_news_cards_can_request_machine_translation():
+    script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
+    styles = (STATIC / "styles.css").read_text(encoding="utf-8")
+
+    assert "/api/admin/news-library/translate" in script
+    assert "data-news-translation-toggle" in script
+    assert "调用百度翻译生成 Guardian 中文译文" in script
+    assert "state.translations" in script
+    assert ".news-translation-toggle" in styles
+
+
+def test_politico_browser_is_enabled_while_rss_and_bloomberg_stay_disabled():
     compose = (STATIC.parents[1] / "docker-compose.prod.yml").read_text(encoding="utf-8")
-    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico,politico_browser,guardian}" in compose
-    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico,politico_browser,tonghuashun}" in compose
+    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico,politico_rss,politico_chrome,guardian}" in compose
+    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico,politico_rss,politico_browser,politico_chrome,tonghuashun}" in compose
     assert 'command: ["schedule", "--source", "guardian", "--interval", "${GUARDIAN_CRAWLER_INTERVAL_SECONDS:-3600}"' in compose
 
 
@@ -144,16 +160,17 @@ def test_crawler_run_table_matches_crawl_result_metrics():
         "started_at",
         "finished_at",
         "discovered",
-        "fetched",
         "inserted",
         "updated",
-        "skipped",
         "failed",
         "metrics",
         "errors",
         "run_id",
     ):
         assert f"item.{field}" in script
+    for heading in ("<th>发现</th>", "<th>新的</th>", "<th>入库</th>", "<th>失败</th>"):
+        assert heading in script
+    assert "storedCount(item)" in script
 
 
 def test_crawler_failure_diagnostics_support_retry_and_grouping():

@@ -27,9 +27,11 @@ class PoliticoBrowserProvider:
         profile_dir: str = "",
         proxy: str = "",
         cookies_json: str = "",
+        source_name: str = "politico_browser",
         browser_factory=None,
         sleep_fn=time.sleep,
     ):
+        self.name = source_name
         self.news_url = news_url
         self.headless = headless
         self.wait_seconds = max(0, wait_seconds)
@@ -117,7 +119,7 @@ class PoliticoBrowserProvider:
             from selenium import webdriver
             from selenium.webdriver.chrome.options import Options
         except ImportError as exc:
-            raise RuntimeError("selenium is required for politico_browser provider") from exc
+            raise RuntimeError("selenium is required for Politico Chrome provider") from exc
 
         options = Options()
         if self.headless:

@@ -17,10 +17,15 @@ class Settings:
     bloomberg_latest_url: str = "https://www.bloomberg.com/latest"
     bloomberg_api_url: str = "https://www.bloomberg.com/lineup-next/api/stories"
     bloomberg_cookie: str = ""
+    bloomberg_cookies_json: str = ""
     bloomberg_proxy: str = ""
     bloomberg_use_api: bool = True
+    bloomberg_require_login_cookie: bool = False
     politico_feed_urls: str = ""
-    politico_browser_news_url: str = "https://www.politico.com/news/"
+    politico_discovery_mode: str = "site"
+    politico_news_url: str = "https://www.politico.com/"
+    politico_fetch_article_pages: bool = False
+    politico_browser_news_url: str = "https://www.politico.com/"
     politico_browser_headless: bool = True
     politico_browser_wait_seconds: float = 8
     politico_browser_profile_dir: str = ""
@@ -38,13 +43,18 @@ def get_settings() -> Settings:
         runs_collection=os.getenv("MONGODB_RUNS_COLLECTION", "crawl_runs"),
         guardian_api_key=_env_or_file("GUARDIAN_API_KEY"),
         guardian_base_url=os.getenv("GUARDIAN_BASE_URL", "https://content.guardianapis.com"),
-        bloomberg_latest_url=os.getenv("BLOOMBERG_LATEST_URL", "https://www.bloomberg.com/latest"),
-        bloomberg_api_url=os.getenv("BLOOMBERG_API_URL", "https://www.bloomberg.com/lineup-next/api/stories"),
+        bloomberg_latest_url=_env_or_file("BLOOMBERG_LATEST_URL") or "https://www.bloomberg.com/latest",
+        bloomberg_api_url=_env_or_file("BLOOMBERG_API_URL") or "https://www.bloomberg.com/lineup-next/api/stories",
         bloomberg_cookie=_env_or_file("BLOOMBERG_COOKIE"),
+        bloomberg_cookies_json=_env_or_file("BLOOMBERG_COOKIES_JSON"),
         bloomberg_proxy=_env_or_file("BLOOMBERG_PROXY"),
-        bloomberg_use_api=_env_bool("BLOOMBERG_USE_API", True),
+        bloomberg_use_api=_env_bool_or_file("BLOOMBERG_USE_API", True),
+        bloomberg_require_login_cookie=_env_bool_or_file("BLOOMBERG_REQUIRE_LOGIN_COOKIE", False),
         politico_feed_urls=os.getenv("POLITICO_FEED_URLS", ""),
-        politico_browser_news_url=os.getenv("POLITICO_BROWSER_NEWS_URL", "https://www.politico.com/news/"),
+        politico_discovery_mode=os.getenv("POLITICO_DISCOVERY_MODE", "site").strip().lower() or "site",
+        politico_news_url=os.getenv("POLITICO_NEWS_URL", "https://www.politico.com/"),
+        politico_fetch_article_pages=_env_bool("POLITICO_FETCH_ARTICLE_PAGES", False),
+        politico_browser_news_url=os.getenv("POLITICO_BROWSER_NEWS_URL", "https://www.politico.com/"),
         politico_browser_headless=_env_bool("POLITICO_BROWSER_HEADLESS", True),
         politico_browser_wait_seconds=float(os.getenv("POLITICO_BROWSER_WAIT_SECONDS", "8")),
         politico_browser_profile_dir=os.getenv("POLITICO_BROWSER_PROFILE_DIR", ""),
@@ -53,7 +63,7 @@ def get_settings() -> Settings:
         max_runtime_seconds=max(0.0, float(os.getenv("NEWS_CRAWLER_MAX_RUNTIME_SECONDS", "300"))),
         disabled_sources=frozenset(
             item.strip()
-            for item in os.getenv("NEWS_CRAWLER_DISABLED_SOURCES", "politico_browser").split(",")
+            for item in os.getenv("NEWS_CRAWLER_DISABLED_SOURCES", "bloomberg,politico,politico_rss,politico_chrome").split(",")
             if item.strip()
         ),
     )
@@ -105,5 +115,14 @@ def _env_or_file(name: str) -> str:
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_bool_or_file(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        value = _read_secret_file(os.getenv(f"{name}_FILE", ""))
+    if not value:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off"}

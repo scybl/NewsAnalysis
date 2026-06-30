@@ -70,17 +70,24 @@ services:
       GUARDIAN_API_KEY_FILE: ${GUARDIAN_API_KEY_FILE:-/app/local_data/secure/news_crawler/guardian_api_key.txt}
       BLOOMBERG_COOKIE: ${BLOOMBERG_COOKIE:-}
       BLOOMBERG_COOKIE_FILE: ${BLOOMBERG_COOKIE_FILE:-/app/local_data/secure/news_crawler/bloomberg_cookie.txt}
+      BLOOMBERG_COOKIES_JSON: ${BLOOMBERG_COOKIES_JSON:-}
+      BLOOMBERG_COOKIES_JSON_FILE: ${BLOOMBERG_COOKIES_JSON_FILE:-/app/local_data/secure/news_crawler/bloomberg_cookies_json.txt}
       BLOOMBERG_PROXY: ${BLOOMBERG_PROXY:-}
       BLOOMBERG_PROXY_FILE: ${BLOOMBERG_PROXY_FILE:-/app/local_data/secure/news_crawler/bloomberg_proxy.txt}
+      BLOOMBERG_LATEST_URL_FILE: ${BLOOMBERG_LATEST_URL_FILE:-/app/local_data/secure/news_crawler/bloomberg_latest_url.txt}
       BLOOMBERG_API_URL: ${BLOOMBERG_API_URL:-https://www.bloomberg.com/lineup-next/api/stories}
+      BLOOMBERG_API_URL_FILE: ${BLOOMBERG_API_URL_FILE:-/app/local_data/secure/news_crawler/bloomberg_api_url.txt}
       BLOOMBERG_USE_API: ${BLOOMBERG_USE_API:-1}
+      BLOOMBERG_USE_API_FILE: ${BLOOMBERG_USE_API_FILE:-/app/local_data/secure/news_crawler/bloomberg_use_api.txt}
+      BLOOMBERG_REQUIRE_LOGIN_COOKIE: ${BLOOMBERG_REQUIRE_LOGIN_COOKIE:-0}
+      BLOOMBERG_REQUIRE_LOGIN_COOKIE_FILE: ${BLOOMBERG_REQUIRE_LOGIN_COOKIE_FILE:-/app/local_data/secure/news_crawler/bloomberg_require_login_cookie.txt}
       POLITICO_BROWSER_PROXY: ${POLITICO_BROWSER_PROXY:-}
       POLITICO_BROWSER_PROXY_FILE: ${POLITICO_BROWSER_PROXY_FILE:-/app/local_data/secure/news_crawler/politico_browser_proxy.txt}
       POLITICO_BROWSER_COOKIES_JSON: ${POLITICO_BROWSER_COOKIES_JSON:-}
       POLITICO_BROWSER_COOKIES_JSON_FILE: ${POLITICO_BROWSER_COOKIES_JSON_FILE:-/app/local_data/secure/news_crawler/politico_browser_cookies_json.txt}
       POLITICO_BROWSER_PROFILE_DIR: ${POLITICO_BROWSER_PROFILE_DIR:-/app/local_data/politico_chrome_profile}
       POLITICO_BROWSER_HEADLESS: ${POLITICO_BROWSER_HEADLESS:-1}
-      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico,politico_browser,guardian}
+      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico,politico_rss,politico_chrome,guardian}
       NEWS_CRAWLER_TONGHUASHUN_CATEGORY_PAGES: ${NEWS_CRAWLER_TONGHUASHUN_CATEGORY_PAGES:-产经新闻=30,区域经济=18,公司新闻=16,国际财经=12,财经评论=6,财经要闻=5,宏观经济=3,金融市场=3,财经人物=2}
     secrets:
       - mongo_root_password
@@ -115,7 +122,7 @@ services:
       MONGODB_RUNS_COLLECTION: ${MONGODB_RUNS_COLLECTION:-crawl_runs}
       GUARDIAN_API_KEY: ${GUARDIAN_API_KEY:-}
       GUARDIAN_API_KEY_FILE: ${GUARDIAN_API_KEY_FILE:-/app/local_data/secure/news_crawler/guardian_api_key.txt}
-      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico,politico_browser,tonghuashun}
+      NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico,politico_rss,politico_browser,politico_chrome,tonghuashun}
     secrets:
       - mongo_root_password
     volumes:

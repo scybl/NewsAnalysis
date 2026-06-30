@@ -27,6 +27,11 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
             .find({}, {"_id": 0})
             .sort("source_name", pymongo.ASCENDING)
         )
+        active_pauses = list(
+            database["source_pauses"]
+            .find({"active": True}, {"_id": 0})
+            .sort("paused_at", pymongo.DESCENDING)
+        )
         runs = list(
             database["crawl_runs"]
             .find({}, {"_id": 0})
@@ -81,10 +86,13 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
                 "online_count": sum(item.get("status") == "online" for item in health),
                 "warning_count": sum(item.get("status") == "warning" for item in health),
                 "offline_count": sum(item.get("status") == "offline" for item in health),
+                "paused_count": len(active_pauses),
                 "running_count": running,
                 "expired_running_count": expired_runs,
             },
             "health": health,
+            "active_pauses": active_pauses,
+            "alerts": _source_pause_alerts(active_pauses),
             "runs": runs,
             "failure_stats": failure_stats,
         }
@@ -99,6 +107,8 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
             },
             "summary": {},
             "health": [],
+            "active_pauses": [],
+            "alerts": [],
             "runs": [],
             "failure_stats": _empty_failure_stats(),
             "error": str(exc),
@@ -110,29 +120,48 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
 def _expire_stale_runs(runs_collection, *, max_age_seconds: int = 300) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
     cutoff_iso = cutoff.isoformat().replace("+00:00", "Z")
-    issue = {
-        "code": "timeout",
-        "message": f"crawl run exceeded max runtime of {max_age_seconds} seconds",
-        "article_url": None,
-        "retryable": True,
-    }
-    result = runs_collection.update_many(
-        {
-            "status": {"$in": ["queued", "running"]},
-            "started_at": {"$lt": cutoff_iso},
-        },
-        {
-            "$set": {
-                "status": "failed",
-                "finished_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "errors": [issue],
-                "failed": 1,
-                "cancel_requested": True,
+    stale_runs = list(
+        runs_collection.find(
+            {
+                "status": {"$in": ["queued", "running"]},
+                "started_at": {"$lt": cutoff_iso},
             },
-            "$inc": {"metrics.timeout": 1},
-        },
+            {"started_at": 1, "failed": 1},
+        )
     )
-    return int(getattr(result, "modified_count", 0) or 0)
+    expired = 0
+    for run in stale_runs:
+        issue = {
+            "code": "timeout",
+            "message": f"crawl run exceeded max runtime of {max_age_seconds} seconds",
+            "article_url": None,
+            "retryable": True,
+        }
+        result = runs_collection.update_one(
+            {"_id": run.get("_id"), "status": {"$in": ["queued", "running"]}},
+            {
+                "$set": {
+                    "status": "failed",
+                    "finished_at": _stale_finished_at(run.get("started_at"), max_age_seconds),
+                    "errors": [issue],
+                    "failed": max(1, int(run.get("failed") or 0)),
+                    "cancel_requested": True,
+                },
+                "$inc": {"metrics.timeout": 1},
+            },
+        )
+        expired += int(getattr(result, "modified_count", 0) or 0)
+    return expired
+
+
+def _stale_finished_at(started_at: Any, max_age_seconds: int) -> str:
+    try:
+        started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+    except ValueError:
+        started = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return (started + timedelta(seconds=max_age_seconds)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _failure_stats(runs: list[dict[str, Any]], *, item_limit: int = 80, archived_urls: set[str] | None = None) -> dict[str, Any]:
@@ -298,3 +327,25 @@ def _empty_failure_stats() -> dict[str, Any]:
         "top_messages": [],
         "items": [],
     }
+
+
+def _source_pause_alerts(pauses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    alerts = []
+    for item in pauses:
+        source = str(item.get("source_name") or "")
+        reason = str(item.get("reason") or "")
+        if not source:
+            continue
+        alerts.append(
+            {
+                "type": "source_auto_paused",
+                "severity": "warning",
+                "source_name": source,
+                "title": f"{source} 已自动暂停",
+                "message": reason or "数据源凭据疑似过期，请更新后再启用。",
+                "paused_at": item.get("paused_at") or "",
+                "issue_code": item.get("issue_code") or "",
+                "run_id": item.get("run_id") or "",
+            }
+        )
+    return alerts

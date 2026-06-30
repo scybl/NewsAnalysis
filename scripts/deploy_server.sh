@@ -27,9 +27,17 @@ DEPLOY_CLEAN="${DEPLOY_CLEAN:-0}"
 DEPLOY_CLEAN_DRY_RUN="${DEPLOY_CLEAN_DRY_RUN:-0}"
 DEPLOY_CLEAN_KEEP="${DEPLOY_CLEAN_KEEP:-.env cache local_data logs reports sessions}"
 DEPLOY_BACKUP_ROOT="${DEPLOY_BACKUP_ROOT:-${DEPLOY_PATH%/}.backups}"
+DEPLOY_SSH_CONNECT_TIMEOUT="${DEPLOY_SSH_CONNECT_TIMEOUT:-10}"
+DEPLOY_SSH_ALIVE_INTERVAL="${DEPLOY_SSH_ALIVE_INTERVAL:-15}"
+DEPLOY_SSH_ALIVE_COUNT_MAX="${DEPLOY_SSH_ALIVE_COUNT_MAX:-3}"
 SSH_TARGET="${DEPLOY_USER}@${DEPLOY_HOST}"
-SSH_OPTS=(-p "${DEPLOY_PORT}")
-RSYNC_SSH="ssh -p ${DEPLOY_PORT}"
+SSH_OPTS=(
+  -p "${DEPLOY_PORT}"
+  -o "ConnectTimeout=${DEPLOY_SSH_CONNECT_TIMEOUT}"
+  -o "ServerAliveInterval=${DEPLOY_SSH_ALIVE_INTERVAL}"
+  -o "ServerAliveCountMax=${DEPLOY_SSH_ALIVE_COUNT_MAX}"
+)
+RSYNC_SSH="ssh -p ${DEPLOY_PORT} -o ConnectTimeout=${DEPLOY_SSH_CONNECT_TIMEOUT} -o ServerAliveInterval=${DEPLOY_SSH_ALIVE_INTERVAL} -o ServerAliveCountMax=${DEPLOY_SSH_ALIVE_COUNT_MAX}"
 
 cd "${ROOT_DIR}"
 
@@ -46,15 +54,20 @@ echo "Deploying ${RELEASE_VERSION} to ${SSH_TARGET}:${DEPLOY_PATH}"
 
 # Build the upload tree only from files already tracked by Git. Modified
 # tracked files are included; new files must be staged before deployment.
+echo "[1/8] Preparing upload tree from Git-tracked files..."
 rsync -a --from0 --files-from=<(git ls-files -z) ./ "${STAGING_DIR}/"
+echo "[1/8] Upload tree ready: $(find "${STAGING_DIR}" -type f | wc -l | tr -d ' ') files, $(du -sh "${STAGING_DIR}" | awk '{print $1}')"
 
 REMOTE_SYNC_PATH="${DEPLOY_PATH}"
 if [[ "${DEPLOY_USE_SUDO}" == "1" ]]; then
   REMOTE_SYNC_PATH="${DEPLOY_STAGING_PATH}"
+  echo "[2/8] Creating remote staging path ${REMOTE_SYNC_PATH} and deploy path ${DEPLOY_PATH}..."
   ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "mkdir -p '${REMOTE_SYNC_PATH}' && sudo -n install -d '${DEPLOY_PATH}'"
 else
+  echo "[2/8] Creating remote deploy path ${DEPLOY_PATH}..."
   ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "mkdir -p '${DEPLOY_PATH}'"
 fi
+echo "[2/8] Remote path is ready."
 
 REMOTE_BACKUP_PATH="${DEPLOY_BACKUP_ROOT%/}/$(basename "${DEPLOY_PATH}")-${RELEASE_STAMP}"
 if [[ "${DEPLOY_CLEAN}" == "1" ]]; then
@@ -129,21 +142,32 @@ RSYNC_EXCLUDES=(
   --exclude "sessions/"
 )
 
-rsync -az --delete -e "${RSYNC_SSH}" "${RSYNC_EXCLUDES[@]}" "${STAGING_DIR}/" "${SSH_TARGET}:${REMOTE_SYNC_PATH}/"
+echo "[3/8] Uploading files to ${SSH_TARGET}:${REMOTE_SYNC_PATH}/..."
+rsync -az --delete --progress --stats -e "${RSYNC_SSH}" "${RSYNC_EXCLUDES[@]}" "${STAGING_DIR}/" "${SSH_TARGET}:${REMOTE_SYNC_PATH}/"
+echo "[3/8] Upload complete."
 
 if [[ "${DEPLOY_USE_SUDO}" == "1" ]]; then
+  echo "[4/8] Copying staged files into sudo-owned deploy path..."
   ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "sudo -n rsync -a --delete --exclude '.env' --exclude 'cache/' --exclude 'local_data/' --exclude 'logs/' --exclude 'reports/' --exclude 'sessions/' '${REMOTE_SYNC_PATH}/' '${DEPLOY_PATH}/'"
+else
+  echo "[4/8] Sudo copy not needed."
 fi
 
+echo "[5/8] Ensuring remote .env exists..."
 ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && test -f .env || cp .env.deploy.sample .env"
 if [[ "${DEPLOY_USE_SUDO}" == "1" ]]; then
   ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "sudo -n chown '${DEPLOY_USER}' '${DEPLOY_PATH}/.env' && sudo -n chmod 600 '${DEPLOY_PATH}/.env'"
 fi
+echo "[5/8] Remote .env is ready."
+echo "[6/8] Rebuilding and starting Docker services..."
 ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && RELEASE_VERSION='${RELEASE_VERSION}' RELEASE_TIME='${RELEASE_TIME}' docker compose -f docker-compose.prod.yml up -d --build"
+echo "[6/8] Docker compose up finished."
+echo "[7/8] Reading Docker service status..."
 ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && docker compose -f docker-compose.prod.yml ps"
 
-echo "Waiting for ${DEPLOY_HEALTH_URL}"
+echo "[8/8] Waiting for ${DEPLOY_HEALTH_URL}"
 ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "for attempt in \$(seq 1 '${DEPLOY_HEALTH_RETRIES}'); do if curl --fail --silent --show-error '${DEPLOY_HEALTH_URL}' >/dev/null; then exit 0; fi; sleep 2; done; echo 'Health check failed: ${DEPLOY_HEALTH_URL}' >&2; cd '${DEPLOY_PATH}' && docker compose -f docker-compose.prod.yml logs --tail=100 web >&2; exit 1"
+echo "[8/8] Web health check passed. Checking NewsCrawler..."
 ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}'; for attempt in \$(seq 1 20); do if docker compose -f docker-compose.prod.yml exec -T news-crawler news-crawler health >/dev/null 2>&1; then exit 0; fi; sleep 3; done; echo 'NewsCrawler health check failed' >&2; docker compose -f docker-compose.prod.yml logs --tail=100 news-crawler >&2; exit 1"
 
 echo "Deployed ${RELEASE_VERSION} to ${SSH_TARGET}:${DEPLOY_PATH}"

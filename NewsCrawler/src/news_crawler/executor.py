@@ -99,8 +99,19 @@ class TaskExecutor:
             result.errors.append(CrawlIssue("timeout", str(exc), retryable=True))
             result.status = "failed"
             self.observer.on_provider_failed(provider.name, result.errors[-1])
+        except AutoPausedSource:
+            result.status = "failed"
+            if result.errors:
+                self.observer.on_provider_failed(provider.name, result.errors[-1])
         except Exception as exc:  # provider discovery failure
-            issue = CrawlIssue("provider_error", str(exc), retryable=False)
+            if getattr(exc, "pause_source", False):
+                issue_code = getattr(exc, "issue_code", "credential_expired")
+                issue = CrawlIssue(issue_code, str(exc), retryable=False)
+                result.metrics[issue_code] = int(result.metrics.get(issue_code, 0)) + 1
+                if self.run_repository and hasattr(self.run_repository, "pause_source"):
+                    self.run_repository.pause_source(provider.name, str(exc), run_id=result.run_id, issue_code=issue_code)
+            else:
+                issue = CrawlIssue("provider_error", str(exc), retryable=False)
             result.errors.append(issue)
             result.failed += 1
             result.status = "failed"
@@ -124,6 +135,14 @@ class TaskExecutor:
                 result.warnings.append(CrawlIssue(exc.code, str(exc), ref.url, retryable=False))
                 return None
             except Exception as exc:
+                if getattr(exc, "pause_source", False):
+                    issue_code = getattr(exc, "issue_code", "credential_expired")
+                    result.failed += 1
+                    result.metrics[issue_code] = int(result.metrics.get(issue_code, 0)) + 1
+                    result.errors.append(CrawlIssue(issue_code, str(exc), ref.url, retryable=False))
+                    if self.run_repository and hasattr(self.run_repository, "pause_source"):
+                        self.run_repository.pause_source(provider.name, str(exc), run_id=result.run_id, issue_code=issue_code)
+                    raise AutoPausedSource(str(exc)) from exc
                 issue_code = _issue_code(exc)
                 if attempt < self.retries:
                     result.metrics["retry"] = int(result.metrics.get("retry", 0)) + 1
@@ -134,6 +153,10 @@ class TaskExecutor:
                 result.metrics[issue_code] = int(result.metrics.get(issue_code, 0)) + 1
                 result.errors.append(CrawlIssue(issue_code, str(exc), ref.url, retryable=True))
                 return None
+
+
+class AutoPausedSource(RuntimeError):
+    pass
 
 
 class CrawlRunTimeout(TimeoutError):

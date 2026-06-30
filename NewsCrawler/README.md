@@ -45,19 +45,41 @@ Docker 镜像中启用该可选依赖：
 NEWS_CRAWLER_INSTALL_BLOOMBERG=1 docker compose up -d --build news-crawler
 ```
 
-Politico 使用 `rss.politico.com` 的公开 RSS feed，默认分类包括 `politics`、`healthcare` 和 `energy`。如需追加或覆盖分类，可配置：
+Politico 现在拆成独立来源：
+
+- `politico_browser`：正常网页源，打开 `https://www.politico.com/` 抽取新闻链接，再访问文章页解析正文。实现上使用 requests/curl，不需要 cookie，也不依赖 Chrome。
+- `politico_rss`：RSS 源，只读取公开 RSS 中的标题、摘要、正文片段和链接。默认禁用，避免和网页源重复写入。
+- `politico_chrome`：保留的 Selenium/Chrome 实验源。默认禁用，只有确实需要复用 Chrome profile、Cookie 或代理时再开。
+
+网页源命令：
 
 ```bash
-POLITICO_FEED_URLS="custom=https://rss.politico.com/example.xml" news-crawler crawl --source politico --categories custom --dry-run
+news-crawler crawl --source politico_browser --latest --max-articles 10 --dry-run
+```
+
+RSS 默认分类为 `picks`，对应 Politico 首页公开暴露的 `https://www.politico.com/rss/politicopicks.xml`。如需追加或覆盖分类，可配置：
+
+```bash
+NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico,politico_chrome \
+POLITICO_FEED_URLS="custom=https://rss.politico.com/example.xml" \
+news-crawler crawl --source politico_rss --categories custom --dry-run
+```
+
+RSS 模式默认只使用 feed 内的标题、摘要、正文片段和链接。确实需要尝试补全文章页时，可显式打开：
+
+```bash
+NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico,politico_chrome \
+POLITICO_FETCH_ARTICLE_PAGES=1 \
+news-crawler crawl --source politico_rss --latest --max-articles 10 --dry-run
 ```
 
 单个来源的单次采集默认最多运行 300 秒，超时会写入 `failed`/`timeout` 运行记录。可通过环境变量 `NEWS_CRAWLER_MAX_RUNTIME_SECONDS` 或命令行参数 `--max-runtime-seconds` 调整，传 `0` 表示不限制。
 
-`politico_browser` 是实验性的浏览器 Provider，会用 Selenium/Chrome 直接打开 `https://www.politico.com/news/` 并解析新闻链接。它默认禁用，避免没有浏览器环境的调度任务失败。启用前需安装 browser 依赖并移除禁用项：
+`politico_chrome` 是实验性的浏览器 Provider，会用 Selenium/Chrome 直接打开 `https://www.politico.com/news/` 并解析新闻链接。它默认禁用，避免没有浏览器环境的调度任务失败。启用前需安装 browser 依赖并移除禁用项：
 
 ```bash
 python -m pip install -e '.[browser]'
-NEWS_CRAWLER_DISABLED_SOURCES= news-crawler crawl --source politico_browser --latest --max-pages 1 --max-articles 5 --dry-run
+NEWS_CRAWLER_DISABLED_SOURCES= news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-articles 5 --dry-run
 ```
 
 可选绕过配置：
@@ -67,38 +89,38 @@ NEWS_CRAWLER_DISABLED_SOURCES= news-crawler crawl --source politico_browser --la
 POLITICO_BROWSER_HEADLESS=0 \
 POLITICO_BROWSER_PROFILE_DIR=/path/to/politico-chrome-profile \
 NEWS_CRAWLER_DISABLED_SOURCES= \
-news-crawler crawl --source politico_browser --latest --max-pages 1 --max-articles 5 --dry-run
+news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-articles 5 --dry-run
 
 # 使用代理。Chrome 原生代理对带用户名密码的代理支持有限，优先使用无认证代理或已配置认证的 profile。
 POLITICO_BROWSER_PROXY=http://host:port \
 NEWS_CRAWLER_DISABLED_SOURCES= \
-news-crawler crawl --source politico_browser --latest --max-pages 1 --max-articles 5 --dry-run
+news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-articles 5 --dry-run
 
 # 注入 Cookie，支持浏览器导出的 {"cookies":[...]} 或单个/list cookie JSON。
 POLITICO_BROWSER_COOKIES_JSON='{"cookies":[{"name":"cf_clearance","value":"...","domain":".politico.com","path":"/"}]}' \
 NEWS_CRAWLER_DISABLED_SOURCES= \
-news-crawler crawl --source politico_browser --latest --max-pages 1 --max-articles 5 --dry-run
+news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-articles 5 --dry-run
 ```
 
-如果 Politico 返回 Cloudflare 验证页，`politico_browser` 会失败并记录 blocked/empty discovery 类错误；这种情况下需要可通过验证的 Chrome profile、Cookie/代理，或继续使用 RSS Provider。
+如果 Politico 返回 Cloudflare 验证页，`politico_chrome` 会失败并记录 blocked/empty discovery 类错误；这种情况下需要可通过验证的 Chrome profile、Cookie/代理，或继续使用 RSS Provider。
 
-服务器 Docker 部署时，需要显式构建浏览器版镜像，并持久化 profile：
+服务器 Docker 部署时，只有启用 `politico_chrome` 才需要显式构建浏览器版镜像，并持久化 profile：
 
 ```bash
 NEWS_CRAWLER_INSTALL_BROWSER=1 \
-NEWS_CRAWLER_DISABLED_SOURCES= \
+NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico,politico_rss,guardian \
 POLITICO_BROWSER_HEADLESS=1 \
 POLITICO_BROWSER_PROFILE_DIR=/app/local_data/politico_chrome_profile \
-docker compose up -d --build news-crawler
+docker compose run --rm news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-articles 5 --dry-run
 ```
 
 如果服务器 IP 被 Cloudflare 挑战，优先加代理：
 
 ```bash
 NEWS_CRAWLER_INSTALL_BROWSER=1 \
-NEWS_CRAWLER_DISABLED_SOURCES= \
+NEWS_CRAWLER_DISABLED_SOURCES=bloomberg,politico,politico_rss,guardian \
 POLITICO_BROWSER_PROXY=http://host:port \
-docker compose up -d --build news-crawler
+docker compose run --rm news-crawler crawl --source politico_chrome --latest --max-pages 1 --max-articles 5 --dry-run
 ```
 
 也可以把本机拿到的 `cf_clearance` 临时放进 `POLITICO_BROWSER_COOKIES_JSON`，但 Cookie 往往绑定 IP/浏览器指纹；从本机复制到服务器可能失效。长期运行更推荐“服务器同一出口 IP + 专用 profile + 代理”。

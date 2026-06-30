@@ -47,6 +47,12 @@ class MongoRawNewsRepository:
         row = self.collection.find_one({"article_id": article_id}, {"_id": 0})
         return self._validate(row) if row else None
 
+    def set_translation(self, article_id: str, language: str, translation: dict[str, Any]) -> None:
+        self.collection.update_one(
+            {"article_id": article_id},
+            {"$set": {f"translations.{language}": translation}},
+        )
+
     def list_unprocessed(self, consumer: str, limit: int = 100) -> list[dict[str, Any]]:
         state = self.client[self.config.database][self.config.ingestion_collection]
         processed = [

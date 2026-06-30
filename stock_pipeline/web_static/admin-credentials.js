@@ -134,12 +134,20 @@ function renderCredentials(items) {
   if (credentialsSummary) credentialsSummary.textContent = `已配置 ${configuredCount} / ${items.length} 项；明文不会在页面回显。`;
   const groups = groupBySource(items);
   credentialsGrid.innerHTML = Object.entries(groups).map(([source, groupItems]) => `
-    <section class="admin-card credential-section">
-      <div class="admin-card-head">
+    <section class="credential-section">
+      <div class="credential-section-head">
         <h4>${escapeHtml(source)}</h4>
         <span>${escapeHtml(String(groupItems.filter((item) => item.configured).length))} / ${escapeHtml(String(groupItems.length))} 已配置</span>
       </div>
       <div class="credential-list">
+        <div class="credential-row credential-row-head" aria-hidden="true">
+          <span>凭据</span>
+          <span>ENV</span>
+          <span>状态</span>
+          <span>更新时间</span>
+          <span>新值</span>
+          <span>操作</span>
+        </div>
         ${groupItems.map(renderCredentialItem).join("")}
       </div>
     </section>
@@ -149,35 +157,28 @@ function renderCredentials(items) {
 function renderCredentialItem(item) {
   const statusClass = item.configured ? "is-configured" : "is-empty";
   const statusText = item.configured ? "已配置" : "未配置";
-  const rows = [
-    ["ENV", item.env || "-"],
-    ["更新时间", item.updated_at || "-"],
-  ].filter(Boolean);
   const placeholder = item.configured ? "输入新值会覆盖当前凭据" : placeholderForKind(item.kind);
   return `
-    <article class="credential-item ${statusClass}" data-credential-card="${escapeAttr(item.name)}">
-      <div class="credential-item-head">
-        <div>
-          <h5>${escapeHtml(item.label || item.name)}</h5>
-          <p>${escapeHtml(item.description || "")}</p>
-        </div>
-        <div class="credential-status-list">
-          <span class="credential-status ${item.configured ? "is-success" : "is-muted"}">${escapeHtml(statusText)}</span>
-          ${item.status_note ? `<span class="credential-status is-danger">${escapeHtml(item.status_note)}</span>` : ""}
-        </div>
+    <article class="credential-row credential-item ${statusClass}" data-credential-card="${escapeAttr(item.name)}">
+      <div class="credential-title">
+        <h5>${escapeHtml(item.label || item.name)}</h5>
+        <p>${escapeHtml(item.description || "")}</p>
       </div>
-      <dl class="credential-meta">
-        ${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}
-      </dl>
+      <code class="credential-env">${escapeHtml(item.env || "-")}</code>
+      <div class="credential-status-list">
+        <span class="credential-status ${item.configured ? "is-success" : "is-muted"}">${escapeHtml(statusText)}</span>
+        ${item.status_note ? `<span class="credential-status is-danger">${escapeHtml(item.status_note)}</span>` : ""}
+      </div>
+      <time>${escapeHtml(item.updated_at || "-")}</time>
       <label class="credential-input">
-        <span>新值</span>
+        <span class="sr-only">新值</span>
         <textarea data-credential-value="${escapeAttr(item.name)}" autocomplete="off" spellcheck="false" placeholder="${escapeAttr(placeholder)}" ${adminReadonly ? "disabled" : ""}></textarea>
       </label>
       <div class="credential-actions">
-        <small data-credential-message="${escapeAttr(item.name)}">${item.reloads_next_run ? "保存后会在下一轮 NewsCrawler 采集前生效。" : "保存后立即用于后续请求。"}</small>
         <button class="primary-action" type="button" data-credential-save="${escapeAttr(item.name)}" ${adminReadonly ? "disabled" : ""}>保存</button>
         <button type="button" data-credential-delete="${escapeAttr(item.name)}" ${adminReadonly || !item.configured ? "disabled" : ""}>移除</button>
       </div>
+      <small class="credential-message" data-credential-message="${escapeAttr(item.name)}">${item.reloads_next_run ? "下一轮采集前生效" : "后续请求立即使用"}</small>
     </article>
   `;
 }
@@ -192,6 +193,8 @@ function groupBySource(items) {
 }
 
 function placeholderForKind(kind) {
+  if (kind === "url") return "https://example.com/path";
+  if (kind === "boolean") return "1 或 0";
   if (kind === "proxy") return "http://user:pass@host:port";
   if (kind === "cookie_json") return "[{\"name\":\"cf_clearance\",\"value\":\"...\",\"domain\":\".politico.com\"}]";
   if (kind === "cookie") return "name=value; another=value";

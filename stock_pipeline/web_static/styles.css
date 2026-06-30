@@ -2736,10 +2736,48 @@ body:has(.admin-shell) {
   color: #b42318;
 }
 
+.crawler-health-item.is-paused .crawler-health-status {
+  border-color: #fecdca;
+  background: #fff1f3;
+  color: #c01048;
+}
+
 .crawler-health-item.is-maintenance .crawler-health-status {
   border-color: #d0d5dd;
   background: #f2f4f7;
   color: #475467;
+}
+
+.crawler-runtime-alerts {
+  display: grid !important;
+  gap: 8px !important;
+}
+
+.crawler-runtime-alerts article {
+  border: 1px solid color-mix(in srgb, var(--fin-danger) 36%, var(--fin-border)) !important;
+  border-radius: 8px !important;
+  background: color-mix(in srgb, var(--fin-danger) 9%, var(--fin-card)) !important;
+  padding: 12px 14px !important;
+}
+
+.crawler-runtime-alerts strong {
+  display: block !important;
+  color: var(--fin-foreground) !important;
+  font-size: 14px !important;
+}
+
+.crawler-runtime-alerts p {
+  margin: 4px 0 0 !important;
+  color: var(--fin-muted-foreground) !important;
+  font-size: 13px !important;
+}
+
+.crawler-runtime-alerts small {
+  display: block !important;
+  margin-top: 6px !important;
+  color: var(--fin-danger) !important;
+  font-size: 11px !important;
+  font-weight: 750 !important;
 }
 
 .crawler-runs-wrap {
@@ -3807,7 +3845,8 @@ body:has(.admin-shell) {
 }
 
 .news-item-meta span,
-.news-item-meta a {
+.news-item-meta a,
+.news-translation-toggle {
   border: 1px solid #d7deea;
   border-radius: 7px;
   padding: 3px 7px;
@@ -3815,8 +3854,26 @@ body:has(.admin-shell) {
   text-decoration: none;
 }
 
-.news-item-meta a {
+.news-item-meta a,
+.news-translation-toggle {
   color: #2f6fed;
+}
+
+.news-translation-toggle {
+  cursor: pointer;
+  background: transparent;
+  font: inherit;
+  line-height: 1.2;
+}
+
+.news-translation-toggle.is-active {
+  border-color: #2f6fed;
+  background: #eff6ff;
+}
+
+.news-translation-toggle:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .news-item h2 {
@@ -4258,14 +4315,25 @@ html.theme-dark .news-item:hover {
 }
 
 html.theme-dark .news-item-meta span,
-html.theme-dark .news-item-meta a {
+html.theme-dark .news-item-meta a,
+html.theme-dark .news-translation-toggle {
   border-color: #344154;
   color: #c8d3df;
 }
 
 html.theme-dark .news-item-meta a,
-html.theme-dark .news-item summary {
+html.theme-dark .news-item summary,
+html.theme-dark .news-translation-toggle {
   color: #8fb7ff;
+}
+
+html.theme-dark .news-translation-toggle {
+  background: transparent;
+}
+
+html.theme-dark .news-translation-toggle.is-active {
+  border-color: #528eff;
+  background: #11294a;
 }
 
 html.theme-dark .news-item h2 {
@@ -6781,34 +6849,72 @@ body:has(.admin-shell) {
 
 .credential-grid {
   display: grid !important;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-  gap: 16px !important;
+  gap: 14px !important;
 }
 
 .credential-section {
+  overflow: hidden !important;
   min-width: 0 !important;
+  border: 1px solid var(--fin-border) !important;
+  background: var(--fin-card) !important;
+}
+
+.credential-section-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  border-bottom: 1px solid var(--fin-border) !important;
+  padding: 10px 14px !important;
+}
+
+.credential-section-head h4 {
+  margin: 0 !important;
+  color: var(--fin-foreground) !important;
+  font-size: 15px !important;
+  line-height: 1.25 !important;
+  letter-spacing: 0 !important;
+}
+
+.credential-section-head span {
+  color: var(--fin-muted-foreground) !important;
+  font-size: 12px !important;
+  font-weight: 750 !important;
 }
 
 .credential-list {
   display: grid !important;
-  gap: 12px !important;
-  padding: 14px !important;
+  padding: 0 !important;
+}
+
+.credential-row {
+  display: grid !important;
+  grid-template-columns: minmax(180px, 1.35fr) minmax(150px, 0.8fr) minmax(96px, 0.55fr) minmax(120px, 0.65fr) minmax(220px, 1.2fr) auto !important;
+  align-items: center !important;
+  gap: 10px !important;
+  border-bottom: 1px solid var(--fin-border) !important;
+  padding: 9px 14px !important;
+}
+
+.credential-row:last-child {
+  border-bottom: 0 !important;
+}
+
+.credential-row-head {
+  background: var(--fin-muted) !important;
+  color: var(--fin-muted-foreground) !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0 !important;
 }
 
 .credential-item {
-  display: grid !important;
-  gap: 12px !important;
-  border: 1px solid var(--fin-border) !important;
-  border-radius: 8px !important;
+  position: relative !important;
   background: var(--fin-background) !important;
-  padding: 14px !important;
 }
 
-.credential-item-head {
-  display: flex !important;
-  align-items: start !important;
-  justify-content: space-between !important;
-  gap: 12px !important;
+.credential-title {
+  min-width: 0 !important;
 }
 
 .credential-item h5 {
@@ -6820,10 +6926,31 @@ body:has(.admin-shell) {
 }
 
 .credential-item p {
-  margin: 4px 0 0 !important;
+  margin: 2px 0 0 !important;
   color: var(--fin-muted-foreground) !important;
   font-size: 12px !important;
-  line-height: 1.45 !important;
+  line-height: 1.35 !important;
+}
+
+.credential-env {
+  overflow: hidden !important;
+  border: 1px solid var(--fin-border) !important;
+  border-radius: 6px !important;
+  background: var(--fin-card) !important;
+  padding: 6px 8px !important;
+  color: var(--fin-foreground) !important;
+  font-size: 12px !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.credential-item time {
+  overflow: hidden !important;
+  color: var(--fin-muted-foreground) !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
 }
 
 .credential-status-list {
@@ -6838,9 +6965,9 @@ body:has(.admin-shell) {
   flex: 0 0 auto !important;
   border: 1px solid var(--fin-border) !important;
   border-radius: 999px !important;
-  padding: 4px 8px !important;
+  padding: 3px 7px !important;
   color: var(--fin-muted-foreground) !important;
-  font-size: 12px !important;
+  font-size: 11px !important;
   font-weight: 750 !important;
 }
 
@@ -6859,73 +6986,54 @@ body:has(.admin-shell) {
   color: var(--fin-danger) !important;
 }
 
-.credential-meta {
-  display: grid !important;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-  gap: 8px !important;
-  margin: 0 !important;
-}
-
-.credential-meta div {
-  min-width: 0 !important;
-  border: 1px solid var(--fin-border) !important;
-  border-radius: 8px !important;
-  background: var(--fin-card) !important;
-  padding: 8px !important;
-}
-
-.credential-meta dt {
-  color: var(--fin-muted-foreground) !important;
-  font-size: 11px !important;
-  font-weight: 700 !important;
-}
-
-.credential-meta dd {
-  margin: 3px 0 0 !important;
-  overflow: hidden !important;
-  color: var(--fin-foreground) !important;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
-  font-size: 12px !important;
-  text-overflow: ellipsis !important;
-  white-space: nowrap !important;
-}
-
 .credential-input {
-  display: grid !important;
-  gap: 6px !important;
-  color: var(--fin-muted-foreground) !important;
-  font-size: 12px !important;
-  font-weight: 700 !important;
+  min-width: 0 !important;
 }
 
 .credential-input textarea {
   width: 100% !important;
-  min-height: 92px !important;
+  min-height: 38px !important;
+  max-height: 72px !important;
   resize: vertical !important;
   border: 1px solid var(--fin-border) !important;
-  border-radius: 8px !important;
+  border-radius: 6px !important;
   background: var(--fin-card) !important;
-  padding: 10px !important;
+  padding: 8px !important;
   color: var(--fin-foreground) !important;
-  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
 }
 
 .credential-actions {
-  display: grid !important;
-  grid-template-columns: minmax(0, 1fr) auto auto !important;
+  display: flex !important;
   align-items: center !important;
-  gap: 8px !important;
+  justify-content: flex-end !important;
+  gap: 6px !important;
 }
 
-.credential-actions small {
+.credential-actions button {
+  min-height: 34px !important;
+  padding: 6px 10px !important;
+}
+
+.credential-message {
+  grid-column: 5 / 7 !important;
   min-width: 0 !important;
   color: var(--fin-muted-foreground) !important;
-  font-size: 12px !important;
-  line-height: 1.4 !important;
+  font-size: 11px !important;
+  line-height: 1.25 !important;
 }
 
-.credential-actions small.is-error {
+.credential-message.is-error {
   color: var(--fin-danger) !important;
+}
+
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
 }
 
 .admin-panel,
@@ -7211,6 +7319,27 @@ body:has(.admin-shell) {
   .admin-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
+
+  .credential-row {
+    grid-template-columns: minmax(180px, 1fr) minmax(140px, 0.8fr) minmax(90px, auto) minmax(120px, 0.7fr) !important;
+  }
+
+  .credential-row-head span:nth-child(5),
+  .credential-row-head span:nth-child(6) {
+    display: none !important;
+  }
+
+  .credential-input {
+    grid-column: 1 / 4 !important;
+  }
+
+  .credential-actions {
+    grid-column: 4 !important;
+  }
+
+  .credential-message {
+    grid-column: 1 / 5 !important;
+  }
 }
 
 @media (max-width: 780px) {
@@ -7243,6 +7372,26 @@ body:has(.admin-shell) {
 
   .admin-sidebar-footer {
     display: none !important;
+  }
+
+  .credential-row,
+  .credential-row-head {
+    grid-template-columns: 1fr !important;
+    align-items: stretch !important;
+  }
+
+  .credential-row-head {
+    display: none !important;
+  }
+
+  .credential-input,
+  .credential-actions,
+  .credential-message {
+    grid-column: auto !important;
+  }
+
+  .credential-actions {
+    justify-content: flex-start !important;
   }
 
   .admin-page-head {

@@ -1,4 +1,8 @@
-from stock_pipeline.crawler_monitor import _failure_stats
+from stock_pipeline.crawler_monitor import _failure_stats, _stale_finished_at
+
+
+def test_stale_finished_at_uses_runtime_deadline_not_cleanup_time():
+    assert _stale_finished_at("2026-06-30T17:31:15Z", 300) == "2026-06-30T17:36:15Z"
 
 
 def test_failure_stats_groups_empty_and_connection_closed_items():

@@ -18,6 +18,7 @@ class MongoNewsRepository:
         runs_collection: str,
         health_collection: str = "source_health",
         checkpoint_collection: str = "crawler_checkpoints",
+        pause_collection: str = "source_pauses",
     ):
         import pymongo
 
@@ -29,6 +30,7 @@ class MongoNewsRepository:
         self.runs = db[runs_collection]
         self.health = db[health_collection]
         self.checkpoints = db[checkpoint_collection]
+        self.pauses = db[pause_collection]
 
     def ensure_indexes(self) -> None:
         asc = self.pymongo.ASCENDING
@@ -44,6 +46,7 @@ class MongoNewsRepository:
         self.runs.create_index([("source_name", asc), ("started_at", desc)], name="idx_crawl_source_started")
         self.health.create_index([("source_name", asc)], unique=True, name="uk_source_health")
         self.checkpoints.create_index([("source_name", asc), ("key", asc)], unique=True, name="uk_crawler_checkpoint")
+        self.pauses.create_index([("source_name", asc), ("active", asc)], name="idx_source_pause_active")
 
     def find_existing_by_keys(self, keys: DedupeKeys) -> dict[str, Any] | None:
         clauses = [{key: value} for key, value in keys.query_keys().items()]
@@ -95,8 +98,60 @@ class MongoNewsRepository:
 
     def update_health(self, source_name: str) -> dict[str, Any]:
         document = HealthProjector().from_documents(source_name, self.recent_runs(source_name))
+        pause = self.pauses.find_one({"source_name": source_name, "active": True}, {"_id": 0})
+        if pause:
+            document.update(
+                {
+                    "status": "paused",
+                    "latest_status": "paused",
+                    "latest_error": pause.get("reason") or document.get("latest_error") or "",
+                    "auto_paused": True,
+                    "pause_reason": pause.get("reason") or "",
+                    "pause_issue_code": pause.get("issue_code") or "",
+                    "paused_at": pause.get("paused_at") or "",
+                }
+            )
         self.health.update_one({"source_name": source_name}, {"$set": document}, upsert=True)
         return document
+
+    def pause_source(self, source_name: str, reason: str, *, run_id: str = "", issue_code: str = "") -> None:
+        now = datetime.utcnow().isoformat() + "Z"
+        self.pauses.update_one(
+            {"source_name": source_name, "active": True},
+            {
+                "$set": {
+                    "source_name": source_name,
+                    "active": True,
+                    "reason": reason,
+                    "issue_code": issue_code,
+                    "run_id": run_id,
+                    "paused_at": now,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
+        self.health.update_one(
+            {"source_name": source_name},
+            {
+                "$set": {
+                    "source_name": source_name,
+                    "status": "paused",
+                    "latest_status": "paused",
+                    "latest_error": reason,
+                    "auto_paused": True,
+                    "pause_reason": reason,
+                    "pause_issue_code": issue_code,
+                    "paused_at": now,
+                    "updated_at": now,
+                }
+            },
+            upsert=True,
+        )
+
+    def active_pauses(self) -> list[dict[str, Any]]:
+        return list(self.pauses.find({"active": True}, {"_id": 0}).sort("paused_at", self.pymongo.DESCENDING))
 
     def save_checkpoint(self, source_name: str, key: str, value: dict[str, Any]) -> None:
         self.checkpoints.update_one(

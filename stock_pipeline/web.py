@@ -12,7 +12,7 @@ import os
 import signal
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,7 +36,7 @@ from .news_library import query_news_library
 from .news_search import search_related_news
 from .minute_storage import minute_reference_row_counts
 from .market_dimensions import STOCK_COLLECTIONS, STOCK_DATABASE
-from .raw_news import raw_news_config
+from .raw_news import MongoRawNewsRepository, raw_news_config
 from .secret_store import get_secret_store
 from .stock_search import StockSearchIndex
 from .stock_storage import (
@@ -61,6 +61,7 @@ from .ths_minute import build_config as build_ths_minute_config
 from .ths_minute import fetch_and_store_minutes
 from .tushare_client import TushareClient, TushareError
 from .totp import verify_totp
+from .translation import BaiduTranslateClient, BaiduTranslateConfig, TranslationError
 from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, today_yyyymmdd, write_json
 
 
@@ -112,6 +113,7 @@ DATA_FETCH_ACTIONS = {
     "/api/admin/daily-market-scheduler:run_now": "立即执行每日股票数据更新",
     "/api/admin/kaipanla/scheduler:run_now": "立即执行开盘啦数据抓取",
     "/api/admin/news-library/refetch": "重新抓取新闻并补充到新闻库",
+    "/api/admin/news-library/translate": "调用百度翻译生成 Guardian 中文译文",
     "/api/admin/news-crawler/failure-action": "重抓新闻失败 item 并归档仍失败的链接",
 }
 AGENT_TOKEN_PREFIX = "na_agent_"
@@ -156,6 +158,30 @@ ADMIN_CREDENTIALS = (
         "reloads_next_run": True,
     },
     {
+        "name": "guardian.baidu_translate_app_id",
+        "label": "Baidu Translate App ID",
+        "source": "Baidu Translate",
+        "kind": "api_key",
+        "storage": "file",
+        "env": "BAIDU_TRANSLATE_APP_ID",
+        "file_env": "BAIDU_TRANSLATE_APP_ID_FILE",
+        "path": "baidu_translate_app_id.txt",
+        "description": "百度翻译开放平台的 App ID，用于新闻中文翻译。",
+        "reloads_next_run": False,
+    },
+    {
+        "name": "guardian.baidu_translate_secret_key",
+        "label": "Baidu Translate Secret Key",
+        "source": "Baidu Translate",
+        "kind": "api_key",
+        "storage": "file",
+        "env": "BAIDU_TRANSLATE_SECRET_KEY",
+        "file_env": "BAIDU_TRANSLATE_SECRET_KEY_FILE",
+        "path": "baidu_translate_secret_key.txt",
+        "description": "百度翻译开放平台的密钥，用于新闻中文翻译。",
+        "reloads_next_run": False,
+    },
+    {
         "name": "bloomberg.cookie",
         "label": "Bloomberg Cookie",
         "source": "Bloomberg",
@@ -165,6 +191,66 @@ ADMIN_CREDENTIALS = (
         "file_env": "BLOOMBERG_COOKIE_FILE",
         "path": "bloomberg_cookie.txt",
         "description": "Bloomberg 请求头 Cookie，适合粘贴完整 cookie 字符串。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "bloomberg.cookies_json",
+        "label": "Bloomberg Cookies JSON",
+        "source": "Bloomberg",
+        "kind": "cookie_json",
+        "storage": "file",
+        "env": "BLOOMBERG_COOKIES_JSON",
+        "file_env": "BLOOMBERG_COOKIES_JSON_FILE",
+        "path": "bloomberg_cookies_json.txt",
+        "description": "Chrome 导出的 Bloomberg cookies JSON 数组，优先用于模拟已登录浏览器会话。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "bloomberg.latest_url",
+        "label": "Bloomberg Latest URL",
+        "source": "Bloomberg",
+        "kind": "url",
+        "storage": "file",
+        "env": "BLOOMBERG_LATEST_URL",
+        "file_env": "BLOOMBERG_LATEST_URL_FILE",
+        "path": "bloomberg_latest_url.txt",
+        "description": "Bloomberg 最新文章入口页，默认 https://www.bloomberg.com/latest。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "bloomberg.api_url",
+        "label": "Bloomberg API URL",
+        "source": "Bloomberg",
+        "kind": "url",
+        "storage": "file",
+        "env": "BLOOMBERG_API_URL",
+        "file_env": "BLOOMBERG_API_URL_FILE",
+        "path": "bloomberg_api_url.txt",
+        "description": "Bloomberg lineup-next 文章列表接口，留空则使用默认接口。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "bloomberg.use_api",
+        "label": "Bloomberg Use API",
+        "source": "Bloomberg",
+        "kind": "boolean",
+        "storage": "file",
+        "env": "BLOOMBERG_USE_API",
+        "file_env": "BLOOMBERG_USE_API_FILE",
+        "path": "bloomberg_use_api.txt",
+        "description": "是否优先使用 Bloomberg API 发现文章，填 1/0 或 true/false。",
+        "reloads_next_run": True,
+    },
+    {
+        "name": "bloomberg.require_login_cookie",
+        "label": "Bloomberg Require Login Cookie",
+        "source": "Bloomberg",
+        "kind": "boolean",
+        "storage": "file",
+        "env": "BLOOMBERG_REQUIRE_LOGIN_COOKIE",
+        "file_env": "BLOOMBERG_REQUIRE_LOGIN_COOKIE_FILE",
+        "path": "bloomberg_require_login_cookie.txt",
+        "description": "启用后会检查 _breg-uid 等关键登录 cookie，不完整则直接停止。",
         "reloads_next_run": True,
     },
     {
@@ -303,14 +389,21 @@ def set_admin_credential(name: str, value: str, *, updated_by: str, user_store=N
         raise ValueError("凭据值不能为空。")
     if len(raw_value) > 100_000:
         raise ValueError("凭据值过大，请拆分或使用文件方式手动配置。")
+    kind = str(spec.get("kind") or "")
+    if kind == "url" and not raw_value.startswith(("http://", "https://")):
+        raise ValueError("URL 必须以 http:// 或 https:// 开头。")
+    if kind == "boolean" and raw_value.lower() not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
+        raise ValueError("布尔配置只能填写 1/0、true/false、yes/no 或 on/off。")
     storage = str(spec.get("storage") or "")
     if storage == "file":
         path = _credential_file_path(spec)
         ensure_dir(path.parent)
         path.write_text(raw_value, encoding="utf-8")
         os.chmod(path, 0o600)
+        _clear_source_pause_for_credential(name)
         return _credential_file_state(spec)
     get_secret_store().set(str(spec["name"]), raw_value, updated_by=updated_by)
+    _clear_source_pause_for_credential(name)
     state = get_secret_store().state(str(spec["name"]))
     return {"configured": state.configured, "updated_at": state.updated_at}
 
@@ -326,6 +419,109 @@ def delete_admin_credential(name: str, *, updated_by: str, user_store=None) -> d
     get_secret_store().delete(str(spec["name"]))
     state = get_secret_store().state(str(spec["name"]))
     return {"configured": state.configured, "updated_at": state.updated_at}
+
+
+def _admin_credential_value(name: str) -> str:
+    spec = _credential_spec(name)
+    env_value = (os.getenv(str(spec.get("env") or "")) or "").strip() if spec.get("env") else ""
+    if env_value:
+        return env_value
+    storage = str(spec.get("storage") or "")
+    if storage == "file":
+        path = _credential_file_path(spec)
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+        return ""
+    return get_secret_store().get(str(spec["name"]))
+
+
+def _clear_source_pause_for_credential(name: str) -> None:
+    source_name = str(name).split(".", 1)[0]
+    if source_name not in {"bloomberg", "politico", "guardian"}:
+        return
+    try:
+        import pymongo
+
+        config = raw_news_config()
+        client = pymongo.MongoClient(config.uri, serverSelectionTimeoutMS=1000, socketTimeoutMS=1500)
+        try:
+            client[config.database]["source_pauses"].update_many(
+                {"source_name": source_name, "active": True},
+                {"$set": {"active": False, "cleared_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}},
+            )
+        finally:
+            client.close()
+    except Exception:
+        return
+
+
+def guardian_translation_payload(article_id: str) -> dict[str, Any]:
+    target_language = "zh"
+    repository = MongoRawNewsRepository(timeout_ms=5000)
+    try:
+        article = repository.get_by_article_id(article_id)
+        if not article:
+            raise ValueError("找不到这篇文章。")
+        if str(article.get("source_name") or "").lower() != "guardian":
+            raise ValueError("当前只支持 Guardian 文章翻译。")
+
+        content_hash = _guardian_translation_hash(article)
+        cached = ((article.get("translations") or {}).get(target_language) or {})
+        if cached.get("content_hash") == content_hash:
+            return {"cached": True, "translation": _public_translation(cached)}
+
+        app_id = _admin_credential_value("guardian.baidu_translate_app_id")
+        secret_key = _admin_credential_value("guardian.baidu_translate_secret_key")
+        if not app_id or not secret_key:
+            raise ValueError("请先在凭据管理中配置 Baidu Translate App ID 和 Secret Key。")
+
+        client = BaiduTranslateClient(BaiduTranslateConfig(app_id=app_id, secret_key=secret_key))
+        translation = {
+            "provider": "baidu",
+            "engine": "machine",
+            "source_language": "en",
+            "target_language": target_language,
+            "content_hash": content_hash,
+            "translated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "title": client.translate(str(article.get("title") or ""), source="en", target=target_language),
+            "summary": client.translate(str(article.get("summary") or ""), source="en", target=target_language),
+            "content": client.translate(str(article.get("content") or article.get("summary") or ""), source="en", target=target_language),
+        }
+        repository.set_translation(str(article.get("article_id") or article_id), target_language, translation)
+        return {"cached": False, "translation": _public_translation(translation)}
+    finally:
+        repository.close()
+
+
+def _guardian_translation_hash(article: dict[str, Any]) -> str:
+    source = "\n".join(
+        [
+            str(article.get("title") or ""),
+            str(article.get("summary") or ""),
+            str(article.get("content") or ""),
+        ]
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _public_translation(translation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "provider": translation.get("provider") or "baidu",
+        "engine": translation.get("engine") or "machine",
+        "source_language": translation.get("source_language") or "en",
+        "target_language": translation.get("target_language") or "zh",
+        "translated_at": translation.get("translated_at") or "",
+        "title": translation.get("title") or "",
+        "summary": translation.get("summary") or "",
+        "content": translation.get("content") or "",
+    }
+
+
+def admin_runtime_alerts() -> list[dict[str, Any]]:
+    try:
+        return crawler_status_snapshot(limit=1, failure_limit=10).get("alerts") or []
+    except Exception:
+        return []
 
 
 class StockWebApp:
@@ -838,6 +1034,7 @@ class StockWebApp:
                             "authenticated": bool(session),
                             "user": session.get("username", "") if session else "",
                             "role": session.get("role", "") if session else "",
+                            "alerts": admin_runtime_alerts() if session and _is_admin_role(session.get("role")) else [],
                             **access,
                             "demo_remaining": self._demo_remaining(session) if session and session.get("role") == "demo" else None,
                         }
@@ -1085,6 +1282,11 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._handle_admin_news_refetch()
+                    return
+                if parsed.path == "/api/admin/news-library/translate":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_news_translate()
                     return
                 if parsed.path == "/api/admin/news-crawler/failure-action":
                     if not self._require_admin():
@@ -1483,6 +1685,20 @@ class StockWebApp:
                     self._json({"ok": True, **app.news_refetch_controller.start(payload)})
                 except (ValueError, RuntimeError) as exc:
                     self._json({"ok": False, "error": str(exc)}, status=400)
+
+            def _handle_admin_news_translate(self) -> None:
+                payload = self._read_json()
+                if not self._require_data_fetch_approval("/api/admin/news-library/translate", payload):
+                    return
+                try:
+                    article_id = str(payload.get("article_id") or "").strip()
+                    if not article_id:
+                        raise ValueError("缺少文章 ID。")
+                    self._json({"ok": True, **guardian_translation_payload(article_id)})
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+                except TranslationError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=502)
 
             def _handle_admin_news_crawler_failure_action(self) -> None:
                 payload = self._read_json()
@@ -2201,6 +2417,7 @@ class StockWebApp:
                         "ok": True,
                         "user": account["username"],
                         "role": account["role"],
+                        "alerts": admin_runtime_alerts() if _is_admin_role(account.get("role")) else [],
                         "demo_remaining": self._demo_remaining(session) if account["role"] == "demo" else None,
                     },
                     headers={"Set-Cookie": self._session_cookie(self._signed_token(token))},

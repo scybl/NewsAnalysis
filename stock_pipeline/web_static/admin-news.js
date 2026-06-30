@@ -31,6 +31,9 @@ const state = {
   total: 0,
   loadedFilters: false,
   items: [],
+  translations: {},
+  languageByArticle: {},
+  translating: {},
 };
 
 const stockState = {
@@ -112,6 +115,11 @@ function bindEvents() {
   });
   newsRefetchBtn?.addEventListener("click", () => runNewsRefetch());
   newsExportBtn?.addEventListener("click", () => exportCurrentPage());
+  newsList?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-news-translation-toggle]");
+    if (!button) return;
+    toggleNewsTranslation(button.dataset.newsTranslationToggle || "");
+  });
   newsResetBtn?.addEventListener("click", () => {
     newsSearchInput.value = "";
     newsPublisherSelect.value = "";
@@ -600,6 +608,19 @@ function renderList(items) {
 
 function renderItem(item) {
   const url = item.url ? `<a href="${escapeAttr(item.url)}" target="_blank" rel="noreferrer">原文</a>` : "";
+  const articleId = String(item.article_id || "");
+  const translation = articleId ? state.translations[articleId] : null;
+  const language = articleId ? state.languageByArticle[articleId] || "source" : "source";
+  const isChinese = language === "zh" && translation;
+  const isTranslating = Boolean(articleId && state.translating[articleId]);
+  const title = isChinese ? translation.title || item.title : item.title;
+  const summary = isChinese ? translation.summary || item.summary : item.excerpt || item.summary;
+  const content = isChinese ? translation.content || item.content : item.content;
+  const translationToggle =
+    item.publisher === "guardian" && articleId
+      ? `<button class="news-translation-toggle ${isChinese ? "is-active" : ""}" type="button" data-news-translation-toggle="${escapeAttr(articleId)}" ${isTranslating ? "disabled" : ""}>${escapeHtml(isTranslating ? "翻译中" : isChinese ? "中文" : "中文")}</button>`
+      : "";
+  const translationMeta = isChinese && translation.translated_at ? `<span>百度翻译 ${escapeHtml(translation.translated_at)}</span>` : "";
   return `
     <article class="news-item">
       <div class="news-item-meta">
@@ -607,15 +628,52 @@ function renderItem(item) {
         <span>${escapeHtml(item.type || "-")}</span>
         <span>${escapeHtml(item.time || "-")}</span>
         ${url}
+        ${translationToggle}
+        ${translationMeta}
       </div>
-      <h2>${escapeHtml(item.title || "无标题")}</h2>
-      <p>${escapeHtml(item.excerpt || item.summary || "暂无摘要")}</p>
+      <h2>${escapeHtml(title || "无标题")}</h2>
+      <p>${escapeHtml(summary || "暂无摘要")}</p>
       <details>
         <summary>展开正文</summary>
-        <p>${escapeHtml(item.content || "暂无正文")}</p>
+        <p>${escapeHtml(content || "暂无正文")}</p>
       </details>
     </article>
   `;
+}
+
+async function toggleNewsTranslation(articleId) {
+  if (!articleId || newsPageAdminReadonly) return;
+  const current = state.languageByArticle[articleId] || "source";
+  if (current === "zh") {
+    state.languageByArticle[articleId] = "source";
+    renderList(state.items);
+    return;
+  }
+  if (!state.translations[articleId]) {
+    const confirmed =
+      typeof approveDataFetch === "function"
+        ? approveDataFetch("调用百度翻译生成 Guardian 中文译文")
+        : window.confirm("调用百度翻译生成 Guardian 中文译文，确认执行？");
+    if (!confirmed) return;
+    state.translating[articleId] = true;
+    renderList(state.items);
+    try {
+      const response = await fetch("/api/admin/news-library/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved: true, article_id: articleId }),
+      });
+      const payload = await readNewsAdminPayload(response, "翻译失败");
+      state.translations[articleId] = payload.translation || {};
+    } catch (error) {
+      window.alert(`翻译失败：${error.message}`);
+      return;
+    } finally {
+      delete state.translating[articleId];
+    }
+  }
+  state.languageByArticle[articleId] = "zh";
+  renderList(state.items);
 }
 
 function newsPublisherLabel(value) {

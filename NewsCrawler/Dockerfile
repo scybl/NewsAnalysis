@@ -16,7 +16,7 @@ RUN sed -i \
         -e 's|http://deb.debian.org/debian-security|https://mirrors.aliyun.com/debian-security|g' \
         /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends tesseract-ocr tesseract-ocr-chi-sim \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends curl tesseract-ocr tesseract-ocr-chi-sim \
     && if [ "$NEWS_CRAWLER_INSTALL_BROWSER" = "1" ]; then \
         apt-get -o Acquire::Retries=5 install -y --no-install-recommends chromium chromium-driver fonts-liberation; \
     fi \

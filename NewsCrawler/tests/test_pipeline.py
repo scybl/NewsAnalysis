@@ -45,6 +45,7 @@ class MemoryRepository:
         self.documents = {}
         self.cancel = cancel
         self.health_updates = []
+        self.pauses = []
 
     def start(self, result):
         return None
@@ -57,6 +58,9 @@ class MemoryRepository:
 
     def update_health(self, source_name):
         self.health_updates.append(source_name)
+
+    def pause_source(self, source_name, reason, *, run_id="", issue_code=""):
+        self.pauses.append({"source_name": source_name, "reason": reason, "run_id": run_id, "issue_code": issue_code})
 
     def find_existing_by_keys(self, keys):
         return self.documents.get(keys.article_id)
@@ -232,6 +236,30 @@ def test_executor_fails_run_when_total_runtime_expires():
 def test_failure_reason_classification_is_specific():
     assert _issue_code(RuntimeError("404 Client Error: Not Found for url")) == "stale_link"
     assert _issue_code(ValueError("article title or content not found")) == "extraction_missing"
+
+
+def test_executor_auto_pauses_source_on_credential_expiry():
+    class CredentialExpired(RuntimeError):
+        pause_source = True
+        issue_code = "credential_expired"
+
+    class ExpiredProvider(FakeProvider):
+        name = "bloomberg"
+
+        def fetch(self, ref):
+            raise CredentialExpired("cookie expired")
+
+    repository = MemoryRepository()
+    result = TaskExecutor(repository, repository, DedupeService(), LoggingRunObserver(), retries=2).execute(
+        ExpiredProvider(), NewsCrawlRequest()
+    )
+
+    assert result.status == "failed"
+    assert result.failed == 1
+    assert result.errors[0].code == "credential_expired"
+    assert result.errors[0].retryable is False
+    assert repository.pauses[0]["source_name"] == "bloomberg"
+    assert repository.pauses[0]["reason"] == "cookie expired"
 
 
 def test_skipped_article_is_warning_without_partial_status():

@@ -14,12 +14,15 @@ const crawlerRunDetail = document.querySelector("#crawlerRunDetail");
 const crawlerRunDetailClose = document.querySelector("#crawlerRunDetailClose");
 
 const CRAWLER_FAILURE_RETRY_THRESHOLD = 3;
-const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico"];
+const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss"];
 const CRAWLER_SOURCE_CONFIG = {
   tonghuashun: { label: "同花顺", initial: "同" },
   guardian: { label: "Guardian", initial: "G" },
   bloomberg: { label: "Bloomberg", initial: "B", maintenance: true },
-  politico: { label: "Politico", initial: "P", maintenance: true },
+  politico: { label: "Politico Legacy", initial: "P" },
+  politico_browser: { label: "Politico Web", initial: "P" },
+  politico_rss: { label: "Politico RSS", initial: "R", maintenance: true },
+  politico_chrome: { label: "Politico Chrome", initial: "C", maintenance: true },
 };
 const crawlerState = { payload: null, timer: null, failureItems: new Map() };
 
@@ -33,6 +36,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   crawlerAutoRefresh?.addEventListener("change", syncAutoRefresh);
   crawlerRunDetailClose?.addEventListener("click", closeRunDetail);
+  showStoredRuntimeAlerts();
   syncAutoRefresh();
   loadCrawlerStatus();
 });
@@ -64,6 +68,7 @@ async function loadCrawlerStatus() {
 
 function renderCrawlerConsole(payload) {
   const runs = payload.runs || [];
+  renderCrawlerAlerts(payload.alerts || []);
 
   const health = payload.health || [];
   const healthWithPlaceholders = withCrawlerPlaceholders(health);
@@ -73,6 +78,36 @@ function renderCrawlerConsole(payload) {
     : `<div class="news-empty compact">尚无来源运行记录。NewsCrawler 完成首次采集后会显示。</div>`;
   renderFailureStats(payload.failure_stats || {});
   renderCrawlerRuns(runs);
+}
+
+function renderCrawlerAlerts(alerts) {
+  const existing = document.querySelector(".crawler-runtime-alerts");
+  existing?.remove();
+  if (!alerts.length) return;
+  const target = document.querySelector(".crawler-console");
+  if (!target) return;
+  const panel = document.createElement("section");
+  panel.className = "crawler-runtime-alerts";
+  panel.innerHTML = alerts.map((alert) => `
+    <article>
+      <strong>${escapeHtml(alert.title || "数据源告警")}</strong>
+      <p>${escapeHtml(alert.message || "")}</p>
+      <small>${escapeHtml([sourceLabel(alert.source_name), formatDateTime(alert.paused_at), alert.issue_code].filter(Boolean).join(" · "))}</small>
+    </article>
+  `).join("");
+  target.prepend(panel);
+}
+
+function showStoredRuntimeAlerts() {
+  let alerts = [];
+  try {
+    alerts = JSON.parse(sessionStorage.getItem("adminRuntimeAlerts") || "[]");
+    sessionStorage.removeItem("adminRuntimeAlerts");
+  } catch {
+    alerts = [];
+  }
+  if (!Array.isArray(alerts) || !alerts.length) return;
+  window.alert(alerts.map((item) => `${item.title || "数据源告警"}：${item.message || ""}`).join("\n\n"));
 }
 
 function renderCrawlerHealth(item) {
@@ -119,6 +154,12 @@ function withCrawlerPlaceholders(health) {
   }
   return items.map((item) => {
     const config = CRAWLER_SOURCE_CONFIG[item.source_name] || {};
+    if (item.status === "paused") {
+      return {
+        ...item,
+        latest_error: item.pause_reason || item.latest_error || "已自动暂停，请更新凭据后再恢复。",
+      };
+    }
     if (!config.maintenance) return item;
     return {
       ...item,
@@ -283,7 +324,7 @@ function renderCrawlerRuns(runs) {
   crawlerRunsTable.innerHTML = `
     <thead><tr>
       <th>来源</th><th>状态</th><th>开始时间</th><th>耗时</th>
-      <th>发现 / 获取</th><th>新增 / 更新</th><th>跳过 / 失败</th>
+      <th>发现</th><th>新的</th><th>入库</th><th>失败</th>
     </tr></thead>
     <tbody>${runs.map((item, index) => `
       <tr class="crawler-run-row" tabindex="0" data-run-index="${index}">
@@ -291,9 +332,10 @@ function renderCrawlerRuns(runs) {
         <td><span class="crawler-run-status is-${escapeAttr(item.status || "unknown")}">${escapeHtml(statusLabel(item.status))}</span></td>
         <td>${escapeHtml(formatDateTime(item.started_at))}</td>
         <td>${escapeHtml(runDuration(item))}</td>
-        <td>${escapeHtml(`${item.discovered || 0} / ${item.fetched || 0}`)}</td>
-        <td>${escapeHtml(`${item.inserted || 0} / ${item.updated || 0}`)}</td>
-        <td>${escapeHtml(`${item.skipped || 0} / ${item.failed || 0}`)}</td>
+        <td>${escapeHtml(item.discovered || 0)}</td>
+        <td>${escapeHtml(item.inserted || 0)}</td>
+        <td>${escapeHtml(storedCount(item))}</td>
+        <td>${escapeHtml(item.failed || 0)}</td>
       </tr>
     `).join("")}</tbody>
   `;
@@ -347,7 +389,7 @@ function sourceInitial(value) {
 }
 
 function healthLabel(status) {
-  return { online: "正常", warning: "有异常", offline: "不可用", maintenance: "暂停维护" }[status] || "未知";
+  return { online: "正常", warning: "有异常", offline: "不可用", maintenance: "暂停维护", paused: "自动暂停" }[status] || "未知";
 }
 
 function statusLabel(status) {
@@ -361,6 +403,7 @@ function issueLabel(code) {
     connection_closed: "主动断连",
     stale_link: "旧链接 / 404",
     blocked: "反爬拦截",
+    credential_expired: "凭据过期",
     timeout: "超时",
     parser_error: "解析失败",
     image_only: "图片正文",
@@ -383,6 +426,10 @@ function formatDateTime(value) {
 function runDuration(item) {
   if (!item.started_at || !item.finished_at) return item.status === "running" ? "进行中" : "-";
   return formatDuration((new Date(item.finished_at) - new Date(item.started_at)) / 1000);
+}
+
+function storedCount(item) {
+  return (Number(item.inserted) || 0) + (Number(item.updated) || 0);
 }
 
 function formatDuration(seconds) {

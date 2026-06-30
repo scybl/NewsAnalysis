@@ -22,7 +22,7 @@ from .providers.guardian import GuardianProvider
 from .providers.bloomberg import BloombergProvider
 from .providers.politico import DEFAULT_FEEDS as POLITICO_DEFAULT_FEEDS
 from .providers.politico import PoliticoProvider
-from .providers.politico_browser import PoliticoBrowserProvider
+from .providers.politico_browser import PoliticoBrowserProvider as PoliticoChromeProvider
 from .providers.tonghuashun import CATEGORIES, TonghuashunProvider
 from .registry import ProviderRegistry
 
@@ -38,7 +38,7 @@ def main() -> None:
     crawl.add_argument(
         "--source",
         default="all",
-        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico", "politico_browser"],
+        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico", "politico_rss", "politico_browser", "politico_chrome"],
     )
     crawl.add_argument("--latest", action="store_true", help="抓取最新新闻")
     crawl.add_argument("--since", default="", help="历史补采开始时间，ISO 8601")
@@ -65,7 +65,7 @@ def main() -> None:
     schedule.add_argument(
         "--source",
         default="all",
-        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico", "politico_browser"],
+        choices=["all", "tonghuashun", "guardian", "bloomberg", "politico", "politico_rss", "politico_browser", "politico_chrome"],
     )
     schedule.add_argument("--interval", type=int, default=1800)
     schedule.add_argument("--max-pages", type=int, default=10)
@@ -163,6 +163,9 @@ def _run_crawl(args, settings, *, fail_on_error: bool = True):
         repository.ensure_indexes()
     try:
         registry = _registry(settings, repository)
+        if args.source != "all" and args.source not in registry.names():
+            print(json.dumps([], ensure_ascii=False, indent=2))
+            return []
         executor = TaskExecutor(repository, repository, DedupeService(), LoggingRunObserver())
         sources = tuple(registry.names()) if args.source == "all" else (args.source,)
         categories = tuple(part.strip() for part in args.categories.split(",") if part.strip()) or None
@@ -198,14 +201,16 @@ def _run_crawl(args, settings, *, fail_on_error: bool = True):
 
 def _registry(settings, checkpoint_repository=None):
     registry = ProviderRegistry()
-    if "tonghuashun" not in settings.disabled_sources:
+    paused_sources = _paused_sources(checkpoint_repository)
+    disabled_sources = set(settings.disabled_sources) | paused_sources
+    if "tonghuashun" not in disabled_sources:
         registry.register("tonghuashun", TonghuashunProvider)
-    if settings.guardian_api_key and "guardian" not in settings.disabled_sources:
+    if settings.guardian_api_key and "guardian" not in disabled_sources:
         registry.register(
             "guardian",
             lambda: GuardianProvider(settings.guardian_api_key, settings.guardian_base_url),
         )
-    if "bloomberg" not in settings.disabled_sources:
+    if "bloomberg" not in disabled_sources:
         registry.register(
             "bloomberg",
             lambda: BloombergProvider(
@@ -215,26 +220,67 @@ def _registry(settings, checkpoint_repository=None):
                 api_url=settings.bloomberg_api_url,
                 proxy=settings.bloomberg_proxy,
                 use_api=settings.bloomberg_use_api,
+                cookies_json=settings.bloomberg_cookies_json,
+                require_login_cookie=settings.bloomberg_require_login_cookie,
             ),
         )
-    if "politico" not in settings.disabled_sources:
+    if "politico" not in disabled_sources:
         registry.register(
             "politico",
-            lambda: PoliticoProvider(_parse_politico_feed_urls(settings.politico_feed_urls)),
+            lambda: PoliticoProvider(
+                _parse_politico_feed_urls(settings.politico_feed_urls),
+                fetch_article_pages=settings.politico_fetch_article_pages,
+                discovery_mode="site",
+                news_url=settings.politico_news_url,
+                source_name="politico",
+            ),
         )
-    if "politico_browser" not in settings.disabled_sources:
+    if "politico_rss" not in disabled_sources:
+        registry.register(
+            "politico_rss",
+            lambda: PoliticoProvider(
+                _parse_politico_feed_urls(settings.politico_feed_urls),
+                fetch_article_pages=settings.politico_fetch_article_pages,
+                discovery_mode="rss",
+                news_url=settings.politico_news_url,
+                source_name="politico_rss",
+            ),
+        )
+    if "politico_browser" not in disabled_sources:
         registry.register(
             "politico_browser",
-            lambda: PoliticoBrowserProvider(
+            lambda: PoliticoProvider(
+                _parse_politico_feed_urls(settings.politico_feed_urls),
+                fetch_article_pages=True,
+                discovery_mode="site",
+                news_url=settings.politico_browser_news_url,
+                source_name="politico_browser",
+            ),
+        )
+    if "politico_chrome" not in disabled_sources:
+        registry.register(
+            "politico_chrome",
+            lambda: PoliticoChromeProvider(
                 settings.politico_browser_news_url,
                 headless=settings.politico_browser_headless,
                 wait_seconds=settings.politico_browser_wait_seconds,
                 profile_dir=settings.politico_browser_profile_dir,
                 proxy=settings.politico_browser_proxy,
                 cookies_json=settings.politico_browser_cookies_json,
+                source_name="politico_chrome",
             ),
         )
     return registry
+
+
+def _paused_sources(repository) -> set[str]:
+    if not repository or not hasattr(repository, "active_pauses"):
+        return set()
+    try:
+        return {str(item.get("source_name") or "") for item in repository.active_pauses() if item.get("source_name")}
+    except Exception:
+        logging.exception("failed to read source pause state")
+        return set()
 
 
 def _repository(settings, *, ensure_indexes: bool = True):
