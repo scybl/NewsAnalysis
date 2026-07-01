@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: newsanalysis-web
+    metrics_path: /metrics/news-crawler
+    static_configs:
+      - targets:
+          - web:8765

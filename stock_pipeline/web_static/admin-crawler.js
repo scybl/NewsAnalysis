@@ -27,8 +27,11 @@ const CRAWLER_SOURCE_CONFIG = {
   alpha_vantage_news: { label: "Alpha Vantage News", initial: "A", maintenance: true },
 };
 const crawlerState = { payload: null, timer: null, failureItems: new Map() };
+let crawlerReadOnly = false;
+const crawlerDataConsoleHrefs = new Set(["/admin-market.html", "/admin-news.html", "/admin-crawler.html"]);
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  if (!(await loadCrawlerSession())) return;
   crawlerRefreshBtn?.addEventListener("click", loadCrawlerStatus);
   crawlerRunLimit?.addEventListener("change", loadCrawlerStatus);
   crawlerRetryFailuresBtn?.addEventListener("click", () => retryFailureItems());
@@ -42,6 +45,46 @@ document.addEventListener("DOMContentLoaded", () => {
   syncAutoRefresh();
   loadCrawlerStatus();
 });
+
+async function loadCrawlerSession() {
+  try {
+    const response = await fetch("/api/session");
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false || !payload.authenticated) {
+      window.location.href = "/login";
+      return false;
+    }
+    const role = payload.role || "";
+    if (!["admin", "admin_readonly", "user"].includes(role)) {
+      window.location.href = "/";
+      return false;
+    }
+    crawlerReadOnly = role !== "admin";
+    applyCrawlerReadOnlyMode();
+    return true;
+  } catch {
+    window.location.href = "/login";
+    return false;
+  }
+}
+
+function applyCrawlerReadOnlyMode() {
+  if (!crawlerReadOnly) return;
+  document.querySelectorAll(".admin-nav a").forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    if (!crawlerDataConsoleHrefs.has(href)) link.remove();
+  });
+  if (!document.querySelector(".admin-data-viewer-banner")) {
+    const banner = document.createElement("div");
+    banner.className = "admin-readonly-banner admin-data-viewer-banner";
+    banner.textContent = "数据查看模式：可以查看新闻采集状态，但失败 item 重抓等手动操作已关闭。";
+    document.querySelector(".admin-workspace")?.prepend(banner);
+  }
+  if (crawlerRetryFailuresBtn) {
+    crawlerRetryFailuresBtn.disabled = true;
+    crawlerRetryFailuresBtn.hidden = true;
+  }
+}
 
 async function loadCrawlerStatus() {
   crawlerRefreshBtn.disabled = true;
@@ -274,13 +317,14 @@ function renderFailureItem(item) {
       <p>${escapeHtml(item.message || "")}</p>
       ${url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>` : `<em>无文章链接</em>`}
       <div class="crawler-failure-item-actions">
-        <button type="button" data-failure-action="retry" data-failure-id="${escapeAttr(item.id || "")}" ${canRetryFailureItem(item) ? "" : "disabled"}>重抓一次</button>
+        <button type="button" data-failure-action="retry" data-failure-id="${escapeAttr(item.id || "")}" ${canRetryFailureItem(item) ? "" : "disabled"} ${crawlerReadOnly ? "hidden" : ""}>重抓一次</button>
       </div>
     </article>
   `;
 }
 
 async function retryFailureItems(itemId = "") {
+  if (crawlerReadOnly) return;
   const items = itemId
     ? [crawlerState.failureItems.get(String(itemId))].filter(Boolean)
     : [...crawlerState.failureItems.values()].filter(canRetryFailureItem).slice(0, 20);
@@ -310,7 +354,7 @@ async function retryFailureItems(itemId = "") {
 }
 
 function canRetryFailureItem(item) {
-  return item && item.source_name === "tonghuashun" && ((item.sample_urls || []).length || item.article_url);
+  return !crawlerReadOnly && item && item.source_name === "tonghuashun" && ((item.sample_urls || []).length || item.article_url);
 }
 
 function setFailureRetryBusy(busy, text) {

@@ -54,6 +54,7 @@ const STOCK_PROVIDER_KEYS = new Set(["stock_data", "eastmoney", "akshare", "tush
 const STOCK_STANDARD_CATEGORIES = new Set(["个股"]);
 const hasNewsLibrary = Boolean(newsList);
 const hasStockLibrary = Boolean(stockDataTable);
+const newsDataConsolePage = document.body?.dataset.dataConsolePage === "true";
 
 let searchTimer = null;
 let stockSearchTimer = null;
@@ -80,11 +81,13 @@ async function loadAdminSession() {
       window.location.href = "/login";
       return;
     }
-    if (!["admin", "admin_readonly"].includes(payload.role)) {
+    const role = payload.role || "";
+    const canViewDataConsole = newsDataConsolePage && role === "user";
+    if (!["admin", "admin_readonly"].includes(role) && !canViewDataConsole) {
       window.location.href = "/";
       return;
     }
-    newsPageAdminReadonly = payload.role === "admin_readonly";
+    newsPageAdminReadonly = role !== "admin";
   } catch {
     window.location.href = "/login";
   }
@@ -95,7 +98,7 @@ function applyNewsAdminReadonlyMode() {
   if (!document.querySelector(".admin-readonly-banner")) {
     const banner = document.createElement("div");
     banner.className = "admin-readonly-banner";
-    banner.textContent = "只读展示模式：可以查看股票数据和新闻数据，但补抓操作已禁用。";
+    banner.textContent = "数据查看模式：可以查看股票数据和新闻数据，但补抓、翻译和刷新入库操作已禁用。";
     document.querySelector(".admin-workspace")?.prepend(banner);
   }
   [newsRefetchBtn].forEach((node) => {
@@ -496,6 +499,7 @@ async function loadNews() {
     state.pages = payload.pages || 1;
     state.total = payload.total || 0;
     state.items = payload.items || [];
+    preloadCachedTranslations(state.items);
     renderFilters(payload.filters || {});
     renderStats(payload.stats || {}, payload);
     renderDistribution(payload.stats || {});
@@ -509,6 +513,15 @@ async function loadNews() {
   } finally {
     if (newsRefreshBtn) newsRefreshBtn.disabled = false;
   }
+}
+
+function preloadCachedTranslations(items) {
+  (items || []).forEach((item) => {
+    const articleId = String(item.article_id || "");
+    if (articleId && item.translation && !state.translations[articleId]) {
+      state.translations[articleId] = item.translation;
+    }
+  });
 }
 
 function renderDistribution(stats) {
@@ -613,12 +626,13 @@ function renderItem(item) {
   const language = articleId ? state.languageByArticle[articleId] || "source" : "source";
   const isChinese = language === "zh" && translation;
   const isTranslating = Boolean(articleId && state.translating[articleId]);
+  const hasCachedTranslation = Boolean(translation);
   const title = isChinese ? translation.title || item.title : item.title;
   const summary = isChinese ? translation.summary || item.summary : item.excerpt || item.summary;
-  const content = isChinese ? translation.content || item.content : item.content;
+  const body = renderArticleBody(item, translation, isChinese);
   const translationToggle =
     item.publisher === "guardian" && articleId
-      ? `<button class="news-translation-toggle ${isChinese ? "is-active" : ""}" type="button" data-news-translation-toggle="${escapeAttr(articleId)}" ${isTranslating ? "disabled" : ""}>${escapeHtml(isTranslating ? "翻译中" : isChinese ? "中文" : "中文")}</button>`
+      ? `<button class="news-translation-toggle ${isChinese ? "is-active" : ""}" type="button" data-news-translation-toggle="${escapeAttr(articleId)}" ${isTranslating || newsPageAdminReadonly ? "disabled" : ""}>${escapeHtml(isTranslating ? "翻译中" : isChinese ? "对照" : hasCachedTranslation ? "已翻译" : "中文")}</button>`
       : "";
   const translationMeta = isChinese && translation.translated_at ? `<span>百度翻译 ${escapeHtml(translation.translated_at)}</span>` : "";
   return `
@@ -633,12 +647,56 @@ function renderItem(item) {
       </div>
       <h2>${escapeHtml(title || "无标题")}</h2>
       <p>${escapeHtml(summary || "暂无摘要")}</p>
-      <details>
-        <summary>展开正文</summary>
-        <p>${escapeHtml(content || "暂无正文")}</p>
-      </details>
+      ${body}
     </article>
   `;
+}
+
+function renderArticleBody(item, translation, isChinese) {
+  if (isChinese && translation) {
+    return `
+      <details class="news-compare-details" open>
+        <summary>段落对照</summary>
+        ${renderParagraphComparison(item.content || "", translation.content || "")}
+      </details>
+    `;
+  }
+  return `
+    <details>
+      <summary>展开正文</summary>
+      <p>${escapeHtml(item.content || "暂无正文")}</p>
+    </details>
+  `;
+}
+
+function renderParagraphComparison(sourceContent, translatedContent) {
+  const sourceParagraphs = splitArticleParagraphs(sourceContent);
+  const translatedParagraphs = splitArticleParagraphs(translatedContent);
+  const count = Math.max(sourceParagraphs.length, translatedParagraphs.length, 1);
+  const rows = Array.from({ length: count }, (_, index) => {
+    const source = sourceParagraphs[index] || "";
+    const translated = translatedParagraphs[index] || "";
+    return `
+      <div class="news-compare-row">
+        <div class="news-compare-cell is-source">
+          <span>原文 ${index + 1}</span>
+          <p>${escapeHtml(source || "-")}</p>
+        </div>
+        <div class="news-compare-cell is-translation">
+          <span>译文 ${index + 1}</span>
+          <p>${escapeHtml(translated || "-")}</p>
+        </div>
+      </div>
+    `;
+  }).join("");
+  return `<div class="news-compare-grid">${rows}</div>`;
+}
+
+function splitArticleParagraphs(value) {
+  return String(value || "")
+    .split(/\n{2,}/)
+    .map((part) => part.replace(/\s*\n\s*/g, " ").trim())
+    .filter(Boolean);
 }
 
 async function toggleNewsTranslation(articleId) {

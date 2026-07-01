@@ -31,6 +31,7 @@ def query_news_library(params: dict[str, list[str]]) -> dict[str, Any]:
 def _public_news_item(row: dict[str, Any]) -> dict[str, Any]:
     content = str(row.get("content") or "")
     summary = str(row.get("summary") or "")
+    translation = ((row.get("translations") or {}).get("zh") or {})
     return {
         "publisher": row.get("source_name", ""),
         "type": row.get("section", ""),
@@ -43,6 +44,21 @@ def _public_news_item(row: dict[str, Any]) -> dict[str, Any]:
         "content": _trim(content, 3200),
         "time": row.get("published_at", ""),
         "source": row.get("author", ""),
+        "translation": _public_translation(translation) if translation else None,
+    }
+
+
+def _public_translation(translation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "provider": translation.get("provider") or "baidu",
+        "engine": translation.get("engine") or "machine",
+        "source_language": translation.get("source_language") or "en",
+        "target_language": translation.get("target_language") or "zh",
+        "translated_at": translation.get("translated_at") or "",
+        "content_hash": translation.get("content_hash") or "",
+        "title": str(translation.get("title") or ""),
+        "summary": str(translation.get("summary") or ""),
+        "content": _trim(str(translation.get("content") or ""), 4200),
     }
 
 

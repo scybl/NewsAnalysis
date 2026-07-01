@@ -26,7 +26,7 @@ from .analysis_frameworks import get_analysis_framework, list_analysis_framework
 from .config import PROJECT_ROOT, get_settings
 from .akshare_client import AkshareClient
 from .composite_client import FallbackStockClient
-from .crawler_monitor import crawler_status_snapshot
+from .crawler_monitor import crawler_status_snapshot, news_crawler_prometheus_metrics
 from .crawler_failure_actions import retry_failure_group
 from .data_sources import configure_data_sources, data_source_snapshot, provider_available, provider_status
 from .deepseek_client import DeepSeekClient, DeepSeekError
@@ -120,6 +120,16 @@ AGENT_TOKEN_PREFIX = "na_agent_"
 AGENT_ALLOWED_SCOPES = {"R", "B"}
 ADMIN_ROLES = {"admin", "admin_readonly"}
 READONLY_ADMIN_ROLE = "admin_readonly"
+DATA_CONSOLE_ROLES = {*ADMIN_ROLES, "user"}
+DATA_CONSOLE_PAGES = {"/admin-market.html", "/admin-news.html", "/admin-crawler.html"}
+ADMIN_ONLY_PAGES = {
+    "/admin-accounts.html",
+    "/admin-audit.html",
+    "/admin-archives.html",
+    "/admin-credentials.html",
+    "/admin-distribution.html",
+    "/admin-agent.html",
+}
 CRAWLER_SECRET_DIR = PROJECT_ROOT / "local_data" / "secure" / "news_crawler"
 CREDENTIAL_PUBLIC_FIELDS = {
     "name",
@@ -318,6 +328,10 @@ def _secure_text_equal(left: object, right: object) -> bool:
 
 def _is_admin_role(role: object) -> bool:
     return str(role or "") in ADMIN_ROLES
+
+
+def _can_view_data_console(role: object) -> bool:
+    return str(role or "") in DATA_CONSOLE_ROLES
 
 
 def _is_readonly_admin_role(role: object) -> bool:
@@ -1043,12 +1057,21 @@ class StockWebApp:
                 if parsed.path == "/api/health":
                     self._json(app.health_snapshot())
                     return
+                if parsed.path == "/metrics/news-crawler":
+                    self._text(
+                        news_crawler_prometheus_metrics(),
+                        content_type="text/plain; version=0.0.4; charset=utf-8",
+                    )
+                    return
                 if not self._require_auth(parsed.path):
                     return
                 if parsed.path in ("/", "/index.html"):
                     self._redirect("/admin-crawler.html")
                     return
                 if parsed.path == "/admin.html":
+                    self._redirect("/admin-crawler.html")
+                    return
+                if parsed.path in ADMIN_ONLY_PAGES and not _is_admin_role((self._current_session() or {}).get("role")):
                     self._redirect("/admin-crawler.html")
                     return
                 if parsed.path == "/admin-kaipanla.html":
@@ -1086,22 +1109,22 @@ class StockWebApp:
                     self._json({"ok": True, **app.user_store.admin_archives(query.get("q", [""])[0])})
                     return
                 if parsed.path == "/api/admin/market-fetch/status":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, **app.market_fetch_controller.status()})
                     return
                 if parsed.path == "/api/admin/daily-market-scheduler":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, **app.daily_market_scheduler.status()})
                     return
                 if parsed.path == "/api/admin/idle-stock-prefetch":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, **app.idle_stock_prefetch_scheduler.status()})
                     return
                 if parsed.path == "/api/admin/market-fetch/logs":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     query = parse_qs(parsed.query)
                     lines = max(20, min(500, int(query.get("lines", ["120"])[0] or 120)))
@@ -1113,25 +1136,33 @@ class StockWebApp:
                     self._json({"ok": True, "items": app.task_registry.list_tasks()})
                     return
                 if parsed.path == "/api/admin/news-library":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, **query_news_library(parse_qs(parsed.query))})
                     return
                 if parsed.path == "/api/admin/news-library/refetch":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, **app.news_refetch_controller.status()})
                     return
                 if parsed.path == "/api/admin/news-crawler/status":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     query = parse_qs(parsed.query)
                     limit = max(1, min(50, int(query.get("limit", ["12"])[0] or 12)))
                     failure_limit = max(1, min(500, int(query.get("failure_limit", ["200"])[0] or 200)))
                     self._json({"ok": True, **crawler_status_snapshot(limit=limit, failure_limit=failure_limit)})
                     return
+                if parsed.path == "/api/admin/news-crawler/metrics":
+                    if not self._require_data_console():
+                        return
+                    self._text(
+                        news_crawler_prometheus_metrics(),
+                        content_type="text/plain; version=0.0.4; charset=utf-8",
+                    )
+                    return
                 if parsed.path == "/api/admin/data-sources":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, **data_source_snapshot(app.settings)})
                     return
@@ -1141,7 +1172,7 @@ class StockWebApp:
                     self._json({"ok": True, **admin_credentials_snapshot(app.user_store)})
                     return
                 if parsed.path == "/api/admin/kaipanla/features":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, "items": list_kaipanla_features()})
                     return
@@ -1151,31 +1182,31 @@ class StockWebApp:
                     self._json({"ok": True, **validate_kaipanla_integration()})
                     return
                 if parsed.path == "/api/admin/kaipanla/scheduler":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, **app.kaipanla_scheduler.status()})
                     return
                 if parsed.path == "/api/admin/kaipanla/records":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     query = parse_qs(parsed.query)
                     limit = max(1, min(500, int(query.get("limit", ["80"])[0] or 80)))
                     self._json({"ok": True, **list_kaipanla_records(limit=limit, feature=query.get("feature", [""])[0])})
                     return
                 if parsed.path == "/api/admin/kaipanla/daily-overview":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     query = parse_qs(parsed.query)
                     self._json({"ok": True, "overview": kaipanla_daily_overview(query.get("date", [""])[0])})
                     return
                 if parsed.path == "/api/admin/kaipanla/record":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     query = parse_qs(parsed.query)
                     self._json({"ok": True, "record": read_kaipanla_record(query.get("path", [""])[0])})
                     return
                 if parsed.path == "/api/admin/data-library":
-                    if not self._require_admin():
+                    if not self._require_data_console():
                         return
                     self._json({"ok": True, **list_local_stock_summaries()})
                     return
@@ -2277,6 +2308,16 @@ class StockWebApp:
                     return False
                 return True
 
+            def _require_data_console(self) -> bool:
+                session = self._current_session()
+                if not session:
+                    self._json({"ok": False, "error": "请先登录"}, status=401)
+                    return False
+                if not _can_view_data_console(session.get("role")):
+                    self._json({"ok": False, "error": "需要数据查看权限"}, status=403)
+                    return False
+                return True
+
             def _is_readonly_admin_session(self) -> bool:
                 session = self._current_session()
                 return bool(session and _is_readonly_admin_role(session.get("role")))
@@ -2539,6 +2580,14 @@ class StockWebApp:
                 self.send_header("Content-Length", str(len(body)))
                 for key, value in (headers or {}).items():
                     self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _text(self, text: str, status: int = 200, content_type: str = "text/plain; charset=utf-8") -> None:
+                body = text.encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
 

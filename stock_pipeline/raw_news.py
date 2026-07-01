@@ -99,6 +99,7 @@ class MongoRawNewsRepository:
             "published_at": 1,
             "section": 1,
             "author": 1,
+            "translations.zh": 1,
         }
         total = self.collection.count_documents(query)
         cursor = (

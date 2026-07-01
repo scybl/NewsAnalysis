@@ -26,6 +26,7 @@ const adminVipCodesTable = document.querySelector("#adminVipCodesTable");
 const adminDemoAccountsTable = document.querySelector("#adminDemoAccountsTable");
 const adminTasksTable = document.querySelector("#adminTasksTable");
 const adminAuditTable = document.querySelector("#adminAuditTable");
+const adminAuditPage = document.body?.dataset.adminAuditPage === "true";
 const adminUserCount = document.querySelector("#adminUserCount");
 const adminInviteCount = document.querySelector("#adminInviteCount");
 const adminVipCodeCount = document.querySelector("#adminVipCodeCount");
@@ -94,6 +95,9 @@ const kaipanlaOverviewSections = document.querySelector("#kaipanlaOverviewSectio
 let spiderPollTimer = null;
 let spiderStockSearchTimer = null;
 let adminReadonly = false;
+let adminDataViewer = false;
+const dataConsolePage = document.body?.dataset.dataConsolePage === "true";
+const dataConsoleHrefs = new Set(["/admin-market.html", "/admin-news.html", "/admin-crawler.html"]);
 const kaipanlaState = {
   features: [],
   scheduler: {},
@@ -423,11 +427,15 @@ async function initializeAdminPage() {
       window.location.href = "/login";
       return;
     }
-    if (!["admin", "admin_readonly"].includes(payload.role)) {
+    const role = payload.role || "";
+    const canViewDataConsole = dataConsolePage && role === "user";
+    if (!["admin", "admin_readonly"].includes(role) && !canViewDataConsole) {
       window.location.href = "/";
       return;
     }
-    adminReadonly = payload.role === "admin_readonly";
+    adminReadonly = role === "admin_readonly";
+    adminDataViewer = role === "user";
+    applyDataViewerMode();
     applyAdminReadonlyMode();
     if (adminSummary) await loadAdminOverview();
     if (spiderStatus) {
@@ -438,6 +446,7 @@ async function initializeAdminPage() {
     if (idlePrefetchStatus) await refreshIdlePrefetchScheduler();
     if (kaipanlaOverviewSections) await loadKaipanlaDailyOverview();
     if (kaipanlaMeta || kaipanlaStateText) await loadKaipanlaFeatures();
+    applyDataViewerMode();
     applyAdminReadonlyMode();
   } catch {
     window.location.href = "/login";
@@ -456,7 +465,9 @@ async function loadAdminOverview() {
     const invites = payload.invites || [];
     const vipCodes = payload.vip_codes || [];
     const demoAccounts = payload.demo_accounts || [];
-    adminSummary.textContent = `新测试账号默认额度：${demo.limit ?? "-"} 次 / ${formatDuration(demo.window_seconds || 0)}。`;
+    adminSummary.textContent = adminAuditPage
+      ? "最近 80 条后台权限操作、数据抓取批准和系统变更记录。"
+      : `新测试账号默认额度：${demo.limit ?? "-"} 次 / ${formatDuration(demo.window_seconds || 0)}。`;
     renderAdminUsers(payload.users || []);
     renderAdminInvites(invites);
     renderAdminVipCodes(vipCodes);
@@ -704,6 +715,48 @@ function applyAdminReadonlyMode() {
   if (adminSummary) adminSummary.textContent = "只读展示模式已启用。";
 }
 
+function applyDataViewerMode() {
+  if (!adminDataViewer) return;
+  document.querySelectorAll(".admin-nav a").forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    if (!dataConsoleHrefs.has(href)) link.remove();
+  });
+  if (!document.querySelector(".admin-data-viewer-banner")) {
+    const banner = document.createElement("div");
+    banner.className = "admin-readonly-banner admin-data-viewer-banner";
+    banner.textContent = "为保证抓取稳定，暂时冻结手动抓取功能。";
+    document.querySelector(".admin-workspace")?.prepend(banner);
+  }
+  [
+    startSpiderBtn,
+    stopSpiderBtn,
+    saveDailyMarketSchedulerBtn,
+    runDailyMarketNowBtn,
+    saveIdlePrefetchBtn,
+    runIdlePrefetchNowBtn,
+    kaipanlaValidateBtn,
+    kaipanlaSaveBtn,
+    kaipanlaRunBtn,
+  ].forEach((node) => {
+    if (!node) return;
+    node.disabled = true;
+    node.hidden = true;
+  });
+  [
+    dailyMarketEnabled,
+    dailyMarketTime,
+    idlePrefetchEnabled,
+    idlePrefetchSeconds,
+    kaipanlaEnabled,
+    kaipanlaTime,
+  ].forEach((node) => {
+    if (node) node.disabled = true;
+  });
+  document.querySelectorAll("[data-admin-operation-section]").forEach((node) => {
+    node.hidden = true;
+  });
+}
+
 async function resetDemoBudget(username) {
   if (!username) return;
   adminSummary.textContent = "正在重置测试账号额度...";
@@ -722,6 +775,10 @@ async function resetDemoBudget(username) {
 
 async function loadAdminTasks() {
   if (!adminTasksTable) return;
+  if (adminDataViewer) {
+    adminTasksTable.innerHTML = `<tbody><tr><td>普通账号不展示后台任务历史。</td></tr></tbody>`;
+    return;
+  }
   try {
     const response = await fetch("/api/admin/tasks");
     const payload = await readApiPayload(response, "读取后台任务失败");
@@ -813,6 +870,7 @@ async function refreshSpiderConsole() {
     await refreshDailyMarketScheduler();
     await refreshIdlePrefetchScheduler();
     await loadAdminTasks();
+    applyDataViewerMode();
   } catch (error) {
     spiderStatus.textContent = `爬虫状态读取失败：${error.message}`;
   }

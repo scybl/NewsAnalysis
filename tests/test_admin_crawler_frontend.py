@@ -60,12 +60,24 @@ def test_crawler_console_is_dedicated_and_read_only():
 def test_guardian_news_cards_can_request_machine_translation():
     script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
     styles = (STATIC / "styles.css").read_text(encoding="utf-8")
+    news_library = (STATIC.parents[1] / "stock_pipeline" / "news_library.py").read_text(encoding="utf-8")
+    raw_news = (STATIC.parents[1] / "stock_pipeline" / "raw_news.py").read_text(encoding="utf-8")
 
     assert "/api/admin/news-library/translate" in script
     assert "data-news-translation-toggle" in script
     assert "调用百度翻译生成 Guardian 中文译文" in script
     assert "state.translations" in script
+    assert "preloadCachedTranslations" in script
+    assert "hasCachedTranslation ? \"已翻译\"" in script
+    assert "renderParagraphComparison" in script
+    assert "splitArticleParagraphs" in script
+    assert "news-compare-row" in script
+    assert "段落对照" in script
     assert ".news-translation-toggle" in styles
+    assert ".news-compare-row" in styles
+    assert "overflow-wrap: anywhere" in styles
+    assert '"translations.zh": 1' in raw_news
+    assert '"translation": _public_translation(translation) if translation else None' in news_library
 
 
 def test_politico_browser_is_enabled_while_rss_and_bloomberg_stay_disabled():
@@ -79,6 +91,7 @@ def test_all_admin_pages_link_to_crawler_console():
     for path in STATIC.glob("admin-*.html"):
         html = path.read_text(encoding="utf-8")
         assert "/admin-crawler.html" in html, path.name
+        assert "/admin-audit.html" in html, path.name
 
 
 def test_admin_navigation_keeps_closed_entries_after_crawler_and_kaipanla_inside_data_sources():
@@ -92,6 +105,93 @@ def test_admin_navigation_keeps_closed_entries_after_crawler_and_kaipanla_inside
     stock_data = (STATIC / "admin-news.html").read_text(encoding="utf-8")
     assert "NEWS LIBRARY" not in stock_data
     assert "新闻资料库" not in stock_data
+
+
+def test_admin_audit_log_is_dedicated_page_not_account_card():
+    accounts = (STATIC / "admin-accounts.html").read_text(encoding="utf-8")
+    audit = (STATIC / "admin-audit.html").read_text(encoding="utf-8")
+    script = (STATIC / "admin.js").read_text(encoding="utf-8")
+    styles = (STATIC / "styles.css").read_text(encoding="utf-8")
+
+    assert "id=\"adminAuditTable\"" not in accounts
+    assert "<h4>审计日志</h4>" not in accounts
+    assert "data-admin-audit-page=\"true\"" in audit
+    assert "<title>审计日志 - NewsCrawler</title>" in audit
+    assert "class=\"active\" href=\"/admin-audit.html\"" in audit
+    assert "id=\"adminAuditTable\"" in audit
+    assert "后台操作记录" in audit
+    assert "adminAuditPage" in script
+    assert "最近 80 条后台权限操作" in script
+    assert ".audit-log-card .audit-table-wrap" in styles
+
+
+def test_regular_user_data_console_is_limited_and_read_only():
+    web = (STATIC.parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    admin_script = (STATIC / "admin.js").read_text(encoding="utf-8")
+    news_script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
+    crawler_script = (STATIC / "admin-crawler.js").read_text(encoding="utf-8")
+
+    for page in ("admin-market.html", "admin-news.html", "admin-crawler.html"):
+        assert 'data-data-console-page="true"' in (STATIC / page).read_text(encoding="utf-8")
+
+    market_html = (STATIC / "admin-market.html").read_text(encoding="utf-8")
+    stock_html = (STATIC / "admin-news.html").read_text(encoding="utf-8")
+    assert 'DATA_CONSOLE_PAGES = {"/admin-market.html", "/admin-news.html", "/admin-crawler.html"}' in web
+    assert 'DATA_CONSOLE_ROLES = {*ADMIN_ROLES, "user"}' in web
+    assert '"/admin-accounts.html"' in web
+    assert '"/admin-audit.html"' in web
+    assert "parsed.path in ADMIN_ONLY_PAGES" in web
+    assert "def _require_data_console" in web
+    assert 'parsed.path == "/metrics/news-crawler"' in web
+    assert 'parsed.path == "/api/admin/news-crawler/metrics"' in web
+    assert "news_crawler_prometheus_metrics" in web
+    assert 'dataConsoleHrefs = new Set(["/admin-market.html", "/admin-news.html", "/admin-crawler.html"])' in admin_script
+    assert 'role === "user"' in admin_script
+    assert "link.remove()" in admin_script
+    assert "if (!dataConsoleHrefs.has(href)) link.remove();" in admin_script
+    assert "if (!crawlerDataConsoleHrefs.has(href)) link.remove();" in crawler_script
+    assert "为保证抓取稳定，暂时冻结手动抓取功能。" in admin_script
+    assert "普通账号数据查看模式：只开放行情数据、股票数据和新闻数据" not in admin_script
+    assert "data-admin-operation-section" in market_html
+    assert stock_html.count("data-admin-operation-section") == 3
+    assert 'document.querySelectorAll("[data-admin-operation-section]")' in admin_script
+    for control in (
+        "startSpiderBtn",
+        "runDailyMarketNowBtn",
+        "runIdlePrefetchNowBtn",
+        "kaipanlaRunBtn",
+    ):
+        assert control in admin_script
+    assert "newsPageAdminReadonly = role !== \"admin\"" in news_script
+    assert "补抓、翻译和刷新入库操作已禁用" in news_script
+    assert "crawlerReadOnly = role !== \"admin\"" in crawler_script
+    assert "link.remove()" in crawler_script
+    assert "失败 item 重抓等手动操作已关闭" in crawler_script
+    assert "if (crawlerReadOnly) return;" in crawler_script
+
+
+def test_monitoring_compose_profile_and_grafana_dashboard_are_wired():
+    root = STATIC.parents[1]
+    compose = (root / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    prometheus = (root / "monitoring" / "prometheus.yml").read_text(encoding="utf-8")
+    datasource = (root / "monitoring" / "grafana" / "provisioning" / "datasources" / "prometheus.yml").read_text(encoding="utf-8")
+    dashboard_provider = (root / "monitoring" / "grafana" / "provisioning" / "dashboards" / "news-crawler.yml").read_text(encoding="utf-8")
+    dashboard = (root / "monitoring" / "grafana" / "dashboards" / "news-crawler.json").read_text(encoding="utf-8")
+
+    assert "prometheus:" in compose
+    assert "grafana:" in compose
+    assert 'profiles: ["monitoring"]' in compose
+    assert "prometheus_data:/prometheus" in compose
+    assert "grafana_data:/var/lib/grafana" in compose
+    assert "./local_data/prometheus:/prometheus" not in compose
+    assert "./local_data/grafana:/var/lib/grafana" not in compose
+    assert "web:8765" in prometheus
+    assert "metrics_path: /metrics/news-crawler" in prometheus
+    assert "uid: Prometheus" in datasource
+    assert "http://prometheus:9090" in datasource
+    assert "/var/lib/grafana/dashboards" in dashboard_provider
+    assert "NewsCrawler Monitor" in dashboard
+    assert "news_crawler_source_recent_success_rate" in dashboard
 
 
 def test_stock_home_no_longer_exposes_admin_console_entry():

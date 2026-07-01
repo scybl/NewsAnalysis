@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import hashlib
+import math
 import re
 from typing import Any
 
@@ -115,6 +116,133 @@ def crawler_status_snapshot(limit: int = 12, failure_limit: int = 200) -> dict[s
         }
     finally:
         client.close()
+
+
+def news_crawler_prometheus_metrics(snapshot: dict[str, Any] | None = None) -> str:
+    """Render NewsCrawler monitor state as Prometheus exposition text."""
+    payload = snapshot if snapshot is not None else crawler_status_snapshot(limit=25, failure_limit=300)
+    lines: list[str] = [
+        "# HELP news_crawler_up 1 if NewsAnalysis can read NewsCrawler monitor collections.",
+        "# TYPE news_crawler_up gauge",
+        f"news_crawler_up {1 if payload.get('enabled') else 0}",
+    ]
+    _append_gauge(lines, "news_crawler_sources", "Configured NewsCrawler sources by aggregate state.", {
+        "total": _number(payload.get("summary", {}).get("source_count")),
+        "online": _number(payload.get("summary", {}).get("online_count")),
+        "warning": _number(payload.get("summary", {}).get("warning_count")),
+        "offline": _number(payload.get("summary", {}).get("offline_count")),
+        "paused": _number(payload.get("summary", {}).get("paused_count")),
+        "running": _number(payload.get("summary", {}).get("running_count")),
+        "expired_running": _number(payload.get("summary", {}).get("expired_running_count")),
+    })
+
+    lines.extend([
+        "# HELP news_crawler_source_status Source health status as one-hot gauges.",
+        "# TYPE news_crawler_source_status gauge",
+    ])
+    for item in payload.get("health") or []:
+        source = str(item.get("source_name") or "unknown")
+        current = str(item.get("status") or "unknown")
+        for status in ("online", "warning", "offline", "paused", "maintenance", "unknown"):
+            lines.append(f'news_crawler_source_status{{source="{_label(source)}",status="{status}"}} {1 if current == status else 0}')
+
+    source_fields = {
+        "news_crawler_source_recent_success_rate": ("Recent source success rate from the health projection.", "recent_success_rate"),
+        "news_crawler_source_consecutive_failures": ("Consecutive failed runs by source.", "consecutive_failures"),
+        "news_crawler_source_last_inserted": ("Articles inserted by the latest projected successful run.", "last_inserted_count"),
+        "news_crawler_source_average_duration_seconds": ("Average crawler run duration by source.", "average_duration_seconds"),
+    }
+    for metric, (help_text, field) in source_fields.items():
+        lines.extend([f"# HELP {metric} {help_text}", f"# TYPE {metric} gauge"])
+        for item in payload.get("health") or []:
+            source = str(item.get("source_name") or "unknown")
+            lines.append(f'{metric}{{source="{_label(source)}"}} {_number(item.get(field))}')
+
+    timestamp_fields = {
+        "news_crawler_source_last_success_timestamp_seconds": ("Unix timestamp of the latest successful source run.", "last_success_at"),
+        "news_crawler_source_last_failure_timestamp_seconds": ("Unix timestamp of the latest failed source run.", "last_failure_at"),
+    }
+    for metric, (help_text, field) in timestamp_fields.items():
+        lines.extend([f"# HELP {metric} {help_text}", f"# TYPE {metric} gauge"])
+        for item in payload.get("health") or []:
+            source = str(item.get("source_name") or "unknown")
+            lines.append(f'{metric}{{source="{_label(source)}"}} {_timestamp_seconds(item.get(field))}')
+
+    run_counts: Counter[tuple[str, str]] = Counter()
+    discovered: Counter[str] = Counter()
+    inserted: Counter[str] = Counter()
+    updated: Counter[str] = Counter()
+    failed: Counter[str] = Counter()
+    for run in payload.get("runs") or []:
+        source = str(run.get("source_name") or "unknown")
+        status = str(run.get("status") or "unknown")
+        run_counts[(source, status)] += 1
+        discovered[source] += int(_number(run.get("discovered")))
+        inserted[source] += int(_number(run.get("inserted")))
+        updated[source] += int(_number(run.get("updated")))
+        failed[source] += int(_number(run.get("failed")))
+    lines.extend(["# HELP news_crawler_recent_runs Recent crawl runs exposed by source and status.", "# TYPE news_crawler_recent_runs gauge"])
+    for (source, status), count in sorted(run_counts.items()):
+        lines.append(f'news_crawler_recent_runs{{source="{_label(source)}",status="{_label(status)}"}} {count}')
+    for metric, help_text, values in (
+        ("news_crawler_recent_discovered_articles", "Recently discovered articles by source.", discovered),
+        ("news_crawler_recent_inserted_articles", "Recently inserted articles by source.", inserted),
+        ("news_crawler_recent_updated_articles", "Recently updated articles by source.", updated),
+        ("news_crawler_recent_failed_articles", "Recently failed articles by source.", failed),
+    ):
+        lines.extend([f"# HELP {metric} {help_text}", f"# TYPE {metric} gauge"])
+        for source, value in sorted(values.items()):
+            lines.append(f'{metric}{{source="{_label(source)}"}} {value}')
+
+    failure_stats = payload.get("failure_stats") or {}
+    lines.extend([
+        "# HELP news_crawler_recent_failure_articles Failure diagnostics from the recent scan window.",
+        "# TYPE news_crawler_recent_failure_articles gauge",
+        f'news_crawler_recent_failure_articles{{state="failed"}} {_number(failure_stats.get("failed_articles"))}',
+        f'news_crawler_recent_failure_articles{{state="warning"}} {_number(failure_stats.get("warning_articles"))}',
+        f'news_crawler_recent_failure_articles{{state="archived"}} {_number(failure_stats.get("archived_articles"))}',
+    ])
+    lines.extend(["# HELP news_crawler_recent_failure_codes Failure diagnostics by normalized issue code.", "# TYPE news_crawler_recent_failure_codes gauge"])
+    for code, count in sorted((failure_stats.get("codes") or {}).items()):
+        lines.append(f'news_crawler_recent_failure_codes{{code="{_label(code)}"}} {_number(count)}')
+    lines.extend(["# HELP news_crawler_recent_failure_codes_by_source Failure diagnostics by source and normalized issue code.", "# TYPE news_crawler_recent_failure_codes_by_source gauge"])
+    for source, codes in sorted((failure_stats.get("by_source") or {}).items()):
+        for code, count in sorted((codes or {}).items()):
+            lines.append(f'news_crawler_recent_failure_codes_by_source{{source="{_label(source)}",code="{_label(code)}"}} {_number(count)}')
+
+    return "\n".join(lines) + "\n"
+
+
+def _append_gauge(lines: list[str], metric: str, help_text: str, values: dict[str, float]) -> None:
+    lines.extend([f"# HELP {metric} {help_text}", f"# TYPE {metric} gauge"])
+    for state, value in values.items():
+        lines.append(f'{metric}{{state="{_label(state)}"}} {value}')
+
+
+def _number(value: Any) -> float:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    if math.isnan(number) or math.isinf(number):
+        return 0
+    return int(number) if number.is_integer() else number
+
+
+def _timestamp_seconds(value: Any) -> int:
+    if not value:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
+def _label(value: Any) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 def _expire_stale_runs(runs_collection, *, max_age_seconds: int = 300) -> int:
