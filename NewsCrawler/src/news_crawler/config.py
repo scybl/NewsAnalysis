@@ -59,7 +59,7 @@ def get_settings() -> Settings:
         max_runtime_seconds=max(0.0, float(os.getenv("NEWS_CRAWLER_MAX_RUNTIME_SECONDS", "300"))),
         disabled_sources=frozenset(
             item.strip()
-            for item in os.getenv("NEWS_CRAWLER_DISABLED_SOURCES", "bloomberg,politico_rss,politico_chrome").split(",")
+            for item in os.getenv("NEWS_CRAWLER_DISABLED_SOURCES", "bloomberg,politico_browser,politico_rss,politico_chrome").split(",")
             if item.strip()
         ),
     )

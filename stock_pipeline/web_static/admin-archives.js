@@ -4,10 +4,8 @@ const archiveSearchInput = document.querySelector("#archiveSearchInput");
 const archiveSearchBtn = document.querySelector("#archiveSearchBtn");
 const archiveSummary = document.querySelector("#archiveSummary");
 const archiveUsersTable = document.querySelector("#archiveUsersTable");
-const archiveDemoAccountsTable = document.querySelector("#archiveDemoAccountsTable");
 const archiveTotalCount = document.querySelector("#archiveTotalCount");
 const archiveUserCount = document.querySelector("#archiveUserCount");
-const archiveDemoCount = document.querySelector("#archiveDemoCount");
 const archiveQueryLabel = document.querySelector("#archiveQueryLabel");
 
 initializeTheme();
@@ -64,7 +62,6 @@ async function loadArchives() {
     const payload = await readApiPayload(response, "读取归档账号失败");
     renderCounts(payload.counts || {}, query);
     renderArchivedUsers(payload.users || []);
-    renderArchivedDemoAccounts(payload.demo_accounts || []);
     archiveSummary.textContent = `已读取 ${payload.counts?.total || 0} 个归档账号。归档只冻结登录，历史数据仍保留在服务器用户库中。`;
   } catch (error) {
     archiveSummary.textContent = `读取失败：${error.message}`;
@@ -74,7 +71,6 @@ async function loadArchives() {
 function renderCounts(counts, query) {
   archiveTotalCount.textContent = String(counts.total ?? 0);
   archiveUserCount.textContent = String(counts.users ?? 0);
-  archiveDemoCount.textContent = String(counts.demo_accounts ?? 0);
   archiveQueryLabel.textContent = query || "全部";
 }
 
@@ -95,25 +91,6 @@ function renderArchivedUsers(users) {
   archiveUsersTable.innerHTML = `
     <thead><tr><th>账号</th><th>原角色</th><th>归档时间</th><th>归档人</th><th>原因</th><th>API 用量</th><th>最近请求</th><th>Key 状态</th><th>创建时间</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="9">暂无归档注册用户</td></tr>`}</tbody>
-  `;
-}
-
-function renderArchivedDemoAccounts(accounts) {
-  const rows = accounts.map((account) => `
-    <tr>
-      <td><code>${escapeHtml(account.username || "")}</code></td>
-      <td>${escapeHtml(account.archived_at || "-")}</td>
-      <td>${escapeHtml(account.archived_by || "-")}</td>
-      <td>${escapeHtml(account.reason || "-")}</td>
-      <td>${escapeHtml(String(account.usage_total || 0))}</td>
-      <td>${escapeHtml(account.last_request_at || "-")}</td>
-      <td>${escapeHtml(account.created_by || "-")}</td>
-      <td>${escapeHtml(account.created_at || "-")}</td>
-    </tr>
-  `).join("");
-  archiveDemoAccountsTable.innerHTML = `
-    <thead><tr><th>账号</th><th>归档时间</th><th>归档人</th><th>原因</th><th>API 用量</th><th>最近请求</th><th>创建人</th><th>创建时间</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="8">暂无归档测试账号</td></tr>`}</tbody>
   `;
 }
 

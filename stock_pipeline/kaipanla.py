@@ -18,6 +18,12 @@ from .utils import timestamp
 DEFAULT_DATE = "2026-01-16"
 DEFAULT_DB = MARKET_DATABASE
 KAIPANLA_COLLECTION = MARKET_COLLECTIONS["kaipanla_results"]
+KAIPANLA_OVERVIEW_REPAIR_FEATURES = [
+    "consecutive_limit_up",
+    "market_limit_up_ladder",
+    "new_high_data",
+    "sharp_withdrawal",
+]
 
 
 @dataclass(frozen=True)
@@ -128,7 +134,14 @@ def list_kaipanla_features() -> list[dict[str, Any]]:
     return [asdict(feature) for feature in KAIPANLA_FEATURES.values()]
 
 
-def run_kaipanla_feature(key: str, params: dict[str, Any] | None = None, *, save: bool = False, run_id: str = "") -> dict[str, Any]:
+def run_kaipanla_feature(
+    key: str,
+    params: dict[str, Any] | None = None,
+    *,
+    save: bool = False,
+    run_id: str = "",
+    trade_date: str = "",
+) -> dict[str, Any]:
     if key not in KAIPANLA_FEATURES:
         raise ValueError(f"未知开盘啦功能：{key}")
     method_name = FEATURE_METHODS[key]
@@ -146,6 +159,9 @@ def run_kaipanla_feature(key: str, params: dict[str, Any] | None = None, *, save
         "run_date": started,
         "result": to_jsonable(result),
     }
+    normalized_trade_date = _normalize_date_text(trade_date)
+    if normalized_trade_date:
+        payload["trade_date"] = normalized_trade_date
     if save:
         payload["saved"] = save_kaipanla_result(key, payload, run_id=run_id)
     return payload
@@ -171,7 +187,7 @@ def run_kaipanla_batch(
             params = (params_by_feature or {}).get(key) or {}
             if normalized_trade_date:
                 params = _params_with_trade_date(key, params, normalized_trade_date)
-            result = run_kaipanla_feature(key, params, save=save, run_id=run_id)
+            result = run_kaipanla_feature(key, params, save=save, run_id=run_id, trade_date=normalized_trade_date)
             results.append({"feature": key, "ok": True, "saved": result.get("saved", {})})
             succeeded += 1
         except Exception as exc:  # noqa: BLE001 - batch should keep remaining features running
@@ -230,6 +246,7 @@ def save_kaipanla_record(record: dict[str, Any], *, database: str = DEFAULT_DB) 
         "storage": "mongodb",
         "synced_at": timestamp(),
     }
+    document["trade_date"] = _record_trade_date(document)
     with _kaipanla_collection(database) as collection:
         collection.update_one({"record_id": document["record_id"]}, {"$set": document}, upsert=True)
     return {"path": path, "saved_at": saved_at, "run_id": run_id, "storage": "mongodb"}
@@ -296,6 +313,95 @@ def kaipanla_daily_overview(target_date: str = "") -> dict[str, Any]:
         },
         "features": feature_cards,
         "data_dir": f"mongodb://{DEFAULT_DB}/{KAIPANLA_COLLECTION}",
+    }
+
+
+def repair_kaipanla_overview_history(target_date: str, *, dry_run: bool = False) -> dict[str, Any]:
+    normalized_date = _normalize_date_text(target_date)
+    if not normalized_date:
+        raise ValueError("请提供需要修复的交易日，例如 2026-06-30。")
+    display_date = _display_date(normalized_date)
+    params_by_feature = {
+        "consecutive_limit_up": {"date": display_date, "timeout": 20},
+        "market_limit_up_ladder": {"date": display_date, "timeout": 20},
+        "new_high_data": {"end_date": display_date, "timeout": 20},
+        "sharp_withdrawal": {"date": display_date},
+    }
+    live_payloads: dict[str, dict[str, Any]] = {}
+    for feature in KAIPANLA_OVERVIEW_REPAIR_FEATURES:
+        live_payloads[feature] = run_kaipanla_feature(feature, params_by_feature[feature], save=False)
+    live_records = {
+        feature: {
+            "feature": feature,
+            "label": KAIPANLA_FEATURES[feature].label,
+            "category": KAIPANLA_FEATURES[feature].category,
+            "saved_at": timestamp(),
+            "run_id": "live-repair-check",
+            "path": "",
+            "ok": bool(payload.get("ok")),
+            "params": payload.get("params", {}),
+            "payload": payload,
+        }
+        for feature, payload in live_payloads.items()
+    }
+    kpis = _overview_kpis(live_records)
+    kpi_values = {str(item.get("label")): item.get("value") for item in kpis}
+    valid = all(_to_number(kpi_values.get(label)) not in (None, 0) for label in ("最高连板", "百日新高", "大幅回撤"))
+    if not valid:
+        return {
+            "ok": False,
+            "date": normalized_date,
+            "display_date": display_date,
+            "dry_run": dry_run,
+            "saved": [],
+            "archived": 0,
+            "kpis": kpis,
+            "error": "实时重抓结果未通过有效性检查，已停止修复历史记录。",
+        }
+
+    existing_ids: list[str] = []
+    with _kaipanla_collection() as collection:
+        existing_records = _kaipanla_records_for_date(collection, normalized_date)
+        existing_ids = [
+            str(record.get("record_id") or "")
+            for record in existing_records
+            if record.get("feature") in KAIPANLA_OVERVIEW_REPAIR_FEATURES and record.get("record_id")
+        ]
+
+    if dry_run:
+        return {
+            "ok": True,
+            "date": normalized_date,
+            "display_date": display_date,
+            "dry_run": True,
+            "saved": [],
+            "archived": 0,
+            "would_archive": len(existing_ids),
+            "kpis": kpis,
+        }
+
+    run_id = f"kaipanla_overview_repair_{normalized_date}_{timestamp()}"
+    saved = [
+        save_kaipanla_result(feature, payload, run_id=run_id)
+        for feature, payload in live_payloads.items()
+    ]
+    archived = 0
+    if existing_ids:
+        with _kaipanla_collection() as collection:
+            result = collection.update_many(
+                {"record_id": {"$in": existing_ids}},
+                {"$set": {"archived": True, "archived_at": timestamp(), "archive_reason": f"superseded by {run_id}"}},
+            )
+            archived = int(getattr(result, "modified_count", 0) or 0)
+    return {
+        "ok": True,
+        "date": normalized_date,
+        "display_date": display_date,
+        "dry_run": False,
+        "run_id": run_id,
+        "saved": saved,
+        "archived": archived,
+        "kpis": kpis,
     }
 
 
@@ -394,6 +500,7 @@ def _kaipanla_records_for_date(collection: Any, normalized_date: str) -> list[di
         query = {
             "archived": {"$ne": True},
             "$or": [
+                {"trade_date": compact},
                 {"saved_at": {"$regex": f"^{compact}"}},
                 {"params.date": {"$in": [compact, dashed]}},
                 {"params.end_date": {"$in": [compact, dashed]}},
@@ -403,10 +510,12 @@ def _kaipanla_records_for_date(collection: Any, normalized_date: str) -> list[di
         query,
         {
             "_id": 0,
+            "record_id": 1,
             "feature": 1,
             "label": 1,
             "category": 1,
             "saved_at": 1,
+            "trade_date": 1,
             "run_id": 1,
             "path": 1,
             "ok": 1,
@@ -450,9 +559,118 @@ def _overview_kpis(records: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     ]
     items = []
     for label, keys in candidates:
-        value = next((found for payload in payloads if (found := _find_number(payload, keys)) is not None), None)
+        value = _overview_kpi_value(label, records, payloads, keys)
         items.append({"label": label, "value": value if value is not None else "-", "hint": "从最新开盘啦记录自动识别"})
     return items
+
+
+def _overview_kpi_value(label: str, records: dict[str, dict[str, Any]], payloads: list[Any], keys: list[str]) -> int | float | None:
+    if label == "涨停":
+        return _first_record_number(records, ["daily_data", "market_sentiment", "realtime_actual_limit_up_down"], ["涨停数", "涨停", "ZT", "limit_up_count", "actual_limit_up"])
+    if label == "跌停":
+        return _first_record_number(records, ["daily_data", "market_sentiment", "realtime_actual_limit_up_down"], ["跌停数", "跌停", "DT", "limit_down_count", "actual_limit_down"])
+    if label == "炸板":
+        direct = _first_record_number(records, ["daily_data", "market_sentiment"], ["炸板数", "炸板", "broken_limit_up", "open_board"])
+        if direct is not None:
+            return direct
+        payload = _record_result(records.get("historical_broken_limit_up"))
+        if payload is None:
+            return None
+        return _count_like_value(payload) or _result_count(payload, _result_rows(payload))
+    if label == "最高连板":
+        for payload in (
+            _record_result(records.get("consecutive_limit_up")),
+            _record_result(records.get("market_limit_up_ladder")),
+            _record_result(records.get("limit_up_ladder")),
+        ):
+            found = _find_number(payload, ["max_consecutive", "最高连板", "最高板", "height"])
+            if found not in (None, 0):
+                return found
+        return 0 if any(_record_result(records.get(key)) is not None for key in ("consecutive_limit_up", "market_limit_up_ladder", "limit_up_ladder")) else None
+    if label == "百日新高":
+        payload = _record_result(records.get("new_high_data"))
+        if payload is None:
+            return None
+        scalar = _to_number(payload)
+        if scalar is not None:
+            return scalar
+        series_value = _series_latest_number(payload)
+        if series_value is not None:
+            return series_value
+        found = _find_number(payload, ["new_high", "百日新高", "count", "total_count", "row_count"])
+        return found if found is not None else _result_count(payload, _result_rows(payload))
+    if label == "大幅回撤":
+        payload = _record_result(records.get("sharp_withdrawal")) or _record_result(records.get("realtime_sharp_withdrawal"))
+        if payload is None:
+            return None
+        count = _count_like_value(payload)
+        if count is not None:
+            return count
+        found = _find_number(payload, ["withdrawal_num", "sharp_withdrawal", "count", "total_count", "row_count", "总数"])
+        return found if found is not None else _result_count(payload, _result_rows(payload))
+    return next((found for payload in payloads if (found := _find_number(payload, keys)) is not None), None)
+
+
+def _first_record_number(records: dict[str, dict[str, Any]], features: list[str], keys: list[str]) -> int | float | None:
+    for feature in features:
+        found = _find_metric_number(_record_result(records.get(feature)), keys)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_metric_number(value: Any, keys: list[str]) -> int | float | None:
+    found = _find_number(value, keys)
+    if found is not None:
+        return found
+    for row in _result_rows(value):
+        metric = str(row.get("指标") or row.get("label") or row.get("name") or "")
+        if not metric:
+            continue
+        if any(key.lower() in metric.lower() for key in keys):
+            for value_key in ("值", "value", "count", "num"):
+                number = _to_number(row.get(value_key))
+                if number is not None:
+                    return number
+    return None
+
+
+def _record_result(record: dict[str, Any] | None) -> Any:
+    if not isinstance(record, dict):
+        return None
+    payload = record.get("payload")
+    return payload.get("result") if isinstance(payload, dict) else None
+
+
+def _series_latest_number(value: Any) -> int | float | None:
+    if not isinstance(value, dict) or value.get("type") != "series":
+        return None
+    values = value.get("values")
+    if not isinstance(values, list):
+        return None
+    for item in reversed(values):
+        number = _to_number(item)
+        if number is not None:
+            return number
+    return None
+
+
+def _count_like_value(value: Any) -> int | float | None:
+    if isinstance(value, dict):
+        for key in ("count", "total_count", "row_count", "num", "总数"):
+            number = _to_number(value.get(key))
+            if number is not None:
+                return number
+        rows = _result_rows(value)
+        if rows:
+            for key in ("总数", "count", "total_count", "row_count", "num"):
+                number = _to_number(rows[0].get(key))
+                if number is not None:
+                    return number
+            return len(rows)
+    if isinstance(value, list):
+        return len(value)
+    return _to_number(value)
 
 
 def _overview_section(records: dict[str, dict[str, Any]], features: list[str]) -> list[dict[str, Any]]:
@@ -640,6 +858,13 @@ def _to_number(value: Any) -> int | float | None:
 
 
 def _record_trade_date(record: dict[str, Any]) -> str:
+    trade_date = _normalize_date_text(record.get("trade_date"))
+    if trade_date:
+        return trade_date
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    trade_date = _normalize_date_text(payload.get("trade_date"))
+    if trade_date:
+        return trade_date
     params = record.get("params") if isinstance(record.get("params"), dict) else {}
     for key in ("date", "end_date", "trade_date"):
         value = _normalize_date_text(params.get(key))
@@ -650,6 +875,10 @@ def _record_trade_date(record: dict[str, Any]) -> str:
 
 
 def _record_matches_trade_date(record: dict[str, Any], compact_date: str) -> bool:
+    trade_date = _normalize_date_text(record.get("trade_date"))
+    if trade_date:
+        return trade_date == compact_date
+
     params = record.get("params") if isinstance(record.get("params"), dict) else {}
     exact_dates = [
         _normalize_date_text(params.get(key))
@@ -673,12 +902,14 @@ def _record_matches_trade_date(record: dict[str, Any], compact_date: str) -> boo
 def _params_with_trade_date(feature_key: str, params: dict[str, Any], trade_date: str) -> dict[str, Any]:
     feature = KAIPANLA_FEATURES[feature_key]
     merged = {**feature.default_params, **params}
-    for key in ("date", "end_date", "trade_date"):
+    for key in ("date", "start_date", "end_date", "trade_date"):
         if key not in merged:
             continue
         value = _normalize_date_text(merged.get(key))
-        if not value or value == _normalize_date_text(DEFAULT_DATE):
+        if key == "start_date" or not value or value == _normalize_date_text(DEFAULT_DATE):
             merged[key] = trade_date
+    if "num_days" in merged:
+        merged["num_days"] = 1
     return merged
 
 

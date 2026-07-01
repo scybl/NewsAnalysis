@@ -28,10 +28,6 @@
             <span class="admin-nav-icon">A</span>
             <span>账户管理</span>
           </a>
-          <a href="/admin-audit.html">
-            <span class="admin-nav-icon">L</span>
-            <span>审计日志</span>
-          </a>
           <a href="/admin-archives.html">
             <span class="admin-nav-icon">R</span>
             <span>归档账号</span>
@@ -51,6 +47,10 @@
           <a href="/admin-credentials.html">
             <span class="admin-nav-icon">K</span>
             <span>凭据管理</span>
+          </a>
+          <a href="/admin-audit.html">
+            <span class="admin-nav-icon">L</span>
+            <span>审计日志</span>
           </a>
           <a class="admin-nav-unavailable" aria-disabled="true" title="数据分发维护中，暂不可用">
             <span class="admin-nav-icon">D</span>
@@ -180,36 +180,34 @@
             </div>
           </section>
 
-          <section class="admin-section-block" data-admin-operation-section>
+          <section class="admin-section-block compact-prefetch-section" data-admin-operation-section>
             <div class="admin-section-heading">
               <div><span>PREFETCH</span><h2>空闲预抓</h2></div>
-              <p>在没有股票请求时，自动补齐还没有详情资料包的股票。</p>
+              <p>空闲时预热 1 只股票资料包。</p>
             </div>
           <section class="admin-card idle-prefetch-card">
             <div class="admin-card-head">
-              <h4>空闲预抓</h4>
+              <h4>自动预热资料包</h4>
               <span id="idlePrefetchStatus">未读取</span>
             </div>
-            <p class="card-note">当 30 分钟内没有股票请求时，自动挑选 1 只还没有本地详情资料包的股票，后台预抓能抓到的全量历史数据。</p>
-            <div class="spider-form">
-              <label class="field-wide check-row">
+            <div class="spider-form idle-prefetch-form">
+              <label class="idle-prefetch-toggle">
                 <input id="idlePrefetchEnabled" type="checkbox" />
-                <span>启用空闲自动预抓</span>
+                <span>启用自动预抓</span>
               </label>
-              <label>
-                <span>空闲秒数</span>
+              <label class="idle-prefetch-interval">
+                <span>空闲</span>
                 <input id="idlePrefetchSeconds" type="number" min="300" step="60" value="1800" />
+                <span>秒后触发</span>
               </label>
-              <div class="admin-actions field-wide">
-                <button id="saveIdlePrefetchBtn" type="button">保存预抓</button>
+              <div class="admin-actions">
+                <button id="saveIdlePrefetchBtn" type="button">保存</button>
                 <button id="runIdlePrefetchNowBtn" type="button">立即预抓一只</button>
               </div>
             </div>
             <div class="spider-state-grid idle-prefetch-state-grid">
-              <div><span>当前空闲</span><strong id="idlePrefetchIdle">-</strong></div>
               <div><span>距触发</span><strong id="idlePrefetchRemaining">-</strong></div>
               <div><span>最近请求</span><strong id="idlePrefetchLastRequest">-</strong></div>
-              <div><span>上次预抓</span><strong id="idlePrefetchLastRun">-</strong></div>
               <div><span>结果</span><strong id="idlePrefetchLastResult">-</strong></div>
             </div>
           </section>
@@ -223,10 +221,10 @@
             <div class="market-observability-grid">
           <section class="admin-card spider-log-card">
             <div class="admin-card-head">
-              <h4>运行日志</h4>
-              <span id="spiderLogFile">暂无日志文件</span>
+              <h4>任务详情</h4>
+              <span id="spiderLogFile">选择任务查看事件</span>
             </div>
-            <pre id="spiderLogs" class="spider-logs">暂无日志</pre>
+            <pre id="spiderLogs" class="spider-logs">选择右侧任务查看执行事件。</pre>
           </section>
           <section class="admin-card spider-task-history-card">
             <div class="admin-card-head">

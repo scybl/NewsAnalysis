@@ -25,8 +25,6 @@ const userTushareApiInput = document.querySelector("#userTushareApiInput");
 const userDeepSeekApiInput = document.querySelector("#userDeepSeekApiInput");
 const saveUserApiKeysBtn = document.querySelector("#saveUserApiKeysBtn");
 const deleteUserApiKeysBtn = document.querySelector("#deleteUserApiKeysBtn");
-const vipRedeemCodeInput = document.querySelector("#vipRedeemCodeInput");
-const redeemVipBtn = document.querySelector("#redeemVipBtn");
 const apiKeyStatus = document.querySelector("#apiKeyStatus");
 const metricLatestPrice = document.querySelector("#metricLatestPrice");
 const metricPe = document.querySelector("#metricPe");
@@ -206,7 +204,6 @@ logoutBtn.addEventListener("click", async () => {
 
 saveUserApiKeysBtn?.addEventListener("click", saveUserApiKeys);
 deleteUserApiKeysBtn?.addEventListener("click", deleteUserApiKeys);
-redeemVipBtn?.addEventListener("click", redeemVipCode);
 
 updateDataBtn.addEventListener("click", async () => {
   await syncSelectedData({ force: true });
@@ -567,21 +564,18 @@ function renderApiKeyPanel(session) {
   const isUser = role === "user";
   apiKeyPanel.hidden = !isUser;
   if (!isUser) return;
-  const isVip = Boolean(session.is_vip);
   const keys = session.api_keys || {};
-  if (accountTierText) accountTierText.textContent = isVip ? `VIP ${session.vip_until_text || ""}` : "普通用户";
+  if (accountTierText) accountTierText.textContent = "普通用户";
   for (const input of [userTushareApiInput, userDeepSeekApiInput]) {
     if (!input) continue;
-    input.disabled = isVip;
+    input.disabled = false;
     input.value = "";
-    input.placeholder = isVip ? "VIP 使用系统 API，无需填写" : "输入后加密保存";
+    input.placeholder = "输入后加密保存";
   }
-  if (saveUserApiKeysBtn) saveUserApiKeysBtn.disabled = isVip;
-  if (deleteUserApiKeysBtn) deleteUserApiKeysBtn.disabled = isVip && !keys.tushare?.configured && !keys.deepseek?.configured;
+  if (saveUserApiKeysBtn) saveUserApiKeysBtn.disabled = false;
+  if (deleteUserApiKeysBtn) deleteUserApiKeysBtn.disabled = !keys.tushare?.configured && !keys.deepseek?.configured;
   if (apiKeyStatus) {
-    apiKeyStatus.textContent = isVip
-      ? "VIP 权限生效中，分析使用系统 API。"
-      : `Tushare：${keys.tushare?.configured ? "已保存" : "未保存"}；DeepSeek：${keys.deepseek?.configured ? "已保存" : "未保存"}。`;
+    apiKeyStatus.textContent = `Tushare：${keys.tushare?.configured ? "已保存" : "未保存"}；DeepSeek：${keys.deepseek?.configured ? "已保存" : "未保存"}。`;
   }
 }
 
@@ -620,27 +614,6 @@ async function deleteUserApiKeys() {
     if (apiKeyStatus) apiKeyStatus.textContent = `删除失败：${error.message}`;
   } finally {
     deleteUserApiKeysBtn.disabled = false;
-  }
-}
-
-async function redeemVipCode() {
-  const code = vipRedeemCodeInput?.value.trim();
-  if (!code) return;
-  redeemVipBtn.disabled = true;
-  try {
-    const response = await fetch("/api/redeem-vip", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
-    });
-    const payload = await readApiPayload(response, "兑换 VIP 失败");
-    currentSession = { ...currentSession, ...payload };
-    if (vipRedeemCodeInput) vipRedeemCodeInput.value = "";
-    renderApiKeyPanel(currentSession);
-  } catch (error) {
-    if (apiKeyStatus) apiKeyStatus.textContent = `兑换失败：${error.message}`;
-  } finally {
-    redeemVipBtn.disabled = false;
   }
 }
 

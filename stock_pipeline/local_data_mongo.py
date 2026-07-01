@@ -121,6 +121,26 @@ def read_mongo_metadata(ts_code: str, database: str = DEFAULT_DB, prefix: str = 
     return metadata if isinstance(metadata, dict) else None
 
 
+def list_mongo_stock_metadata(database: str = DEFAULT_DB, prefix: str = DEFAULT_PREFIX) -> dict[str, dict[str, Any]]:
+    try:
+        with _client(database) as client:
+            cursor = client[database][collection_names(prefix)["metadata"]].find(
+                {},
+                {"_id": 0, "ts_code": 1, "metadata": 1},
+            )
+            items = {}
+            for doc in cursor:
+                metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+                try:
+                    code = normalize_ts_code(metadata.get("ts_code") or doc.get("ts_code") or "")
+                except ValueError:
+                    continue
+                items[code] = metadata
+            return items
+    except Exception:
+        return {}
+
+
 def save_stock_package_to_mongo(
     ts_code: str,
     full_data: dict[str, Any],

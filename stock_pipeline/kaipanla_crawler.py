@@ -660,7 +660,7 @@ class KaipanlaCrawler:
                                 stock_info = {
                                     "股票代码": stock_data[0],
                                     "股票名称": stock_data[1],
-                                    "连板天数": stock_data[9] if len(stock_data) > 9 else pid_type,
+                                    "连板天数": pid_type,
                                     "题材": stock_data[5] if len(stock_data) > 5 else "",
                                     "概念": stock_data[12] if len(stock_data) > 12 else ""
                                 }

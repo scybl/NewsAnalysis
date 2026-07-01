@@ -1,9 +1,6 @@
 const themeToggleBtn = document.querySelector("#themeToggleBtn");
 const logoutBtn = document.querySelector("#logoutBtn");
 const createInviteBtn = document.querySelector("#createInviteBtn");
-const createDemoAccountBtn = document.querySelector("#createDemoAccountBtn");
-const createVipCodeBtn = document.querySelector("#createVipCodeBtn");
-const vipCodeDaysInput = document.querySelector("#vipCodeDaysInput");
 const systemDeepSeekInput = document.querySelector("#systemDeepSeekInput");
 const saveSystemDeepSeekBtn = document.querySelector("#saveSystemDeepSeekBtn");
 const deleteSystemDeepSeekBtn = document.querySelector("#deleteSystemDeepSeekBtn");
@@ -22,8 +19,6 @@ const AGENT_GATEWAY_AVAILABLE = false;
 const adminSummary = document.querySelector("#adminSummary");
 const adminUsersTable = document.querySelector("#adminUsersTable");
 const adminInvitesTable = document.querySelector("#adminInvitesTable");
-const adminVipCodesTable = document.querySelector("#adminVipCodesTable");
-const adminDemoAccountsTable = document.querySelector("#adminDemoAccountsTable");
 const adminTasksTable = document.querySelector("#adminTasksTable");
 const adminAuditTable = document.querySelector("#adminAuditTable");
 const adminAuditPage = document.body?.dataset.adminAuditPage === "true";
@@ -31,6 +26,7 @@ const adminUserCount = document.querySelector("#adminUserCount");
 const adminInviteCount = document.querySelector("#adminInviteCount");
 const adminVipCodeCount = document.querySelector("#adminVipCodeCount");
 const adminDemoCount = document.querySelector("#adminDemoCount");
+const adminTaskCount = document.querySelector("#adminTaskCount");
 const spiderStatus = document.querySelector("#spiderStatus");
 const spiderStateText = document.querySelector("#spiderStateText");
 const spiderModeText = document.querySelector("#spiderModeText");
@@ -70,10 +66,8 @@ const idlePrefetchEnabled = document.querySelector("#idlePrefetchEnabled");
 const idlePrefetchSeconds = document.querySelector("#idlePrefetchSeconds");
 const saveIdlePrefetchBtn = document.querySelector("#saveIdlePrefetchBtn");
 const runIdlePrefetchNowBtn = document.querySelector("#runIdlePrefetchNowBtn");
-const idlePrefetchIdle = document.querySelector("#idlePrefetchIdle");
 const idlePrefetchRemaining = document.querySelector("#idlePrefetchRemaining");
 const idlePrefetchLastRequest = document.querySelector("#idlePrefetchLastRequest");
-const idlePrefetchLastRun = document.querySelector("#idlePrefetchLastRun");
 const idlePrefetchLastResult = document.querySelector("#idlePrefetchLastResult");
 const kaipanlaMeta = document.querySelector("#kaipanlaMeta");
 const kaipanlaValidateBtn = document.querySelector("#kaipanlaValidateBtn");
@@ -96,6 +90,8 @@ let spiderPollTimer = null;
 let spiderStockSearchTimer = null;
 let adminReadonly = false;
 let adminDataViewer = false;
+let adminTaskItems = [];
+let selectedAdminTaskId = "";
 const dataConsolePage = document.body?.dataset.dataConsolePage === "true";
 const dataConsoleHrefs = new Set(["/admin-market.html", "/admin-news.html", "/admin-crawler.html"]);
 const kaipanlaState = {
@@ -172,48 +168,6 @@ createInviteBtn?.addEventListener("click", async () => {
   }
 });
 
-createDemoAccountBtn?.addEventListener("click", async () => {
-  createDemoAccountBtn.disabled = true;
-  try {
-    const response = await fetch("/api/admin/demo-account", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ count: 1 }),
-    });
-    const payload = await readApiPayload(response, "生成测试账号失败");
-    const account = payload.items?.[0];
-    await loadAdminOverview();
-    if (account) {
-      adminSummary.textContent = `测试账号已生成：${account.username} / ${account.password}`;
-    }
-  } catch (error) {
-    adminSummary.textContent = `生成测试账号失败：${error.message}`;
-  } finally {
-    createDemoAccountBtn.disabled = false;
-  }
-});
-
-createVipCodeBtn?.addEventListener("click", async () => {
-  createVipCodeBtn.disabled = true;
-  try {
-    const response = await fetch("/api/admin/vip-code", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ count: 1, days: Number(vipCodeDaysInput?.value || 30) }),
-    });
-    const payload = await readApiPayload(response, "生成 VIP 兑换码失败");
-    const item = payload.items?.[0];
-    await loadAdminOverview();
-    if (item) {
-      adminSummary.textContent = `VIP 兑换码已生成：${item.code}，兑换后有效 ${item.vip_days} 天。`;
-    }
-  } catch (error) {
-    adminSummary.textContent = `生成 VIP 兑换码失败：${error.message}`;
-  } finally {
-    createVipCodeBtn.disabled = false;
-  }
-});
-
 saveSystemDeepSeekBtn?.addEventListener("click", async () => {
   const token = systemDeepSeekInput?.value.trim() || "";
   if (!token) {
@@ -239,7 +193,7 @@ saveSystemDeepSeekBtn?.addEventListener("click", async () => {
 });
 
 deleteSystemDeepSeekBtn?.addEventListener("click", async () => {
-  if (!window.confirm("确定移除系统 DeepSeek key？系统/VIP 分析会暂停使用全局模型额度。")) return;
+  if (!window.confirm("确定移除系统 DeepSeek key？依赖全局模型额度的分析会暂停。")) return;
   deleteSystemDeepSeekBtn.disabled = true;
   try {
     const response = await fetch("/api/admin/system-api-key", {
@@ -437,7 +391,7 @@ async function initializeAdminPage() {
     adminDataViewer = role === "user";
     applyDataViewerMode();
     applyAdminReadonlyMode();
-    if (adminSummary) await loadAdminOverview();
+    if (adminSummary || adminAuditTable || adminUsersTable) await loadAdminOverview();
     if (spiderStatus) {
       await refreshSpiderConsole();
       startSpiderPolling();
@@ -454,35 +408,31 @@ async function initializeAdminPage() {
 }
 
 async function loadAdminOverview() {
-  adminSummary.textContent = "正在读取账户和邀请码...";
+  if (adminSummary) adminSummary.textContent = adminAuditPage ? "正在读取审计日志..." : "正在读取账户和邀请码...";
   try {
     const response = await fetch("/api/admin/overview");
     const payload = await readApiPayload(response, "读取账户管理失败");
-    const demo = payload.demo || {};
     renderSystemApiKeys(payload.system_api_keys || {});
     renderAdminAgentTokens(payload.agent_tokens || []);
     renderAdminAgentAudit(payload.agent_audit_logs || []);
     const invites = payload.invites || [];
-    const vipCodes = payload.vip_codes || [];
-    const demoAccounts = payload.demo_accounts || [];
-    adminSummary.textContent = adminAuditPage
-      ? "最近 80 条后台权限操作、数据抓取批准和系统变更记录。"
-      : `新测试账号默认额度：${demo.limit ?? "-"} 次 / ${formatDuration(demo.window_seconds || 0)}。`;
+    if (adminSummary) {
+      adminSummary.textContent = adminAuditPage ? "" : "账户管理仅保留数据端用户与邀请码；分析端额度能力已迁出。";
+    }
     renderAdminUsers(payload.users || []);
     renderAdminInvites(invites);
-    renderAdminVipCodes(vipCodes);
-    renderAdminDemoAccounts(demoAccounts);
     renderAdminAudit(payload.audit_logs || []);
-    await loadAdminTasks();
+    const tasks = await loadAdminTasks();
     if (agentGatewayStatus) agentGatewayStatus.textContent = AGENT_GATEWAY_AVAILABLE ? "v1" : "调试中";
     if (agentTokenActiveCount) agentTokenActiveCount.textContent = AGENT_GATEWAY_AVAILABLE ? String((payload.agent_tokens || []).filter((item) => item.status === "active").length) : "-";
     if (agentAuditCount) agentAuditCount.textContent = AGENT_GATEWAY_AVAILABLE ? String((payload.agent_audit_logs || []).length) : "-";
     if (adminUserCount) adminUserCount.textContent = String((payload.users || []).length);
     if (adminInviteCount) adminInviteCount.textContent = String(invites.filter((item) => item.status === "active").length);
-    if (adminVipCodeCount) adminVipCodeCount.textContent = String(vipCodes.filter((item) => item.status === "active").length);
-    if (adminDemoCount) adminDemoCount.textContent = String(demoAccounts.length);
+    if (adminVipCodeCount) adminVipCodeCount.textContent = "-";
+    if (adminDemoCount) adminDemoCount.textContent = "-";
+    if (adminTaskCount) adminTaskCount.textContent = String(tasks?.length ?? 0);
   } catch (error) {
-    adminSummary.textContent = `读取失败：${error.message}`;
+    if (adminSummary) adminSummary.textContent = `读取失败：${error.message}`;
   }
 }
 
@@ -572,13 +522,10 @@ function renderAdminUsers(users) {
         <td>${escapeHtml(user.disabled_until_text || "-")}</td>
         <td>${escapeHtml(String(user.usage_total || 0))}</td>
         <td>${escapeHtml(user.last_request_at || "-")}</td>
-        <td>${escapeHtml(user.vip_until_text || "-")}</td>
         <td>${escapeHtml(apiKeySummary(user.api_keys || {}))}</td>
         <td>${escapeHtml(user.invite_code || "-")}</td>
         <td>
           <div class="table-actions">
-            <button type="button" data-user-action="grant_vip" data-username="${escapeHtml(user.username || "")}" ${protectedAttr}>发 VIP</button>
-            <button type="button" data-user-action="revoke_vip" data-username="${escapeHtml(user.username || "")}" ${protectedAttr}>撤 VIP</button>
             <button type="button" data-user-action="${user.disabled ? "enable" : "disable"}" data-username="${escapeHtml(user.username || "")}" ${protectedAttr}>${user.disabled ? "启用" : "禁用"}</button>
             <button type="button" data-user-action="archive" data-username="${escapeHtml(user.username || "")}" ${protectedAttr}>归档</button>
           </div>
@@ -587,8 +534,8 @@ function renderAdminUsers(users) {
     `;
   }).join("");
   adminUsersTable.innerHTML = `
-    <thead><tr><th>账号</th><th>角色</th><th>封禁至</th><th>API 用量</th><th>最近请求</th><th>VIP 到期</th><th>用户 Key</th><th>邀请码</th><th>操作</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="9">暂无注册用户</td></tr>`}</tbody>
+    <thead><tr><th>账号</th><th>角色</th><th>封禁至</th><th>API 用量</th><th>最近请求</th><th>用户 Key</th><th>邀请码</th><th>操作</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="8">暂无注册用户</td></tr>`}</tbody>
   `;
   adminUsersTable.querySelectorAll("[data-user-action]").forEach((button) => {
     button.addEventListener("click", () => runUserAction(button.dataset.username, button.dataset.userAction));
@@ -611,52 +558,6 @@ function renderAdminInvites(invites) {
   `;
 }
 
-function renderAdminVipCodes(items) {
-  if (!adminVipCodesTable) return;
-  const rows = items.map((item) => `
-    <tr>
-      <td><code>${escapeHtml(item.code || "")}</code></td>
-      <td>${inviteStatusLabel(item.status)}</td>
-      <td>${escapeHtml(`${item.vip_days || "-"} 天`)}</td>
-      <td>${escapeHtml(item.expires_at_text || "-")}</td>
-      <td>${escapeHtml(item.used_by || "-")}</td>
-    </tr>
-  `).join("");
-  adminVipCodesTable.innerHTML = `
-    <thead><tr><th>兑换码</th><th>状态</th><th>VIP 天数</th><th>过期时间</th><th>使用者</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="5">暂无 VIP 兑换码</td></tr>`}</tbody>
-  `;
-}
-
-function renderAdminDemoAccounts(accounts) {
-  if (!adminDemoAccountsTable) return;
-  const rows = accounts.map((account) => `
-    <tr>
-      <td><code>${escapeHtml(account.username || "")}</code></td>
-      <td>${escapeHtml(`${account.remaining ?? "-"} / ${account.limit ?? "-"}`)}</td>
-      <td>${escapeHtml(formatDuration(account.window_seconds || 0))}</td>
-      <td>${escapeHtml(formatDuration(account.resets_in_seconds || 0))}</td>
-      <td>${escapeHtml(account.created_at || "-")}</td>
-      <td>
-        <div class="table-actions">
-          <button type="button" data-demo-reset="${escapeHtml(account.username || "")}">重置额度</button>
-          <button type="button" data-user-action="archive" data-username="${escapeHtml(account.username || "")}">归档</button>
-        </div>
-      </td>
-    </tr>
-  `).join("");
-  adminDemoAccountsTable.innerHTML = `
-    <thead><tr><th>账号</th><th>剩余额度</th><th>刷新周期</th><th>下次刷新</th><th>创建时间</th><th>操作</th></tr></thead>
-    <tbody>${rows || `<tr><td colspan="6">暂无测试账号</td></tr>`}</tbody>
-  `;
-  adminDemoAccountsTable.querySelectorAll("[data-demo-reset]").forEach((button) => {
-    button.addEventListener("click", () => resetDemoBudget(button.dataset.demoReset));
-  });
-  adminDemoAccountsTable.querySelectorAll("[data-user-action]").forEach((button) => {
-    button.addEventListener("click", () => runUserAction(button.dataset.username, button.dataset.userAction));
-  });
-}
-
 async function runUserAction(username, action) {
   if (!username || !action) return;
   if (adminReadonly) {
@@ -664,11 +565,6 @@ async function runUserAction(username, action) {
     return;
   }
   const payload = { username, action };
-  if (action === "grant_vip") {
-    const rawDays = window.prompt("发放 VIP 天数", "30");
-    if (!rawDays) return;
-    payload.days = Number(rawDays);
-  }
   if (action === "disable") {
     const rawDays = window.prompt("封禁天数（到期后自动解锁）", "30");
     if (rawDays === null) return;
@@ -757,46 +653,40 @@ function applyDataViewerMode() {
   });
 }
 
-async function resetDemoBudget(username) {
-  if (!username) return;
-  adminSummary.textContent = "正在重置测试账号额度...";
-  try {
-    const response = await fetch("/api/admin/demo-reset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username }),
-    });
-    await readApiPayload(response, "重置测试账号额度失败");
-    await loadAdminOverview();
-  } catch (error) {
-    adminSummary.textContent = `重置测试账号额度失败：${error.message}`;
-  }
-}
-
 async function loadAdminTasks() {
   if (!adminTasksTable) return;
   if (adminDataViewer) {
     adminTasksTable.innerHTML = `<tbody><tr><td>普通账号不展示后台任务历史。</td></tr></tbody>`;
-    return;
+    return [];
   }
   try {
     const response = await fetch("/api/admin/tasks");
     const payload = await readApiPayload(response, "读取后台任务失败");
-    renderAdminTasks(payload.items || []);
+    const items = payload.items || [];
+    renderAdminTasks(items);
+    return items;
   } catch (error) {
     adminTasksTable.innerHTML = `<tbody><tr><td>任务读取失败：${escapeHtml(error.message)}</td></tr></tbody>`;
+    return [];
   }
 }
 
 function renderAdminTasks(tasks) {
-  const rows = tasks.map((task) => `
-      <tr>
+  adminTaskItems = Array.isArray(tasks) ? tasks : [];
+  if (selectedAdminTaskId && !adminTaskItems.some((task) => task.task_id === selectedAdminTaskId)) {
+    selectedAdminTaskId = "";
+  }
+  if (!selectedAdminTaskId && adminTaskItems.length) {
+    selectedAdminTaskId = adminTaskItems[0].task_id || "";
+  }
+  const rows = adminTaskItems.map((task) => `
+      <tr class="${task.task_id === selectedAdminTaskId ? "selected" : ""}" data-admin-task-id="${escapeAttr(task.task_id || "")}">
         <td>${escapeHtml(taskKindLabel(task.kind))}</td>
         <td>${escapeHtml(taskTriggerLabel(task.metadata?.trigger))}</td>
         <td>${escapeHtml(task.title || "")}</td>
         <td>${taskStatusLabel(task.status)}</td>
-        <td>${escapeHtml(task.created_at || "-")}</td>
-        <td>${escapeHtml(task.finished_at || "-")}</td>
+        <td>${escapeHtml(formatCompactTimestamp(task.created_at || "-"))}</td>
+        <td>${escapeHtml(formatCompactTimestamp(task.finished_at || "-"))}</td>
         <td>${escapeHtml(taskSummary(task))}</td>
       </tr>
     `).join("");
@@ -804,11 +694,19 @@ function renderAdminTasks(tasks) {
     <thead><tr><th>类型</th><th>触发</th><th>任务</th><th>状态</th><th>开始</th><th>完成</th><th>摘要</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7">暂无后台任务</td></tr>`}</tbody>
   `;
+  adminTasksTable.querySelectorAll("[data-admin-task-id]").forEach((row) => {
+    row.addEventListener("click", () => {
+      selectedAdminTaskId = row.dataset.adminTaskId || "";
+      renderAdminTasks(adminTaskItems);
+    });
+  });
+  renderSelectedAdminTaskDetail();
 }
 
 function taskKindLabel(kind) {
   return ({
     daily_market: "股票数据",
+    idle_stock_prefetch: "空闲预抓",
     kaipanla: "行情数据",
     spider: "行情数据",
     multi_agent: "多 Agent",
@@ -834,6 +732,70 @@ function taskSummary(task) {
   if (result.rating_hint) return result.rating_hint;
   const events = Array.isArray(task.events) ? task.events : [];
   return events.at(-1)?.message || "-";
+}
+
+function renderSelectedAdminTaskDetail() {
+  if (!spiderLogs || !spiderLogFile) return;
+  const task = adminTaskItems.find((item) => item.task_id === selectedAdminTaskId);
+  if (!task) {
+    spiderLogFile.textContent = "暂无任务事件";
+    spiderLogs.textContent = "选择右侧任务查看执行事件。";
+    return;
+  }
+  spiderLogFile.textContent = `${taskKindLabel(task.kind)} · ${taskStatusLabel(task.status)}`;
+  spiderLogs.textContent = formatTaskDetail(task);
+}
+
+function formatTaskDetail(task) {
+  const events = Array.isArray(task.events) ? task.events : [];
+  const lines = [
+    `${task.title || taskKindLabel(task.kind)} · ${taskStatusLabel(task.status)}`,
+    `触发：${taskTriggerLabel(task.metadata?.trigger)} · 开始：${formatCompactTimestamp(task.created_at || "-")} · 完成：${formatCompactTimestamp(task.finished_at || "-")}`,
+  ];
+  const summary = taskSummary(task);
+  if (summary && summary !== "-") lines.push(`摘要：${summary}`);
+  if (task.error) lines.push(`错误：${task.error}`);
+  lines.push("");
+  lines.push("事件：");
+  if (!events.length) {
+    lines.push("暂无事件");
+    return lines.join("\n");
+  }
+  events.forEach((event) => {
+    lines.push(`${formatCompactTimestamp(event.time || "-")} · ${taskEventStageLabel(event.stage)} · ${event.message || "-"}`);
+    const details = formatTaskEventDetails(event.details);
+    if (details) lines.push(`  ${details}`);
+  });
+  return lines.join("\n");
+}
+
+function taskEventStageLabel(stage) {
+  return ({
+    queued: "已创建",
+    running: "运行中",
+    warning: "警告",
+    succeeded: "成功",
+    failed: "失败",
+    stopped: "已停止",
+    stopping: "停止中",
+    cache: "缓存",
+  })[stage] || stage || "进度";
+}
+
+function formatTaskEventDetails(details) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return "";
+  const entries = Object.entries(details).filter(([, value]) => value !== "" && value !== null && value !== undefined);
+  if (!entries.length) return "";
+  return entries
+    .slice(0, 8)
+    .map(([key, value]) => `${key}: ${formatTaskEventValue(value)}`)
+    .join(" · ");
+}
+
+function formatTaskEventValue(value) {
+  if (Array.isArray(value)) return value.join("、");
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 function renderAdminAudit(logs) {
@@ -865,8 +827,10 @@ async function refreshSpiderConsole() {
     const logsSource = getSelectedSpiderSource();
     const logsResponse = await fetch(`/api/admin/market-fetch/logs?lines=160&source=${encodeURIComponent(logsSource)}`);
     const logsPayload = await readApiPayload(logsResponse, "读取爬虫日志失败");
-    spiderLogs.textContent = logsPayload.content || statusPayload.spider?.error || "暂无日志";
-    if (spiderLogFile) spiderLogFile.textContent = logsPayload.log_file ? basename(logsPayload.log_file) : "暂无日志文件";
+    if (!selectedAdminTaskId) {
+      spiderLogs.textContent = logsPayload.content || statusPayload.spider?.error || "暂无日志";
+      if (spiderLogFile) spiderLogFile.textContent = logsPayload.log_file ? basename(logsPayload.log_file) : "暂无日志文件";
+    }
     await refreshDailyMarketScheduler();
     await refreshIdlePrefetchScheduler();
     await loadAdminTasks();
@@ -927,14 +891,12 @@ function renderIdlePrefetchScheduler(scheduler) {
     : scheduler.enabled
       ? `已启用 · 空闲 ${formatDuration(scheduler.idle_seconds || 1800)}`
       : "未启用";
-  if (idlePrefetchIdle) idlePrefetchIdle.textContent = formatDuration(scheduler.current_idle_seconds || 0);
   if (idlePrefetchRemaining) idlePrefetchRemaining.textContent = scheduler.remaining_seconds ? formatDuration(scheduler.remaining_seconds) : "可触发";
   if (idlePrefetchLastRequest) {
     const code = scheduler.last_request_code ? ` · ${scheduler.last_request_code}` : "";
-    idlePrefetchLastRequest.textContent = scheduler.last_request_at ? `${scheduler.last_request_at}${code}` : "-";
+    idlePrefetchLastRequest.textContent = scheduler.last_request_at ? `${formatCompactTimestamp(scheduler.last_request_at)}${code}` : "-";
   }
   const last = scheduler.last_result || {};
-  if (idlePrefetchLastRun) idlePrefetchLastRun.textContent = scheduler.last_run_at || "-";
   if (idlePrefetchLastResult) {
     idlePrefetchLastResult.textContent = last.ts_code
       ? `${last.ts_code}${last.name ? ` ${last.name}` : ""} · 全量历史`
@@ -1454,13 +1416,13 @@ function taskStatusLabel(status) {
 
 function auditActionLabel(action) {
   return ({
-    grant_vip: "发放 VIP",
-    revoke_vip: "撤销 VIP",
+    grant_vip: "发放分析授权",
+    revoke_vip: "撤销分析授权",
     disable_user: "禁用用户",
     enable_user: "启用用户",
     archive_user: "归档用户",
-    archive_demo_account: "归档测试账号",
-    reset_demo_budget: "重置测试额度",
+    archive_demo_account: "归档临时账号",
+    reset_demo_budget: "重置临时额度",
   })[action] || action || "-";
 }
 
@@ -1469,6 +1431,13 @@ function formatDuration(seconds) {
   if (seconds % 86400 === 0) return `${seconds / 86400} 天`;
   if (seconds % 3600 === 0) return `${seconds / 3600} 小时`;
   return `${seconds} 秒`;
+}
+
+function formatCompactTimestamp(value) {
+  const match = String(value || "").match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
+  if (!match) return value || "-";
+  const [, , month, day, hour, minute] = match;
+  return `${Number(month)}月${Number(day)}日 ${hour}:${minute}`;
 }
 
 function apiKeySummary(keys) {

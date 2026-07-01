@@ -8,10 +8,6 @@ const crawlerRefreshBtn = document.querySelector("#crawlerRefreshBtn");
 const crawlerAutoRefresh = document.querySelector("#crawlerAutoRefresh");
 const crawlerRunLimit = document.querySelector("#crawlerRunLimit");
 const crawlerRetryFailuresBtn = document.querySelector("#crawlerRetryFailuresBtn");
-const crawlerRunDetailCard = document.querySelector("#crawlerRunDetailCard");
-const crawlerRunDetailMeta = document.querySelector("#crawlerRunDetailMeta");
-const crawlerRunDetail = document.querySelector("#crawlerRunDetail");
-const crawlerRunDetailClose = document.querySelector("#crawlerRunDetailClose");
 
 const CRAWLER_FAILURE_RETRY_THRESHOLD = 3;
 const CRAWLER_EXPECTED_SOURCES = ["tonghuashun", "guardian", "bloomberg", "politico_browser", "politico_rss", "gdelt", "alpha_vantage_news"];
@@ -20,7 +16,7 @@ const CRAWLER_SOURCE_CONFIG = {
   tonghuashun: { label: "同花顺", initial: "同" },
   guardian: { label: "Guardian", initial: "G" },
   bloomberg: { label: "Bloomberg", initial: "B", maintenance: true },
-  politico_browser: { label: "Politico Web", initial: "P" },
+  politico_browser: { label: "Politico Web", initial: "P", maintenance: true },
   politico_rss: { label: "Politico RSS", initial: "R", maintenance: true },
   politico_chrome: { label: "Politico Chrome", initial: "C", maintenance: true },
   gdelt: { label: "GDELT", initial: "G", maintenance: true },
@@ -40,7 +36,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (button) retryFailureItems(button.dataset.failureId);
   });
   crawlerAutoRefresh?.addEventListener("change", syncAutoRefresh);
-  crawlerRunDetailClose?.addEventListener("click", closeRunDetail);
   showStoredRuntimeAlerts();
   syncAutoRefresh();
   loadCrawlerStatus();
@@ -375,8 +370,8 @@ function renderCrawlerRuns(runs) {
       <th>来源</th><th>状态</th><th>开始时间</th><th>耗时</th>
       <th>发现</th><th>新的</th><th>入库</th><th>失败</th>
     </tr></thead>
-    <tbody>${runs.map((item, index) => `
-      <tr class="crawler-run-row" tabindex="0" data-run-index="${index}">
+    <tbody>${runs.map((item) => `
+      <tr class="crawler-run-row">
         <td><strong>${escapeHtml(sourceLabel(item.source_name))}</strong><small>${escapeHtml(shortRunId(item.run_id))}</small></td>
         <td><span class="crawler-run-status is-${escapeAttr(item.status || "unknown")}">${escapeHtml(statusLabel(item.status))}</span></td>
         <td>${escapeHtml(formatDateTime(item.started_at))}</td>
@@ -388,40 +383,6 @@ function renderCrawlerRuns(runs) {
       </tr>
     `).join("")}</tbody>
   `;
-  crawlerRunsTable.querySelectorAll(".crawler-run-row").forEach((row) => {
-    const open = () => showRunDetail(runs[Number(row.dataset.runIndex)]);
-    row.addEventListener("click", open);
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        open();
-      }
-    });
-  });
-}
-
-function showRunDetail(item) {
-  const issues = [...(item.errors || []), ...(item.warnings || [])];
-  crawlerRunDetailMeta.textContent = `${sourceLabel(item.source_name)} · ${item.run_id || "-"}`;
-  crawlerRunDetail.innerHTML = `
-    <dl class="crawler-detail-facts">
-      <div><dt>状态</dt><dd>${escapeHtml(statusLabel(item.status))}</dd></div>
-      <div><dt>开始</dt><dd>${escapeHtml(formatDateTime(item.started_at))}</dd></div>
-      <div><dt>结束</dt><dd>${escapeHtml(formatDateTime(item.finished_at))}</dd></div>
-      <div><dt>耗时</dt><dd>${escapeHtml(runDuration(item))}</dd></div>
-    </dl>
-    <section><h5>运行指标</h5><pre>${escapeHtml(JSON.stringify(item.metrics || {}, null, 2))}</pre></section>
-    <section><h5>错误与警告</h5>${issues.length ? `<div class="crawler-issue-list">${issues.map((issue) => `
-      <article><strong>${escapeHtml(issue.code || "error")}</strong><p>${escapeHtml(issue.message || "")}</p>${issue.article_url ? `<a href="${escapeAttr(issue.article_url)}" target="_blank" rel="noreferrer">${escapeHtml(issue.article_url)}</a>` : ""}</article>
-    `).join("")}</div>` : `<div class="news-empty compact">本次运行没有记录错误或警告。</div>`}</section>
-  `;
-  crawlerRunDetailCard.hidden = false;
-  crawlerRunDetailCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-function closeRunDetail() {
-  crawlerRunDetailCard.hidden = true;
-  crawlerRunDetail.innerHTML = "";
 }
 
 function syncAutoRefresh() {

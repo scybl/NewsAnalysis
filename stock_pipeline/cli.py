@@ -11,7 +11,15 @@ from .collector import StockDataCollector
 from .config import PROJECT_ROOT, get_settings
 from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
-from .kaipanla import list_kaipanla_features, list_kaipanla_records, parse_params, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
+from .kaipanla import (
+    list_kaipanla_features,
+    list_kaipanla_records,
+    parse_params,
+    repair_kaipanla_overview_history,
+    run_kaipanla_batch,
+    run_kaipanla_feature,
+    validate_kaipanla_integration,
+)
 from .news_library import query_news_library
 from .secret_store import SECRET_ENV_MAP, get_secret_store
 from .ths_minute import build_config as build_ths_minute_config
@@ -104,6 +112,9 @@ def main() -> None:
     kaipanla_batch_parser = kaipanla_subparsers.add_parser("batch", help="批量运行多个开盘啦功能并保存")
     kaipanla_batch_parser.add_argument("--features", required=True, help="逗号分隔功能 key")
     kaipanla_batch_parser.add_argument("--params", default="", help="JSON object，key 为功能 key，value 为该功能参数")
+    kaipanla_repair_parser = kaipanla_subparsers.add_parser("repair-overview", help="重抓并修正某交易日市场纵览异常历史记录")
+    kaipanla_repair_parser.add_argument("--date", required=True, help="交易日，例如 2026-06-30")
+    kaipanla_repair_parser.add_argument("--dry-run", action="store_true", help="只核对实时返回和待归档数量，不写入 MongoDB")
 
     args = parser.parse_args()
     if args.command == "collect":
@@ -334,5 +345,11 @@ def run_kaipanla(args: argparse.Namespace) -> None:
 
         features = [item.strip() for item in args.features.split(",") if item.strip()]
         result = run_kaipanla_batch(features, parse_params(args.params), save=True, run_id=timestamp())
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.kaipanla_command == "repair-overview":
+        import json
+
+        result = repair_kaipanla_overview_history(args.date, dry_run=args.dry_run)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return

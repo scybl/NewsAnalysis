@@ -318,7 +318,7 @@ async function loadStockData() {
 
 function renderStockStats() {
   if (!stockDataStats) return;
-  const latest = stockState.items[0]?.updated_at || "-";
+  const latest = formatStockTimestamp(stockState.items[0]?.updated_at);
   const cards = [
     ["股票资料包", stockState.count, "数据库资料包"],
     ["数据集总行数", formatNumber(stockState.totalDatasetRows), "按 metadata 统计"],
@@ -373,8 +373,8 @@ function renderStockData() {
 }
 
 function renderStockRow(item) {
-  const dateRange = item.date_range || {};
-  const rangeText = [dateRange.start_date, dateRange.end_date].filter(Boolean).join(" - ") || "-";
+  const dateRange = item.daily_date_range || item.date_range || {};
+  const rangeText = formatStockDateRange(dateRange);
   return `
     <tr>
       <td>
@@ -382,13 +382,35 @@ function renderStockRow(item) {
         <code>${escapeHtml(item.ts_code || "-")}</code>
       </td>
       <td>${escapeHtml([item.industry, item.market].filter(Boolean).join(" / ") || "-")}</td>
-      <td>${escapeHtml(item.updated_at || "-")}</td>
+      <td>${escapeHtml(formatStockTimestamp(item.updated_at))}</td>
       <td>${escapeHtml(rangeText)}</td>
       <td>${escapeHtml(String(item.dataset_count || 0))}</td>
       <td>${escapeHtml(formatNumber(item.minute_rows || 0))}</td>
       <td>${escapeHtml(String(item.fetch_error_count || 0))}</td>
     </tr>
   `;
+}
+
+function formatStockDateRange(dateRange) {
+  const start = formatStockDate(dateRange?.start_date);
+  const end = formatStockDate(dateRange?.end_date);
+  if (start && end) return `${start} - ${end}`;
+  return start || end || "-";
+}
+
+function formatStockDate(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (!match) return text;
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function formatStockTimestamp(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
+  if (!match) return text || "-";
+  const [, , month, day, hour, minute] = match;
+  return `${Number(month)}月${Number(day)}日 ${hour}:${minute}`;
 }
 
 function compareStockRows(left, right, key) {
@@ -595,7 +617,7 @@ function renderStats(stats, payload) {
   const cards = [
     ["总文章", stats.total ?? "-", "MongoDB 当前文章总数"],
     ["今日新增", stats.today ?? "-", "按 time 字段统计"],
-    ["最新时间", stats.latest_time || "-", "新闻库最新发布时间"],
+    ["最新时间", formatNewsDateTime(stats.latest_time), "新闻库最新发布时间"],
     ["当前筛选", payload.total ?? "-", publisherLines || "暂无来源分布"],
   ];
   newsStats.innerHTML = cards
@@ -609,6 +631,24 @@ function renderStats(stats, payload) {
       `,
     )
     .join("");
+}
+
+function formatNewsDateTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return "-";
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})/);
+  if (compact) {
+    return `${Number(compact[2])}月${Number(compact[3])}日 ${compact[4]}:${compact[5]}`;
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function renderList(items) {

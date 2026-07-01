@@ -13,6 +13,7 @@ from .dossier import build_dossier
 from .field_labels import build_table_datasets
 from .local_data_mongo import (
     list_mongo_stock_codes,
+    list_mongo_stock_metadata,
     read_mongo_analysis_dossier,
     read_mongo_dossier,
     read_mongo_full_data,
@@ -97,8 +98,12 @@ def stock_exists(ts_code: str) -> bool:
 
 def list_local_stock_codes() -> list[str]:
     mongo_codes = set(list_mongo_stock_codes())
+    return sorted(set(_local_file_stock_codes()) | mongo_codes)
+
+
+def _local_file_stock_codes() -> list[str]:
     if not LOCAL_DATA_DIR.exists():
-        return sorted(mongo_codes)
+        return []
     codes: list[str] = []
     for path in sorted(LOCAL_DATA_DIR.iterdir()):
         if not path.is_dir() or path.name.startswith("."):
@@ -110,18 +115,20 @@ def list_local_stock_codes() -> list[str]:
         if (current_dir(ts_code) / "full_data.json").exists() or (path / "full_data.json").exists():
             ensure_current_layout(ts_code)
             codes.append(ts_code)
-    return sorted(set(codes) | mongo_codes)
+    return sorted(set(codes))
 
 
 def list_local_stock_summaries() -> dict[str, Any]:
+    mongo_metadata = list_mongo_stock_metadata()
     items: list[dict[str, Any]] = []
-    for ts_code in list_local_stock_codes():
+    for ts_code in sorted(set(_local_file_stock_codes()) | set(mongo_metadata)):
         base_dir = stock_dir(ts_code)
         metadata_path = base_dir / "metadata.json"
-        metadata = read_json(metadata_path) if metadata_path.exists() else (read_mongo_metadata(ts_code) or {})
+        metadata = read_json(metadata_path) if metadata_path.exists() else (mongo_metadata.get(ts_code) or {})
         stock_basic = metadata.get("stock_basic") or {}
         dataset_rows = metadata.get("dataset_rows") or {}
         date_range = metadata.get("date_range") or {}
+        daily_date_range = metadata.get("daily_date_range") or date_range
         minute_rows = sum(
             int(count or 0)
             for name, count in dataset_rows.items()
@@ -137,6 +144,7 @@ def list_local_stock_summaries() -> dict[str, Any]:
                 "daily_market_updated_at": metadata.get("daily_market_updated_at") or "",
                 "latest_daily_date": metadata.get("latest_daily_date") or "",
                 "date_range": date_range,
+                "daily_date_range": daily_date_range,
                 "dataset_count": len(dataset_rows),
                 "dataset_rows": dataset_rows,
                 "minute_rows": minute_rows,
@@ -233,6 +241,7 @@ def sync_stock_data(
             "latest_snapshot": "",
             "snapshots": [],
             "date_range": full_data.get("date_range", {}),
+            "daily_date_range": _daily_date_range(full_data),
             "stock_basic": _stock_identity(full_data),
             "dataset_rows": {
                 **{name: len(rows) for name, rows in full_data.get("datasets", {}).items()},
@@ -349,6 +358,7 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
             "current_dir": _stock_package_uri(ts_code),
             "snapshots": [],
             "date_range": full_data.get("date_range", {}),
+            "daily_date_range": _daily_date_range(full_data),
             "stock_basic": _stock_identity(full_data),
             "dataset_rows": {
                 **{name: len(rows) for name, rows in datasets.items()},
@@ -454,6 +464,13 @@ def _save_stock_package_safe(
         }
     except Exception as exc:  # noqa: BLE001 - surface Mongo failures without losing the main error context.
         return {"ok": False, "error": str(exc)}
+
+
+def _daily_date_range(full_data: dict[str, Any]) -> dict[str, str]:
+    datasets = full_data.get("datasets") if isinstance(full_data.get("datasets"), dict) else {}
+    rows = datasets.get("daily") if isinstance(datasets, dict) else []
+    dates = sorted(str(row.get("trade_date") or "") for row in rows if isinstance(row, dict) and row.get("trade_date"))
+    return {"start_date": dates[0], "end_date": dates[-1]} if dates else {}
 
 
 def _latest_trade_date(records: list[dict[str, Any]]) -> str:

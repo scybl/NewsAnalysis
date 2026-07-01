@@ -30,10 +30,10 @@ def test_bloomberg_runtime_config_can_be_loaded_from_files(monkeypatch, tmp_path
     assert settings.bloomberg_require_login_cookie is True
 
 
-def test_default_disabled_sources_keep_politico_web_enabled(monkeypatch):
+def test_default_disabled_sources_pause_politico_web(monkeypatch):
     monkeypatch.delenv("NEWS_CRAWLER_DISABLED_SOURCES", raising=False)
 
     settings = get_settings()
 
     assert settings.politico_browser_news_url == "https://www.politico.com/"
-    assert settings.disabled_sources == frozenset({"bloomberg", "politico_rss", "politico_chrome"})
+    assert settings.disabled_sources == frozenset({"bloomberg", "politico_browser", "politico_rss", "politico_chrome"})

@@ -53,13 +53,14 @@ def test_credentials_page_does_not_render_secret_values():
     assert '"path": str(path.relative_to(PROJECT_ROOT))' not in web
 
 
-def test_credentials_console_is_last_available_admin_nav_item():
+def test_audit_log_follows_credentials_in_admin_nav():
     for path in STATIC.glob("admin-*.html"):
         html = path.read_text(encoding="utf-8")
         nav = html.split('<nav class="admin-nav"', 1)[1].split("</nav>", 1)[0]
         assert "/admin-credentials.html" in nav, path.name
         assert nav.rfind("/admin-credentials.html") > nav.rfind("/admin-crawler.html"), path.name
-        assert nav.rfind("数据分发") > nav.rfind("/admin-credentials.html"), path.name
+        assert nav.rfind("/admin-audit.html") > nav.rfind("/admin-credentials.html"), path.name
+        assert nav.rfind("数据分发") > nav.rfind("/admin-audit.html"), path.name
 
 
 def test_compose_uses_page_managed_crawler_secret_files():

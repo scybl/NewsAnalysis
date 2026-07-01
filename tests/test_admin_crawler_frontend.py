@@ -43,7 +43,7 @@ def test_crawler_console_is_dedicated_and_read_only():
     assert 'guardian: { label: "Guardian", initial: "G" }' in script
     assert 'bloomberg: { label: "Bloomberg", initial: "B", maintenance: true }' in script
     assert "Politico Legacy" not in script
-    assert 'politico_browser: { label: "Politico Web", initial: "P" }' in script
+    assert 'politico_browser: { label: "Politico Web", initial: "P", maintenance: true }' in script
     assert 'politico_rss: { label: "Politico RSS", initial: "R", maintenance: true }' in script
     assert 'gdelt: { label: "GDELT", initial: "G", maintenance: true }' in script
     assert 'alpha_vantage_news: { label: "Alpha Vantage News", initial: "A", maintenance: true }' in script
@@ -55,6 +55,9 @@ def test_crawler_console_is_dedicated_and_read_only():
     assert "crawler-runtime-alerts" in script
     assert "自动暂停" in script
     assert "凭据过期" in script
+    assert "crawlerRunDetail" not in html
+    assert "crawlerRunDetail" not in script
+    assert "showRunDetail" not in script
 
 
 def test_guardian_news_cards_can_request_machine_translation():
@@ -70,6 +73,7 @@ def test_guardian_news_cards_can_request_machine_translation():
     assert "preloadCachedTranslations" in script
     assert "hasCachedTranslation ? \"已翻译\"" in script
     assert "renderParagraphComparison" in script
+    assert "formatNewsDateTime(stats.latest_time)" in script
     assert "splitArticleParagraphs" in script
     assert "news-compare-row" in script
     assert "段落对照" in script
@@ -80,9 +84,9 @@ def test_guardian_news_cards_can_request_machine_translation():
     assert '"translation": _public_translation(translation) if translation else None' in news_library
 
 
-def test_politico_browser_is_enabled_while_rss_and_bloomberg_stay_disabled():
+def test_politico_browser_is_paused_while_guardian_worker_stays_focused():
     compose = (STATIC.parents[1] / "docker-compose.prod.yml").read_text(encoding="utf-8")
-    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico_rss,politico_chrome,guardian}" in compose
+    assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_DISABLED_SOURCES:-bloomberg,politico_browser,politico_rss,politico_chrome,guardian}" in compose
     assert "NEWS_CRAWLER_DISABLED_SOURCES: ${NEWS_CRAWLER_GUARDIAN_DISABLED_SOURCES:-bloomberg,politico_rss,politico_browser,politico_chrome,tonghuashun}" in compose
     assert 'command: ["schedule", "--source", "guardian", "--interval", "${GUARDIAN_CRAWLER_INTERVAL_SECONDS:-3600}"' in compose
 
@@ -121,8 +125,31 @@ def test_admin_audit_log_is_dedicated_page_not_account_card():
     assert "id=\"adminAuditTable\"" in audit
     assert "后台操作记录" in audit
     assert "adminAuditPage" in script
-    assert "最近 80 条后台权限操作" in script
+    assert "id=\"adminSummary\"" not in audit
+    assert "最近 80 条后台权限操作" not in script
     assert ".audit-log-card .audit-table-wrap" in styles
+
+
+def test_data_console_accounts_excludes_analysis_only_vip_and_demo_tools():
+    accounts = (STATIC / "admin-accounts.html").read_text(encoding="utf-8")
+    archives = (STATIC / "admin-archives.html").read_text(encoding="utf-8")
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app_script = (STATIC / "app.js").read_text(encoding="utf-8")
+    admin_script = (STATIC / "admin.js").read_text(encoding="utf-8")
+
+    assert "生成测试账号" not in accounts
+    assert "测试账号" not in accounts
+    assert "VIP 兑换码" not in accounts
+    assert "生成 VIP 码" not in accounts
+    assert "VIP 到期" not in admin_script
+    assert "发 VIP" not in admin_script
+    assert "撤 VIP" not in admin_script
+    assert "归档测试账号" not in archives
+    assert "archiveDemoAccountsTable" not in (STATIC / "admin-archives.js").read_text(encoding="utf-8")
+    assert "VIP 兑换码" not in index
+    assert "兑换 VIP" not in index
+    assert "redeemVipCode" not in app_script
+    assert "VIP 使用系统 API" not in app_script
 
 
 def test_regular_user_data_console_is_limited_and_read_only():
@@ -217,6 +244,23 @@ def test_market_fetch_uses_shared_stock_search():
     assert "请先从检索结果中选择一只股票" in script
 
 
+def test_stock_task_history_drives_task_detail_panel():
+    html = (STATIC / "admin-news.html").read_text(encoding="utf-8")
+    script = (STATIC / "admin.js").read_text(encoding="utf-8")
+    styles = (STATIC / "styles.css").read_text(encoding="utf-8")
+
+    assert "<h4>任务详情</h4>" in html
+    assert "选择右侧任务查看执行事件。" in html
+    assert "adminTaskItems" in script
+    assert "selectedAdminTaskId" in script
+    assert "data-admin-task-id" in script
+    assert "renderSelectedAdminTaskDetail" in script
+    assert "formatTaskDetail" in script
+    assert 'idle_stock_prefetch: "空闲预抓"' in script
+    assert "taskEventStageLabel" in script
+    assert ".spider-task-history-card tbody tr.selected td" in styles
+
+
 def test_market_and_data_source_pages_have_explicit_layout_sections():
     market = (STATIC / "admin-market.html").read_text(encoding="utf-8")
     stock_sources = (STATIC / "admin-news.html").read_text(encoding="utf-8")
@@ -268,14 +312,20 @@ def test_crawler_run_table_matches_crawl_result_metrics():
         "inserted",
         "updated",
         "failed",
-        "metrics",
-        "errors",
         "run_id",
     ):
         assert f"item.{field}" in script
     for heading in ("<th>发现</th>", "<th>新的</th>", "<th>入库</th>", "<th>失败</th>"):
         assert heading in script
     assert "storedCount(item)" in script
+
+
+def test_stock_data_table_uses_daily_range_and_formats_time():
+    script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
+
+    assert "item.daily_date_range || item.date_range" in script
+    assert "formatStockTimestamp(item.updated_at)" in script
+    assert "formatStockDateRange(dateRange)" in script
 
 
 def test_crawler_failure_diagnostics_support_retry_and_grouping():
