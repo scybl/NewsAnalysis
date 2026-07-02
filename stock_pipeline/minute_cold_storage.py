@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from .config import PROJECT_ROOT, load_dotenv
 from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
-from .utils import ensure_dir, normalize_ts_code
+from .utils import ensure_dir, normalize_ts_code, read_json, today_yyyymmdd
 
 
 DEFAULT_REMOTE_ROOT = "NewsAnalysis/cold/stock_minute/v1"
@@ -702,6 +702,49 @@ def _year_limited_query(query: dict[str, Any], trade_year: str) -> dict[str, Any
     return {**query, "trade_date": {"$gte": f"{year}0101", "$lte": f"{year}1231"}}
 
 
+def _minute_gap_candidate_codes(coverage: Any, source: str) -> list[str]:
+    codes: list[str] = []
+    try:
+        from .local_data_mongo import list_mongo_stock_codes
+
+        codes = [normalize_ts_code(code) for code in list_mongo_stock_codes()]
+    except Exception:
+        codes = []
+    if not codes:
+        local_root = PROJECT_ROOT / "local_data"
+        codes = [
+            normalize_ts_code(path.name)
+            for path in local_root.iterdir()
+            if path.is_dir() and "." in path.name and (path / "current" / "full_data.json").exists()
+        ] if local_root.exists() else []
+    if not codes:
+        codes = [normalize_ts_code(code) for code in coverage.distinct("ts_code", {"source": source}) if code]
+    return sorted(dict.fromkeys(code for code in codes if code))
+
+
+def _local_reference_trade_dates(ts_code: str) -> list[str]:
+    try:
+        from .local_data_mongo import read_mongo_full_data
+
+        data = read_mongo_full_data(ts_code)
+    except Exception:
+        data = None
+    if not data:
+        full_path = PROJECT_ROOT / "local_data" / normalize_ts_code(ts_code) / "current" / "full_data.json"
+        data = read_json(full_path) if full_path.exists() else {}
+    rows = ((data or {}).get("datasets") or {}).get("daily") or []
+    return sorted({str(row.get("trade_date") or "") for row in rows if _is_trade_date(row.get("trade_date"))})
+
+
+def _date_in_range(value: str, start: str, end: str) -> bool:
+    return _is_trade_date(value) and (not start or value >= start) and (not end or value <= end)
+
+
+def _is_trade_date(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == 8 and text.isdigit()
+
+
 def cleanup_archived_buckets(
     bucket_collection: Any,
     day_index: Any,
@@ -755,6 +798,110 @@ def cleanup_archived_buckets(
         "coverage_updated": len(coverage_rows),
         "samples": samples,
     }
+
+
+def inspect_minute_coverage_gaps(
+    day_index: Any,
+    coverage: Any,
+    *,
+    source: str,
+    codes: list[str] | None = None,
+    start_date: str = "",
+    end_date: str = "",
+    limit: int | None = None,
+    max_samples: int = 20,
+    reference_loader: Callable[[str], list[str]] | None = None,
+) -> dict[str, Any]:
+    normalized_codes = [normalize_ts_code(code) for code in codes or [] if str(code or "").strip()]
+    if not normalized_codes:
+        normalized_codes = _minute_gap_candidate_codes(coverage, source)
+    if limit is not None:
+        normalized_codes = normalized_codes[: max(0, int(limit))]
+
+    start = normalize_trade_date(start_date) if start_date else ""
+    end = normalize_trade_date(end_date) if end_date else today_yyyymmdd()
+    load_reference = reference_loader or _local_reference_trade_dates
+    items: list[dict[str, Any]] = []
+    summary = {
+        "ok": True,
+        "source": source,
+        "start_date": start,
+        "end_date": end,
+        "stocks_checked": 0,
+        "stocks_without_reference": 0,
+        "stocks_with_missing": 0,
+        "stocks_with_partial": 0,
+        "stocks_with_unuploaded": 0,
+        "missing_days": 0,
+        "tail_missing_days": 0,
+        "partial_days": 0,
+        "unuploaded_days": 0,
+    }
+
+    for ts_code in normalized_codes:
+        reference_dates = [date for date in load_reference(ts_code) if _date_in_range(date, start, end)]
+        if not reference_dates:
+            summary["stocks_without_reference"] += 1
+            items.append({"ts_code": ts_code, "status": "no_reference_dates"})
+            continue
+
+        indexed_rows = list(
+            day_index.find(
+                {"source": source, "ts_code": ts_code, "trade_date": {"$gte": reference_dates[0], "$lte": reference_dates[-1]}},
+                {"_id": 0, "trade_date": 1, "status": 1, "row_count": 1, "upload_status": 1, "storage_object": 1},
+            ).sort([("trade_date", 1)])
+        )
+        indexed_by_date = {str(row.get("trade_date") or ""): row for row in indexed_rows if row.get("trade_date")}
+        indexed_dates = sorted(indexed_by_date)
+        missing_dates = [date for date in reference_dates if date not in indexed_by_date]
+        partial_dates = [
+            date
+            for date, row in indexed_by_date.items()
+            if date in reference_dates and (row.get("status") != "complete" or int(row.get("row_count") or 0) < EXPECTED_DAY_ROWS)
+        ]
+        unuploaded_dates = [
+            date
+            for date, row in indexed_by_date.items()
+            if date in reference_dates and row.get("upload_status") != "uploaded"
+        ]
+        last_indexed = indexed_dates[-1] if indexed_dates else ""
+        tail_missing = [date for date in reference_dates if not last_indexed or date > last_indexed]
+        internal_missing = [date for date in missing_dates if last_indexed and date <= last_indexed]
+        item = {
+            "ts_code": ts_code,
+            "status": "ok" if not missing_dates and not partial_dates else "needs_backfill",
+            "first_expected_date": reference_dates[0],
+            "last_expected_date": reference_dates[-1],
+            "first_indexed_date": indexed_dates[0] if indexed_dates else "",
+            "last_indexed_date": last_indexed,
+            "expected_days": len(reference_dates),
+            "indexed_days": len(indexed_dates),
+            "missing_days": len(missing_dates),
+            "tail_missing_days": len(tail_missing),
+            "internal_missing_days": len(internal_missing),
+            "partial_days": len(partial_dates),
+            "unuploaded_days": len(unuploaded_dates),
+            "missing_samples": missing_dates[:max_samples],
+            "tail_missing_samples": tail_missing[:max_samples],
+            "internal_missing_samples": internal_missing[:max_samples],
+            "partial_samples": partial_dates[:max_samples],
+            "unuploaded_samples": unuploaded_dates[:max_samples],
+        }
+        items.append(item)
+        summary["stocks_checked"] += 1
+        summary["missing_days"] += len(missing_dates)
+        summary["tail_missing_days"] += len(tail_missing)
+        summary["partial_days"] += len(partial_dates)
+        summary["unuploaded_days"] += len(unuploaded_dates)
+        if missing_dates:
+            summary["stocks_with_missing"] += 1
+        if partial_dates:
+            summary["stocks_with_partial"] += 1
+        if unuploaded_dates:
+            summary["stocks_with_unuploaded"] += 1
+
+    summary["items"] = sorted(items, key=lambda item: (item.get("status") == "ok", -int(item.get("missing_days") or 0), str(item.get("ts_code") or "")))
+    return summary
 
 
 def write_month_object(

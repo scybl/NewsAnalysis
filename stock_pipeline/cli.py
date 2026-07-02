@@ -30,6 +30,7 @@ from .minute_cold_storage import archive_stock_year_shards as archive_minute_sto
 from .minute_cold_storage import build_config as build_minute_cold_config
 from .minute_cold_storage import cleanup_archived_buckets as cleanup_minute_archived_buckets
 from .minute_cold_storage import ensure_indexes as ensure_minute_cold_indexes
+from .minute_cold_storage import inspect_minute_coverage_gaps
 from .minute_cold_storage import prune_cache as prune_minute_cache
 from .minute_cold_storage import read_cached_or_downloaded_day
 from .news_library import query_news_library
@@ -132,15 +133,19 @@ def main() -> None:
             "export-stock-upload",
             "export-stock-year-upload",
             "cleanup-archived",
+            "inspect-gaps",
             "retrieve",
             "prune-cache",
         ],
-        help="export 只写本地对象和索引；export-stock-year-upload 按股票年份分片同步；cleanup-archived 清理已归档旧 bucket；retrieve 单日取回缓存",
+        help="export 只写本地对象和索引；export-stock-year-upload 按股票年份分片同步；inspect-gaps 检查分时覆盖缺口；retrieve 单日取回缓存",
     )
     minute_cold_parser.add_argument("--codes", default="", help="股票代码，逗号分隔；不传则处理全部")
     minute_cold_parser.add_argument("--source", default="pytdx_history", help="数据源，默认 pytdx_history")
     minute_cold_parser.add_argument("--trade-date", default="", help="交易日 YYYYMMDD；retrieve 必填，export 可选")
+    minute_cold_parser.add_argument("--start-date", default="", help="inspect-gaps 检查开始日期 YYYYMMDD；默认按本地日 K 首日")
+    minute_cold_parser.add_argument("--end-date", default="", help="inspect-gaps 检查结束日期 YYYYMMDD；默认今天")
     minute_cold_parser.add_argument("--limit", type=int, default=None, help="最多处理多少个股票日 bucket，适合先小批量验证")
+    minute_cold_parser.add_argument("--max-samples", type=int, default=20, help="inspect-gaps 每类缺口最多输出多少个样例日期")
     minute_cold_parser.add_argument("--workers", type=int, default=1, help="export-month-upload 并发上传月分片数，建议 2-4")
     minute_cold_parser.add_argument("--execute", action="store_true", help="cleanup-archived 默认只 dry-run；传入该参数才真正删除")
     minute_cold_parser.add_argument("--mongo-db", default=None, help="MongoDB 数据库名，默认 market_data")
@@ -492,6 +497,20 @@ def run_minute_cold(args) -> None:
                 hot_days=config.hot_days,
                 codes=codes,
                 dry_run=not args.execute,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            return
+        if args.action == "inspect-gaps":
+            codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
+            result = inspect_minute_coverage_gaps(
+                day_index,
+                coverage,
+                source=args.source,
+                codes=codes,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                limit=args.limit,
+                max_samples=args.max_samples,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
             return

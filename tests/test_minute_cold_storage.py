@@ -88,6 +88,22 @@ class FakeIndexCollection:
             total += 1
         return total
 
+    def find(self, query, projection=None):
+        rows = []
+        for key, doc in self.docs.items():
+            if query.get("source") and key[0] != query["source"]:
+                continue
+            if query.get("ts_code") and key[1] != query["ts_code"]:
+                continue
+            trade_date_filter = query.get("trade_date")
+            if isinstance(trade_date_filter, dict):
+                if "$gte" in trade_date_filter and key[2] < trade_date_filter["$gte"]:
+                    continue
+                if "$lte" in trade_date_filter and key[2] > trade_date_filter["$lte"]:
+                    continue
+            rows.append({"source": key[0], "ts_code": key[1], "trade_date": key[2], **doc})
+        return FakeFindCursor(rows)
+
     def aggregate(self, pipeline):
         match = pipeline[0]["$match"]
         docs = [
@@ -115,6 +131,11 @@ class FakeCoverageCollection:
 
     def update_one(self, query, update, upsert=False):
         self.docs[(query["source"], query["ts_code"])] = update["$set"]
+
+    def distinct(self, field, query):
+        if field != "ts_code":
+            return []
+        return sorted({ts_code for source, ts_code in self.docs if not query.get("source") or source == query["source"]})
 
 
 def test_write_bucket_object_uses_single_day_jsonl(tmp_path):
@@ -150,6 +171,49 @@ def test_archive_buckets_updates_day_index_and_coverage(tmp_path):
     assert indexed["status"] == "partial"
     assert indexed["upload_status"] == "local"
     assert coverage.docs[("pytdx_history", "000001.SZ")]["archived_days"] == 1
+
+
+def test_inspect_minute_coverage_gaps_reports_missing_partial_and_unuploaded_days():
+    day_index = FakeIndexCollection()
+    coverage = FakeCoverageCollection()
+    coverage.docs[("pytdx_history", "000001.SZ")] = {"ts_code": "000001.SZ"}
+    day_index.docs[("pytdx_history", "000001.SZ", "20260102")] = {
+        "trade_date": "20260102",
+        "status": "complete",
+        "row_count": 240,
+        "upload_status": "uploaded",
+    }
+    day_index.docs[("pytdx_history", "000001.SZ", "20260105")] = {
+        "trade_date": "20260105",
+        "status": "partial",
+        "row_count": 100,
+        "upload_status": "local",
+    }
+    day_index.docs[("pytdx_history", "000001.SZ", "20260106")] = {
+        "trade_date": "20260106",
+        "status": "complete",
+        "row_count": 240,
+        "upload_status": "uploaded",
+    }
+
+    result = minute_cold_storage.inspect_minute_coverage_gaps(
+        day_index,
+        coverage,
+        source="pytdx_history",
+        codes=["000001.SZ"],
+        reference_loader=lambda code: ["20260102", "20260105", "20260106", "20260107"],
+    )
+
+    item = result["items"][0]
+    assert result["stocks_checked"] == 1
+    assert result["missing_days"] == 1
+    assert result["partial_days"] == 1
+    assert result["unuploaded_days"] == 1
+    assert item["last_indexed_date"] == "20260106"
+    assert item["missing_samples"] == ["20260107"]
+    assert item["tail_missing_samples"] == ["20260107"]
+    assert item["partial_samples"] == ["20260105"]
+    assert item["unuploaded_samples"] == ["20260105"]
 
 
 def test_month_object_can_return_one_trade_date(tmp_path):
