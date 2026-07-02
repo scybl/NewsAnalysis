@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 
 from ..models import ArticleRef, NewsArticle, NewsCrawlRequest, ProviderCapabilities
 from ..provider import ArticleSkipped
+from ..provider import ProviderFailure
 
 
 CATEGORIES = {
@@ -100,7 +101,7 @@ class TonghuashunProvider:
             if not content:
                 raise ArticleSkipped("image_only", "article contains images but OCR produced no usable text")
         if not title or not content:
-            raise ValueError("article title or content not found")
+            raise ProviderFailure("extraction_missing", "article title or content not found", retryable=True)
         published = _published_at(raw, detail, soup, response.url)
         summary_html = detail.get("summ") or ""
         summary = BeautifulSoup(summary_html, "lxml").get_text("", strip=True) if summary_html else ""

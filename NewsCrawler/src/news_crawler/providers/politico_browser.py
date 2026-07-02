@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 
 from ..models import ArticleRef, NewsArticle, NewsCrawlRequest, ProviderCapabilities
+from ..provider import ProviderFailure
 from .politico import _external_id, parse_politico_article
 
 
@@ -85,7 +86,7 @@ class PoliticoBrowserProvider:
         title = str(payload.get("title") or "").strip()
         content = str(payload.get("content") or "").strip()
         if not title or not content:
-            raise ValueError("Politico browser article title or content not found")
+            raise ProviderFailure("extraction_missing", "Politico browser article title or content not found", retryable=True)
         return NewsArticle(
             source_name=self.name,
             external_id=ref.external_id or payload.get("external_id") or _external_id(ref.url),
@@ -173,9 +174,9 @@ class PoliticoBrowserProvider:
             "请稍候",
         )
         if any(marker in lower for marker in cloudflare_markers):
-            raise RuntimeError(f"Politico browser blocked by Cloudflare challenge: {url}")
+            raise ProviderFailure("blocked", f"Politico browser blocked by Cloudflare challenge: {url}", retryable=True)
         if "verify you are human" in lower or "access denied" in lower:
-            raise RuntimeError(f"Politico browser blocked by anti-bot page: {url}")
+            raise ProviderFailure("blocked", f"Politico browser blocked by anti-bot page: {url}", retryable=True)
 
 
 def extract_politico_news_urls(html: str, base_url: str = "https://www.politico.com/news/") -> list[str]:

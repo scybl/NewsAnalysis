@@ -4,10 +4,10 @@ import threading
 from news_crawler.dedupe import DedupeService
 from news_crawler.executor import TaskExecutor, _issue_code
 from news_crawler.models import ArticleRef, NewsArticle, NewsCrawlRequest, ProviderCapabilities
-from news_crawler.observer import LoggingRunObserver
+from news_crawler.observer import CompositeRunObserver, LoggingRunObserver
 from news_crawler.pipeline import CrawlPipeline
 from news_crawler.registry import ProviderRegistry
-from news_crawler.provider import ArticleSkipped
+from news_crawler.provider import ArticleSkipped, ProviderFailure
 
 
 class FakeProvider:
@@ -260,6 +260,96 @@ def test_executor_auto_pauses_source_on_credential_expiry():
     assert result.errors[0].retryable is False
     assert repository.pauses[0]["source_name"] == "bloomberg"
     assert repository.pauses[0]["reason"] == "cookie expired"
+
+
+def test_executor_uses_structured_provider_failure_without_message_guessing():
+    class RateLimitedProvider(FakeProvider):
+        name = "guardian"
+
+        def fetch(self, ref):
+            raise ProviderFailure("rate_limited", "quota exhausted", retryable=True)
+
+    repository = MemoryRepository()
+    result = TaskExecutor(repository, repository, DedupeService(), LoggingRunObserver(), retries=1).execute(
+        RateLimitedProvider(), NewsCrawlRequest()
+    )
+
+    assert result.status == "partial"
+    assert result.failed == 1
+    assert result.metrics["rate_limited"] == 1
+    assert result.errors[0].code == "rate_limited"
+    assert result.errors[0].message == "quota exhausted"
+    assert result.errors[0].retryable is True
+
+
+def test_structured_provider_failure_can_pause_source():
+    class ExpiredProvider(FakeProvider):
+        name = "bloomberg"
+
+        def fetch(self, ref):
+            raise ProviderFailure(
+                "credential_expired",
+                "cookie expired",
+                retryable=False,
+                pause_source=True,
+            )
+
+    repository = MemoryRepository()
+    result = TaskExecutor(repository, repository, DedupeService(), LoggingRunObserver(), retries=2).execute(
+        ExpiredProvider(), NewsCrawlRequest()
+    )
+
+    assert result.status == "failed"
+    assert result.failed == 1
+    assert result.errors[0].code == "credential_expired"
+    assert result.errors[0].retryable is False
+    assert repository.pauses[0]["source_name"] == "bloomberg"
+    assert repository.pauses[0]["issue_code"] == "credential_expired"
+
+
+def test_non_retryable_provider_failure_is_not_retried():
+    class BlockedProvider(FakeProvider):
+        def __init__(self):
+            self.attempts = 0
+
+        def fetch(self, ref):
+            self.attempts += 1
+            raise ProviderFailure("blocked", "access denied", retryable=False)
+
+    provider = BlockedProvider()
+    repository = MemoryRepository()
+    result = TaskExecutor(repository, repository, DedupeService(), LoggingRunObserver(), retries=3).execute(
+        provider, NewsCrawlRequest()
+    )
+
+    assert provider.attempts == 1
+    assert result.failed == 1
+    assert result.metrics["blocked"] == 1
+    assert "retry" not in result.metrics
+
+
+def test_composite_observer_keeps_crawl_running_if_one_observer_fails():
+    class BrokenObserver(LoggingRunObserver):
+        def on_run_started(self, result):
+            raise RuntimeError("observer failed")
+
+    class RecordingObserver(LoggingRunObserver):
+        def __init__(self):
+            self.finished = []
+
+        def on_run_finished(self, result):
+            self.finished.append(result.status)
+
+    recorder = RecordingObserver()
+    result = TaskExecutor(
+        None,
+        None,
+        DedupeService(),
+        CompositeRunObserver([BrokenObserver(), recorder]),
+    ).execute(FakeProvider(), NewsCrawlRequest(dry_run=True))
+
+    assert result.status == "succeeded"
+    assert recorder.finished == ["succeeded"]
 
 
 def test_skipped_article_is_warning_without_partial_status():

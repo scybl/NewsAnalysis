@@ -16,7 +16,7 @@ from .executor import TaskExecutor, _issue_code
 from .models import NewsCrawlRequest
 from .migration import migrate_legacy_collection
 from .mongo_repository import MongoNewsRepository
-from .observer import LoggingRunObserver
+from .observer import CompositeRunObserver, LoggingRunObserver
 from .pipeline import CrawlPipeline
 from .providers.guardian import GuardianProvider
 from .providers.bloomberg import BloombergProvider
@@ -166,7 +166,7 @@ def _run_crawl(args, settings, *, fail_on_error: bool = True):
         if args.source != "all" and args.source not in registry.names():
             print(json.dumps([], ensure_ascii=False, indent=2))
             return []
-        executor = TaskExecutor(repository, repository, DedupeService(), LoggingRunObserver())
+        executor = TaskExecutor(repository, repository, DedupeService(), CompositeRunObserver([LoggingRunObserver()]))
         sources = tuple(registry.names()) if args.source == "all" else (args.source,)
         categories = tuple(part.strip() for part in args.categories.split(",") if part.strip()) or None
         category_pages = _parse_category_pages(getattr(args, "category_pages", ""))

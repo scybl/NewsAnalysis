@@ -9,6 +9,7 @@ from .models import CrawlIssue, CrawlResult, NewsCrawlRequest
 from .observer import RunObserver
 from .provider import NewsProvider
 from .provider import ArticleSkipped
+from .provider import ProviderFailure
 from .repository import CrawlRunRepository, NewsRepository
 
 
@@ -104,16 +105,10 @@ class TaskExecutor:
             if result.errors:
                 self.observer.on_provider_failed(provider.name, result.errors[-1])
         except Exception as exc:  # provider discovery failure
-            if getattr(exc, "pause_source", False):
-                issue_code = getattr(exc, "issue_code", "credential_expired")
-                issue = CrawlIssue(issue_code, str(exc), retryable=False)
-                result.metrics[issue_code] = int(result.metrics.get(issue_code, 0)) + 1
-                if self.run_repository and hasattr(self.run_repository, "pause_source"):
-                    self.run_repository.pause_source(provider.name, str(exc), run_id=result.run_id, issue_code=issue_code)
-            else:
-                issue = CrawlIssue("provider_error", str(exc), retryable=False)
-            result.errors.append(issue)
-            result.failed += 1
+            issue, pause_source = _issue_from_exception(exc, retryable=False, classify_unknown=False)
+            _record_error(result, issue)
+            if pause_source:
+                self._pause_source(provider.name, issue, result.run_id)
             result.status = "failed"
             self.observer.on_provider_failed(provider.name, issue)
         finally:
@@ -135,24 +130,23 @@ class TaskExecutor:
                 result.warnings.append(CrawlIssue(exc.code, str(exc), ref.url, retryable=False))
                 return None
             except Exception as exc:
-                if getattr(exc, "pause_source", False):
-                    issue_code = getattr(exc, "issue_code", "credential_expired")
-                    result.failed += 1
-                    result.metrics[issue_code] = int(result.metrics.get(issue_code, 0)) + 1
-                    result.errors.append(CrawlIssue(issue_code, str(exc), ref.url, retryable=False))
-                    if self.run_repository and hasattr(self.run_repository, "pause_source"):
-                        self.run_repository.pause_source(provider.name, str(exc), run_id=result.run_id, issue_code=issue_code)
+                issue, pause_source = _issue_from_exception(exc, article_url=ref.url, retryable=True, classify_unknown=True)
+                if pause_source:
+                    _record_error(result, issue)
+                    self._pause_source(provider.name, issue, result.run_id)
                     raise AutoPausedSource(str(exc)) from exc
-                issue_code = _issue_code(exc)
-                if attempt < self.retries:
+                issue_code = issue.code
+                if issue.retryable and attempt < self.retries:
                     result.metrics["retry"] = int(result.metrics.get("retry", 0)) + 1
                     self.sleep_fn(min(2 ** (attempt - 1), 4))
                     _raise_if_timed_out(deadline, self.monotonic_fn, provider.name)
                     continue
-                result.failed += 1
-                result.metrics[issue_code] = int(result.metrics.get(issue_code, 0)) + 1
-                result.errors.append(CrawlIssue(issue_code, str(exc), ref.url, retryable=True))
+                _record_error(result, issue)
                 return None
+
+    def _pause_source(self, source_name: str, issue: CrawlIssue, run_id: str) -> None:
+        if self.run_repository and hasattr(self.run_repository, "pause_source"):
+            self.run_repository.pause_source(source_name, issue.message, run_id=run_id, issue_code=issue.code)
 
 
 class AutoPausedSource(RuntimeError):
@@ -161,6 +155,28 @@ class AutoPausedSource(RuntimeError):
 
 class CrawlRunTimeout(TimeoutError):
     pass
+
+
+def _record_error(result: CrawlResult, issue: CrawlIssue) -> None:
+    result.failed += 1
+    result.metrics[issue.code] = int(result.metrics.get(issue.code, 0)) + 1
+    result.errors.append(issue)
+
+
+def _issue_from_exception(
+    exc: Exception,
+    *,
+    article_url: str | None = None,
+    retryable: bool,
+    classify_unknown: bool,
+) -> tuple[CrawlIssue, bool]:
+    if isinstance(exc, ProviderFailure):
+        return CrawlIssue(exc.code, str(exc), article_url, retryable=exc.retryable), exc.pause_source
+    if getattr(exc, "pause_source", False):
+        code = str(getattr(exc, "issue_code", "credential_expired") or "credential_expired")
+        return CrawlIssue(code, str(exc), article_url, retryable=False), True
+    code = _issue_code(exc) if classify_unknown else "provider_error"
+    return CrawlIssue(code, str(exc), article_url, retryable=retryable), False
 
 
 def _deadline(now: float, max_runtime_seconds: float) -> float | None:
@@ -229,12 +245,18 @@ def _finalize_page_boundary(
 def _issue_code(exc: Exception) -> str:
     name = type(exc).__name__.lower()
     message = str(exc).lower()
+    if "429" in message or "rate limit" in message or "too many requests" in message:
+        return "rate_limited"
+    if "cookie expired" in message or "api key" in message or "unauthorized" in message or "401" in message:
+        return "credential_expired"
     if "title or content not found" in message or "time not found" in message:
         return "extraction_missing"
     if "404" in message or "not found" in message:
         return "stale_link"
     if "timeout" in name or "timed out" in message:
         return "timeout"
-    if "403" in message or "anti-bot" in message or "captcha" in message or "blocked" in message:
+    if "403" in message or "anti-bot" in message or "captcha" in message or "blocked" in message or "cloudflare" in message:
         return "blocked"
+    if "connection" in message or "remote end closed" in message:
+        return "network_error"
     return "parser_error"

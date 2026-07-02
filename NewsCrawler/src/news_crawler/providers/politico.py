@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..models import ArticleRef, NewsArticle, NewsCrawlRequest, ProviderCapabilities
+from ..provider import ProviderFailure
 
 
 DEFAULT_FEEDS = {
@@ -114,7 +115,7 @@ class PoliticoProvider:
                     return
             if emitted:
                 return
-        raise RuntimeError("Politico site found no news links; page may be blocked or not fully loaded")
+        raise ProviderFailure("blocked", "Politico site found no news links; page may be blocked or not fully loaded", retryable=True)
 
     def fetch(self, ref: ArticleRef) -> NewsArticle:
         payload = dict(ref.metadata)
@@ -123,7 +124,7 @@ class PoliticoProvider:
         title = str(payload.get("title") or "").strip()
         content = str(payload.get("content") or payload.get("summary") or title).strip()
         if not title or not content:
-            raise ValueError("Politico article title or content not found")
+            raise ProviderFailure("extraction_missing", "Politico article title or content not found", retryable=True)
         return NewsArticle(
             source_name=self.name,
             external_id=ref.external_id or payload.get("external_id") or _external_id(ref.url),
@@ -154,10 +155,15 @@ class PoliticoProvider:
             response = self.session.get(url, timeout=self.timeout)
         except requests.RequestException:
             return self.curl_getter(url, dict(self.session.headers), self.timeout)
+        status_code = int(getattr(response, "status_code", 200) or 200)
         if _needs_curl_fallback(response):
             try:
                 return self.curl_getter(url, dict(self.session.headers), self.timeout)
             except Exception:
+                if status_code == 429:
+                    raise ProviderFailure("rate_limited", f"Politico returned HTTP 429 for {url}", retryable=True)
+                if status_code == 403:
+                    raise ProviderFailure("blocked", f"Politico returned HTTP 403 for {url}", retryable=True)
                 response.raise_for_status()
                 raise
         response.raise_for_status()

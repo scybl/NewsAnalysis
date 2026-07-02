@@ -10,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..models import ArticleRef, NewsArticle, NewsCrawlRequest, ProviderCapabilities
+from ..provider import ProviderFailure
 
 try:
     from curl_cffi import requests as curl_requests
@@ -96,7 +97,11 @@ class BloombergProvider:
         response = self._get(ref.url, headers=_article_headers())
         response.raise_for_status()
         if _blocked(response.text):
-            raise BloombergCredentialExpired("Bloomberg 返回登录、反爬或验证码页面，已自动暂停 Bloomberg。")
+            raise ProviderFailure(
+                "blocked",
+                "Bloomberg 返回登录、反爬或验证码页面。",
+                retryable=False,
+            )
         payload = parse_bloomberg_article(response.text, response.url)
         article = NewsArticle(
             source_name=self.name,
@@ -165,9 +170,9 @@ class BloombergProvider:
             validate_bloomberg_login_cookies(self.cookies_dict or _cookie_header_dict(self.session.headers.get("Cookie", "")))
 
 
-class BloombergCredentialExpired(RuntimeError):
-    pause_source = True
-    issue_code = "credential_expired"
+class BloombergCredentialExpired(ProviderFailure):
+    def __init__(self, message: str):
+        super().__init__("credential_expired", message, retryable=False, pause_source=True)
 
 
 def parse_browser_cookies(cookies_json: str) -> dict[str, str]:

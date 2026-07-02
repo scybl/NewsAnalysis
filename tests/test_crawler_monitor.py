@@ -36,8 +36,32 @@ def test_news_crawler_prometheus_metrics_uses_stable_labels_only():
             },
         ],
         "runs": [
-            {"source_name": "guardian", "status": "succeeded", "discovered": 6, "inserted": 4, "updated": 1, "failed": 0},
-            {"source_name": "politico_browser", "status": "partial", "discovered": 3, "inserted": 1, "updated": 0, "failed": 2},
+            {
+                "source_name": "guardian",
+                "status": "succeeded",
+                "started_at": "2026-07-01T08:00:00Z",
+                "finished_at": "2026-07-01T08:00:03Z",
+                "discovered": 6,
+                "fetched": 5,
+                "inserted": 4,
+                "updated": 1,
+                "skipped": 0,
+                "failed": 0,
+            },
+            {
+                "source_name": "politico_browser",
+                "status": "running",
+                "started_at": "2026-07-01T08:05:00Z",
+                "finished_at": "",
+                "discovered": 3,
+                "fetched": 2,
+                "inserted": 1,
+                "updated": 0,
+                "skipped": 0,
+                "failed": 2,
+                "errors": [{"code": "blocked", "message": "https://example.com blocked"}],
+                "warnings": [{"code": "image_only", "message": "title or content not found"}],
+            },
         ],
         "failure_stats": {
             "failed_articles": 2,
@@ -54,6 +78,11 @@ def test_news_crawler_prometheus_metrics_uses_stable_labels_only():
     assert 'news_crawler_source_status{source="guardian",status="online"} 1' in text
     assert 'news_crawler_source_recent_success_rate{source="politico_browser"} 0.5' in text
     assert 'news_crawler_recent_runs{source="guardian",status="succeeded"} 1' in text
+    assert 'news_crawler_source_running{source="politico_browser"} 1' in text
+    assert 'news_crawler_recent_articles{source="guardian",result="inserted"} 4' in text
+    assert 'news_crawler_recent_run_duration_seconds{source="guardian",status="succeeded"} 3' in text
+    assert 'news_crawler_recent_issues{source="politico_browser",code="blocked",severity="error"} 1' in text
+    assert 'news_crawler_recent_issues{source="politico_browser",code="image_only",severity="warning"} 1' in text
     assert 'news_crawler_recent_inserted_articles{source="guardian"} 4' in text
     assert 'news_crawler_recent_failure_codes{code="empty_response"} 2' in text
     assert 'news_crawler_recent_failure_codes_by_source{source="politico_browser",code="empty_response"} 2' in text

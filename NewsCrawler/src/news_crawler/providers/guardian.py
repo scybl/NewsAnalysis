@@ -27,6 +27,7 @@ class GuardianProvider:
                 "page": page,
                 "page-size": min(request.max_articles or 200, 200),
                 "show-fields": "headline,trailText,bodyText,byline,publication",
+                "show-tags": "all",
                 "order-by": "newest",
             }
             if request.since:
@@ -54,7 +55,11 @@ class GuardianProvider:
         if not content:
             response = self.session.get(
                 f"{self.base_url}/{ref.external_id}",
-                params={"api-key": self.api_key, "show-fields": "headline,trailText,bodyText,byline,publication"},
+                params={
+                    "api-key": self.api_key,
+                    "show-fields": "headline,trailText,bodyText,byline,publication",
+                    "show-tags": "all",
+                },
                 timeout=self.timeout,
             )
             response.raise_for_status()
@@ -77,6 +82,38 @@ class GuardianProvider:
             section=item.get("sectionName") or ref.section,
             language="en",
             author=fields.get("byline") or "",
-            tags=[],
-            raw_metadata={"api_id": item.get("id"), "publication": fields.get("publication")},
+            tags=_tag_titles(item.get("tags") or []),
+            raw_metadata={
+                "api_id": item.get("id"),
+                "publication": fields.get("publication"),
+                "type": item.get("type"),
+                "pillar_id": item.get("pillarId"),
+                "pillar_name": item.get("pillarName"),
+                "section_id": item.get("sectionId"),
+                "section_name": item.get("sectionName") or ref.section,
+                "tag_ids": _tag_values(item.get("tags") or [], "id"),
+                "tag_types": _tag_values(item.get("tags") or [], "type"),
+            },
         )
+
+
+def _tag_titles(tags: list[dict]) -> list[str]:
+    values = []
+    seen = set()
+    for tag in tags:
+        value = str(tag.get("webTitle") or tag.get("id") or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            values.append(value)
+    return values
+
+
+def _tag_values(tags: list[dict], key: str) -> list[str]:
+    values = []
+    seen = set()
+    for tag in tags:
+        value = str(tag.get(key) or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            values.append(value)
+    return values

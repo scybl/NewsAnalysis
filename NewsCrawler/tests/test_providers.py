@@ -42,6 +42,16 @@ class QueueSession:
         return next(self.responses)
 
 
+class RecordingQueueSession(QueueSession):
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.requests = []
+
+    def get(self, url, **kwargs):
+        self.requests.append({"url": url, **kwargs})
+        return super().get(url, **kwargs)
+
+
 class FailingSession:
     def __init__(self, exc):
         self.exc = exc
@@ -211,11 +221,23 @@ def test_tonghuashun_image_urls_and_ocr_quality_gate():
 def test_guardian_provider_parses_fixture():
     payload = json.loads((FIXTURES / "guardian_search.json").read_text())
     provider = GuardianProvider("test")
-    provider.session = QueueSession([Response(payload=payload)])
+    provider.session = RecordingQueueSession([Response(payload=payload)])
     ref = next(iter(provider.discover(NewsCrawlRequest(max_pages=1))))
     article = provider.fetch(ref)
     assert article.title == "Guardian example"
     assert article.section == "Business"
+    assert article.tags == ["Stock markets", "Markets", "Example Author"]
+    assert article.raw_metadata["type"] == "article"
+    assert article.raw_metadata["pillar_name"] == "News"
+    assert article.raw_metadata["section_id"] == "business"
+    assert article.raw_metadata["section_name"] == "Business"
+    assert article.raw_metadata["tag_ids"] == [
+        "business/stock-markets",
+        "business/markets",
+        "profile/example-author",
+    ]
+    assert article.raw_metadata["tag_types"] == ["keyword", "contributor"]
+    assert provider.session.requests[0]["params"]["show-tags"] == "all"
 
 
 def test_bloomberg_provider_parsers():

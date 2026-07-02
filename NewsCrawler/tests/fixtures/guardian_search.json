@@ -6,13 +6,35 @@
       "webUrl": "https://www.theguardian.com/business/2026/jun/25/example",
       "webTitle": "Guardian example",
       "webPublicationDate": "2026-06-25T09:00:00Z",
+      "type": "article",
+      "sectionId": "business",
       "sectionName": "Business",
+      "pillarId": "pillar/news",
+      "pillarName": "News",
       "fields": {
         "headline": "Guardian example",
         "trailText": "<p>Example summary</p>",
         "bodyText": "Example body",
-        "byline": "Example Author"
-      }
+        "byline": "Example Author",
+        "publication": "theguardian.com"
+      },
+      "tags": [
+        {
+          "id": "business/stock-markets",
+          "type": "keyword",
+          "webTitle": "Stock markets"
+        },
+        {
+          "id": "business/markets",
+          "type": "keyword",
+          "webTitle": "Markets"
+        },
+        {
+          "id": "profile/example-author",
+          "type": "contributor",
+          "webTitle": "Example Author"
+        }
+      ]
     }]
   }
 }

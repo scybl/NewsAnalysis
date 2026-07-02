@@ -169,30 +169,50 @@ def news_crawler_prometheus_metrics(snapshot: dict[str, Any] | None = None) -> s
             lines.append(f'{metric}{{source="{_label(source)}"}} {_timestamp_seconds(item.get(field))}')
 
     run_counts: Counter[tuple[str, str]] = Counter()
-    discovered: Counter[str] = Counter()
-    inserted: Counter[str] = Counter()
-    updated: Counter[str] = Counter()
-    failed: Counter[str] = Counter()
+    article_results: Counter[tuple[str, str]] = Counter()
+    issue_counts: Counter[tuple[str, str, str]] = Counter()
+    run_durations: Counter[tuple[str, str]] = Counter()
+    running_sources = {str(item.get("source_name") or "unknown"): 0 for item in payload.get("health") or []}
     for run in payload.get("runs") or []:
         source = str(run.get("source_name") or "unknown")
         status = str(run.get("status") or "unknown")
         run_counts[(source, status)] += 1
-        discovered[source] += int(_number(run.get("discovered")))
-        inserted[source] += int(_number(run.get("inserted")))
-        updated[source] += int(_number(run.get("updated")))
-        failed[source] += int(_number(run.get("failed")))
+        if status in {"queued", "running"}:
+            running_sources[source] = 1
+        run_durations[(source, status)] += _duration_seconds(run)
+        for result_name in ("discovered", "fetched", "inserted", "updated", "skipped", "failed"):
+            article_results[(source, result_name)] += int(_number(run.get(result_name)))
+        for severity, issues in (("error", run.get("errors") or []), ("warning", run.get("warnings") or [])):
+            for issue in issues:
+                code = str((issue or {}).get("code") or "unknown")
+                issue_counts[(source, code, severity)] += 1
     lines.extend(["# HELP news_crawler_recent_runs Recent crawl runs exposed by source and status.", "# TYPE news_crawler_recent_runs gauge"])
     for (source, status), count in sorted(run_counts.items()):
         lines.append(f'news_crawler_recent_runs{{source="{_label(source)}",status="{_label(status)}"}} {count}')
-    for metric, help_text, values in (
-        ("news_crawler_recent_discovered_articles", "Recently discovered articles by source.", discovered),
-        ("news_crawler_recent_inserted_articles", "Recently inserted articles by source.", inserted),
-        ("news_crawler_recent_updated_articles", "Recently updated articles by source.", updated),
-        ("news_crawler_recent_failed_articles", "Recently failed articles by source.", failed),
-    ):
+    lines.extend(["# HELP news_crawler_source_running Source currently has a queued or running crawl.", "# TYPE news_crawler_source_running gauge"])
+    for source, value in sorted(running_sources.items()):
+        lines.append(f'news_crawler_source_running{{source="{_label(source)}"}} {value}')
+    lines.extend(["# HELP news_crawler_recent_articles Recent article outcomes by source and result.", "# TYPE news_crawler_recent_articles gauge"])
+    for (source, result_name), value in sorted(article_results.items()):
+        lines.append(f'news_crawler_recent_articles{{source="{_label(source)}",result="{_label(result_name)}"}} {value}')
+    lines.extend(["# HELP news_crawler_recent_run_duration_seconds Recent crawl duration seconds summed by source and status.", "# TYPE news_crawler_recent_run_duration_seconds gauge"])
+    for (source, status), value in sorted(run_durations.items()):
+        lines.append(f'news_crawler_recent_run_duration_seconds{{source="{_label(source)}",status="{_label(status)}"}} {_number(value)}')
+    lines.extend(["# HELP news_crawler_recent_issues Recent structured crawl issues by source, code, and severity.", "# TYPE news_crawler_recent_issues gauge"])
+    for (source, code, severity), value in sorted(issue_counts.items()):
+        lines.append(f'news_crawler_recent_issues{{source="{_label(source)}",code="{_label(code)}",severity="{_label(severity)}"}} {value}')
+
+    legacy_article_metrics = {
+        "news_crawler_recent_discovered_articles": ("Recently discovered articles by source.", "discovered"),
+        "news_crawler_recent_inserted_articles": ("Recently inserted articles by source.", "inserted"),
+        "news_crawler_recent_updated_articles": ("Recently updated articles by source.", "updated"),
+        "news_crawler_recent_failed_articles": ("Recently failed articles by source.", "failed"),
+    }
+    for metric, (help_text, result_name) in legacy_article_metrics.items():
         lines.extend([f"# HELP {metric} {help_text}", f"# TYPE {metric} gauge"])
-        for source, value in sorted(values.items()):
-            lines.append(f'{metric}{{source="{_label(source)}"}} {value}')
+        for (source, current_result), value in sorted(article_results.items()):
+            if current_result == result_name:
+                lines.append(f'{metric}{{source="{_label(source)}"}} {value}')
 
     failure_stats = payload.get("failure_stats") or {}
     lines.extend([
@@ -239,6 +259,26 @@ def _timestamp_seconds(value: Any) -> int:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return int(parsed.timestamp())
+
+
+def _duration_seconds(run: dict[str, Any]) -> float:
+    started = _parse_timestamp(run.get("started_at"))
+    finished = _parse_timestamp(run.get("finished_at"))
+    if not started or not finished:
+        return 0
+    return max(0.0, (finished - started).total_seconds())
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _label(value: Any) -> str:
