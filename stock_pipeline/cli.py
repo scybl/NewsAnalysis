@@ -26,6 +26,7 @@ from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
 from .minute_cold_storage import archive_buckets as archive_minute_buckets
 from .minute_cold_storage import archive_month_shards as archive_minute_month_shards
 from .minute_cold_storage import archive_stock_shards as archive_minute_stock_shards
+from .minute_cold_storage import archive_stock_year_shards as archive_minute_stock_year_shards
 from .minute_cold_storage import build_config as build_minute_cold_config
 from .minute_cold_storage import cleanup_archived_buckets as cleanup_minute_archived_buckets
 from .minute_cold_storage import ensure_indexes as ensure_minute_cold_indexes
@@ -122,7 +123,20 @@ def main() -> None:
     ths_minute_parser.add_argument("--sleep", type=parse_sleep, default=(0.8, 1.8), help="股票之间请求间隔，格式: min,max")
     ths_minute_parser.add_argument("--timeout", type=float, default=12.0, help="单次请求超时秒数")
     minute_cold_parser = market_subparsers.add_parser("minute-cold", help="归档、上传和按需取回股票分钟冷数据")
-    minute_cold_parser.add_argument("action", choices=["export", "export-upload", "export-month-upload", "export-stock-upload", "cleanup-archived", "retrieve", "prune-cache"], help="export 只写本地对象和索引；export-stock-upload 按股票整包同步；cleanup-archived 清理已归档旧 bucket；retrieve 单日取回缓存")
+    minute_cold_parser.add_argument(
+        "action",
+        choices=[
+            "export",
+            "export-upload",
+            "export-month-upload",
+            "export-stock-upload",
+            "export-stock-year-upload",
+            "cleanup-archived",
+            "retrieve",
+            "prune-cache",
+        ],
+        help="export 只写本地对象和索引；export-stock-year-upload 按股票年份分片同步；cleanup-archived 清理已归档旧 bucket；retrieve 单日取回缓存",
+    )
     minute_cold_parser.add_argument("--codes", default="", help="股票代码，逗号分隔；不传则处理全部")
     minute_cold_parser.add_argument("--source", default="pytdx_history", help="数据源，默认 pytdx_history")
     minute_cold_parser.add_argument("--trade-date", default="", help="交易日 YYYYMMDD；retrieve 必填，export 可选")
@@ -439,6 +453,24 @@ def run_minute_cold(args) -> None:
             if codes:
                 query["ts_code"] = {"$in": codes}
             result = archive_minute_stock_shards(
+                buckets,
+                day_index,
+                coverage,
+                query=query,
+                config=config,
+                limit=args.limit,
+                upload=True,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            return
+        if args.action == "export-stock-year-upload":
+            query = {"source": args.source}
+            codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
+            if codes:
+                query["ts_code"] = {"$in": codes}
+            if args.trade_date:
+                query["trade_date"] = args.trade_date.replace("-", "")
+            result = archive_minute_stock_year_shards(
                 buckets,
                 day_index,
                 coverage,

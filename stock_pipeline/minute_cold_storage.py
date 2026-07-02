@@ -53,6 +53,10 @@ def ensure_indexes(day_index: Any, coverage: Any, pymongo_module: Any) -> None:
     )
     day_index.create_index([("ts_code", pymongo_module.ASCENDING), ("trade_date", pymongo_module.DESCENDING)], name="ts_code_trade_date")
     day_index.create_index([("remote_path", pymongo_module.ASCENDING)], name="remote_path")
+    day_index.create_index(
+        [("source", pymongo_module.ASCENDING), ("ts_code", pymongo_module.ASCENDING), ("object_trade_year", pymongo_module.ASCENDING)],
+        name="source_ts_code_object_trade_year",
+    )
     day_index.create_index([("cache.last_accessed_at", pymongo_module.ASCENDING)], name="cache_last_accessed_at")
     coverage.create_index(
         [("source", pymongo_module.ASCENDING), ("ts_code", pymongo_module.ASCENDING)],
@@ -77,6 +81,13 @@ def stock_object_relative_path(source: str, ts_code: str) -> Path:
     code = normalize_ts_code(ts_code)
     safe_source = str(source or "unknown").replace("/", "_")
     return Path("objects_stock") / safe_source / f"{code}.jsonl"
+
+
+def stock_year_object_relative_path(source: str, ts_code: str, trade_year: str) -> Path:
+    code = normalize_ts_code(ts_code)
+    year = normalize_trade_year(trade_year)
+    safe_source = str(source or "unknown").replace("/", "_")
+    return Path("objects_stock_year") / safe_source / code / f"{year}.jsonl"
 
 
 def remote_object_path(bucket: dict[str, Any], config: MinuteColdConfig | None = None) -> str:
@@ -149,6 +160,7 @@ def upsert_day_index(day_index: Any, bucket: dict[str, Any], object_info: dict[s
                 "size_bytes": int(object_info.get("size_bytes") or 0),
                 "storage_object": str(object_info.get("storage_object") or "day_jsonl"),
                 "object_trade_month": str(object_info.get("object_trade_month") or trade_date[:6]),
+                "object_trade_year": str(object_info.get("object_trade_year") or trade_date[:4]),
                 "upload_status": upload_status,
                 "updated_at": now,
             },
@@ -458,6 +470,105 @@ def archive_stock_shards(
     }
 
 
+def archive_stock_year_shards(
+    bucket_collection: Any,
+    day_index: Any,
+    coverage: Any,
+    *,
+    query: dict[str, Any],
+    config: MinuteColdConfig | None = None,
+    limit: int | None = None,
+    upload: bool = False,
+    remove_local_after_upload: bool = True,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    cfg = config or build_config()
+    stock_keys = _stock_keys_for_query(bucket_collection, query)
+    exported_days = 0
+    skipped_days = 0
+    uploaded_files = 0
+    failed: list[dict[str, str]] = []
+    touched: set[tuple[str, str]] = set()
+
+    def process_year(key: tuple[str, str, str], buckets: list[dict[str, Any]]) -> dict[str, Any]:
+        source, ts_code, year = key
+        try:
+            expected_relative_path = stock_year_object_relative_path(source, ts_code, year).as_posix()
+            trade_dates = [normalize_trade_date(str(bucket.get("trade_date") or "")) for bucket in buckets]
+            already_uploaded = day_index.count_documents(
+                {
+                    "source": source,
+                    "ts_code": ts_code,
+                    "trade_date": {"$in": trade_dates},
+                    "relative_path": expected_relative_path,
+                    "storage_object": "stock_year_jsonl",
+                    "upload_status": "uploaded",
+                }
+            )
+            if already_uploaded == len(buckets):
+                return {
+                    "ok": True,
+                    "skipped_days": len(buckets),
+                    "exported_days": 0,
+                    "uploaded_files": 0,
+                    "touched": (source, ts_code),
+                }
+            object_info = write_stock_year_object(buckets, cfg, source=source, ts_code=ts_code, trade_year=year)
+            status = "local"
+            if upload:
+                upload_one(object_info["local_path"], object_info["remote_path"], cfg, runner=runner)
+                status = "uploaded"
+                if remove_local_after_upload:
+                    Path(object_info["local_path"]).unlink(missing_ok=True)
+            for bucket in buckets:
+                upsert_day_index(day_index, bucket, object_info, upload_status=status)
+            return {
+                "ok": True,
+                "skipped_days": 0,
+                "exported_days": len(buckets),
+                "uploaded_files": 1 if upload else 0,
+                "touched": (source, ts_code),
+            }
+        except Exception as exc:  # noqa: BLE001
+            source, ts_code, year = key
+            return {"ok": False, "failed": {"source": source, "ts_code": ts_code, "trade_year": year, "error": str(exc)}}
+
+    def collect(result: dict[str, Any]) -> None:
+        nonlocal exported_days, skipped_days, uploaded_files
+        if not result.get("ok"):
+            failed.append(result.get("failed") or {"error": "unknown"})
+            return
+        exported_days += int(result.get("exported_days") or 0)
+        skipped_days += int(result.get("skipped_days") or 0)
+        uploaded_files += int(result.get("uploaded_files") or 0)
+        touched_item = result.get("touched")
+        if isinstance(touched_item, tuple) and len(touched_item) == 2:
+            touched.add(touched_item)
+
+    for source, ts_code in stock_keys:
+        if limit and exported_days >= int(limit):
+            break
+        stock_query = {**query, "source": source, "ts_code": ts_code}
+        for year in _stock_years_for_query(bucket_collection, stock_query):
+            if limit and exported_days >= int(limit):
+                break
+            year_query = _year_limited_query(stock_query, year)
+            buckets = list(bucket_collection.find(year_query, {"_id": 0}).sort([("trade_date", 1)]))
+            if not buckets:
+                continue
+            collect(process_year((source, ts_code, year), buckets))
+    coverage_rows = [refresh_coverage(day_index, coverage, source=source, ts_code=ts_code) for source, ts_code in sorted(touched)]
+    return {
+        "ok": not failed,
+        "exported_days": exported_days,
+        "skipped_days": skipped_days,
+        "uploaded_files": uploaded_files,
+        "failed": failed[:20],
+        "coverage_updated": len(coverage_rows),
+        "storage_object": "stock_year_jsonl",
+    }
+
+
 def _stock_keys_for_query(bucket_collection: Any, query: dict[str, Any]) -> list[tuple[str, str]]:
     pipeline = [
         {"$match": query},
@@ -480,6 +591,33 @@ def _stock_keys_for_query(bucket_collection: Any, query: dict[str, Any]) -> list
     return sorted(keys)
 
 
+def _stock_years_for_query(bucket_collection: Any, query: dict[str, Any]) -> list[str]:
+    pipeline = [
+        {"$match": query},
+        {"$group": {"_id": {"$substr": ["$trade_date", 0, 4]}}},
+        {"$sort": {"_id": 1}},
+    ]
+    if hasattr(bucket_collection, "aggregate"):
+        rows = bucket_collection.aggregate(pipeline, allowDiskUse=True)
+        return [normalize_trade_year(str(row.get("_id") or "")) for row in rows if row.get("_id")]
+
+    years = set()
+    for bucket in bucket_collection.find(query, {"_id": 0, "trade_date": 1}):
+        trade_date = normalize_trade_date(str(bucket.get("trade_date") or ""))
+        years.add(trade_date[:4])
+    return sorted(years)
+
+
+def _year_limited_query(query: dict[str, Any], trade_year: str) -> dict[str, Any]:
+    year = normalize_trade_year(trade_year)
+    existing = query.get("trade_date")
+    if isinstance(existing, str):
+        return dict(query) if existing.startswith(year) else {**query, "trade_date": "__never__"}
+    if isinstance(existing, dict):
+        return dict(query)
+    return {**query, "trade_date": {"$gte": f"{year}0101", "$lte": f"{year}1231"}}
+
+
 def cleanup_archived_buckets(
     bucket_collection: Any,
     day_index: Any,
@@ -490,7 +628,8 @@ def cleanup_archived_buckets(
     codes: list[str] | None = None,
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    query: dict[str, Any] = {"source": source, "storage_object": "stock_jsonl", "upload_status": "uploaded"}
+    archived_objects = ["stock_jsonl", "stock_year_jsonl"]
+    query: dict[str, Any] = {"source": source, "storage_object": {"$in": archived_objects}, "upload_status": "uploaded"}
     if codes:
         query["ts_code"] = {"$in": [normalize_ts_code(code) for code in codes]}
     ts_codes = sorted(day_index.distinct("ts_code", query))
@@ -502,7 +641,7 @@ def cleanup_archived_buckets(
         uploaded_dates = [
             str(item.get("trade_date") or "")
             for item in day_index.find(
-                {"source": source, "ts_code": ts_code, "storage_object": "stock_jsonl", "upload_status": "uploaded"},
+                {"source": source, "ts_code": ts_code, "storage_object": {"$in": archived_objects}, "upload_status": "uploaded"},
                 {"_id": 0, "trade_date": 1},
             ).sort([("trade_date", -1)])
         ]
@@ -649,6 +788,70 @@ def write_stock_object(
     }
 
 
+def write_stock_year_object(
+    buckets: list[dict[str, Any]],
+    config: MinuteColdConfig | None = None,
+    *,
+    source: str,
+    ts_code: str,
+    trade_year: str,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    cfg = config or build_config()
+    year = normalize_trade_year(trade_year)
+    relative_path = stock_year_object_relative_path(source, ts_code, year)
+    target = (root or cfg.local_root) / relative_path
+    ensure_dir(target.parent)
+    total_rows = 0
+    first_date = ""
+    last_date = ""
+    start_minute = ""
+    end_minute = ""
+    with target.open("w", encoding="utf-8") as handle:
+        for bucket in sorted(buckets, key=lambda item: str(item.get("trade_date") or "")):
+            trade_date = normalize_trade_date(str(bucket.get("trade_date") or ""))
+            rows = bucket_rows(bucket)
+            total_rows += len(rows)
+            first_date = first_date or trade_date
+            last_date = trade_date
+            if not start_minute:
+                start_minute = str(bucket.get("start_minute") or "")
+            end_minute = str(bucket.get("end_minute") or end_minute)
+            handle.write(
+                json.dumps(
+                    {
+                        "source": bucket.get("source", source),
+                        "dataset": bucket.get("dataset", ""),
+                        "ts_code": normalize_ts_code(str(bucket.get("ts_code") or ts_code)),
+                        "symbol": bucket.get("symbol", ""),
+                        "trade_date": trade_date,
+                        "row_count": len(rows),
+                        "rows": rows,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=_json_default,
+                )
+            )
+            handle.write("\n")
+    digest = _sha256_file(target)
+    return {
+        "local_path": str(target),
+        "relative_path": relative_path.as_posix(),
+        "remote_path": f"{cfg.remote_root}/{relative_path.as_posix()}",
+        "sha256": digest,
+        "size_bytes": target.stat().st_size,
+        "row_count": total_rows,
+        "start_minute": start_minute,
+        "end_minute": end_minute,
+        "storage_object": "stock_year_jsonl",
+        "object_trade_month": "",
+        "object_trade_year": year,
+        "first_trade_date": first_date,
+        "last_trade_date": last_date,
+    }
+
+
 def upload_one(
     local_path: str | Path,
     remote_path: str,
@@ -693,7 +896,7 @@ def read_cached_or_downloaded_day(
     cache_path.touch()
     day_index.update_one(query, {"$set": {"cache.local_path": str(cache_path), "cache.last_accessed_at": now}})
     prune_cache(cfg.cache_root, cfg.cache_max_bytes)
-    if doc.get("storage_object") in {"month_jsonl", "stock_jsonl"}:
+    if doc.get("storage_object") in {"month_jsonl", "stock_jsonl", "stock_year_jsonl"}:
         return read_object_day_rows(cache_path, query["trade_date"])
     return read_jsonl_rows(cache_path)
 
@@ -779,6 +982,13 @@ def normalize_trade_month(value: str) -> str:
     text = str(value or "").replace("-", "").strip()
     if len(text) != 6 or not text.isdigit():
         raise ValueError(f"交易月份格式应为 YYYYMM：{value}")
+    return text
+
+
+def normalize_trade_year(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) != 4 or not text.isdigit():
+        raise ValueError(f"交易年份格式应为 YYYY：{value}")
     return text
 
 

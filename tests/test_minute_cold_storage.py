@@ -40,8 +40,20 @@ class FakeBucketCollection:
         for bucket in self.buckets:
             if query.get("source") and bucket.get("source") != query["source"]:
                 continue
-            if query.get("ts_code") and bucket.get("ts_code") != query["ts_code"]:
+            ts_code_filter = query.get("ts_code")
+            if isinstance(ts_code_filter, dict) and "$in" in ts_code_filter and bucket.get("ts_code") not in ts_code_filter["$in"]:
                 continue
+            if isinstance(ts_code_filter, str) and bucket.get("ts_code") != ts_code_filter:
+                continue
+            trade_date_filter = query.get("trade_date")
+            if isinstance(trade_date_filter, str) and bucket.get("trade_date") != trade_date_filter:
+                continue
+            if isinstance(trade_date_filter, dict):
+                trade_date = str(bucket.get("trade_date") or "")
+                if "$gte" in trade_date_filter and trade_date < trade_date_filter["$gte"]:
+                    continue
+                if "$lte" in trade_date_filter and trade_date > trade_date_filter["$lte"]:
+                    continue
             rows.append(bucket)
         return FakeFindCursor(rows)
 
@@ -173,6 +185,30 @@ def test_stock_object_can_return_one_trade_date(tmp_path):
     assert rows[0]["minute"] == "0930"
 
 
+def test_stock_year_object_can_return_one_trade_date(tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    second = _bucket()
+    second["trade_date"] = "20261228"
+    second["minutes"] = [{"minute": "0930", "price": 10.2}]
+
+    info = minute_cold_storage.write_stock_year_object(
+        [_bucket(), second],
+        config,
+        source="pytdx_history",
+        ts_code="000001.SZ",
+        trade_year="2026",
+    )
+    path = Path(info["local_path"])
+
+    assert info["relative_path"] == "objects_stock_year/pytdx_history/000001.SZ/2026.jsonl"
+    assert info["storage_object"] == "stock_year_jsonl"
+    assert info["object_trade_year"] == "2026"
+    assert path.read_text(encoding="utf-8").count("\n") == 2
+    rows = minute_cold_storage.read_object_day_rows(path, "20261228")
+    assert rows[0]["trade_date"] == "20261228"
+    assert rows[0]["minute"] == "0930"
+
+
 def test_archive_stock_shards_reads_each_stock_independently(tmp_path):
     config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
     first = _bucket()
@@ -201,3 +237,39 @@ def test_archive_stock_shards_reads_each_stock_independently(tmp_path):
     ]
     assert day_index.docs[("pytdx_history", "000001.SZ", "20260627")]["relative_path"] == "objects_stock/pytdx_history/000001.SZ.jsonl"
     assert day_index.docs[("pytdx_history", "000002.SZ", "20260627")]["relative_path"] == "objects_stock/pytdx_history/000002.SZ.jsonl"
+
+
+def test_archive_stock_year_shards_reads_each_year_independently(tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    first = _bucket()
+    second = _bucket()
+    second["trade_date"] = "20270104"
+    second["minutes"] = [{"minute": "0930", "price": 11.0}]
+    bucket_collection = FakeBucketCollection([first, second])
+    day_index = FakeIndexCollection()
+    coverage = FakeCoverageCollection()
+
+    result = minute_cold_storage.archive_stock_year_shards(
+        bucket_collection,
+        day_index,
+        coverage,
+        query={"source": "pytdx_history"},
+        config=config,
+    )
+
+    assert result["ok"] is True
+    assert result["exported_days"] == 2
+    assert result["uploaded_files"] == 0
+    assert result["storage_object"] == "stock_year_jsonl"
+    assert bucket_collection.find_queries == [
+        {"source": "pytdx_history"},
+        {"source": "pytdx_history", "ts_code": "000001.SZ"},
+        {"source": "pytdx_history", "ts_code": "000001.SZ", "trade_date": {"$gte": "20260101", "$lte": "20261231"}},
+        {"source": "pytdx_history", "ts_code": "000001.SZ", "trade_date": {"$gte": "20270101", "$lte": "20271231"}},
+    ]
+    first_index = day_index.docs[("pytdx_history", "000001.SZ", "20260627")]
+    second_index = day_index.docs[("pytdx_history", "000001.SZ", "20270104")]
+    assert first_index["relative_path"] == "objects_stock_year/pytdx_history/000001.SZ/2026.jsonl"
+    assert second_index["relative_path"] == "objects_stock_year/pytdx_history/000001.SZ/2027.jsonl"
+    assert first_index["object_trade_year"] == "2026"
+    assert second_index["object_trade_year"] == "2027"
