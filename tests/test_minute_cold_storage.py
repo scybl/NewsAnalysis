@@ -32,8 +32,10 @@ class FakeFindCursor(list):
 class FakeBucketCollection:
     def __init__(self, buckets):
         self.buckets = buckets
+        self.find_queries = []
 
     def find(self, query, projection=None):
+        self.find_queries.append(query)
         rows = []
         for bucket in self.buckets:
             if query.get("source") and bucket.get("source") != query["source"]:
@@ -54,6 +56,25 @@ class FakeIndexCollection:
         doc.update(update.get("$set", {}))
         self.docs[key] = doc
         return SimpleNamespace(upserted_id=None, modified_count=1)
+
+    def count_documents(self, query):
+        total = 0
+        trade_dates = set((query.get("trade_date") or {}).get("$in") or [])
+        for key, doc in self.docs.items():
+            if query.get("source") and key[0] != query["source"]:
+                continue
+            if query.get("ts_code") and key[1] != query["ts_code"]:
+                continue
+            if trade_dates and key[2] not in trade_dates:
+                continue
+            if query.get("relative_path") and doc.get("relative_path") != query["relative_path"]:
+                continue
+            if query.get("storage_object") and doc.get("storage_object") != query["storage_object"]:
+                continue
+            if query.get("upload_status") and doc.get("upload_status") != query["upload_status"]:
+                continue
+            total += 1
+        return total
 
     def aggregate(self, pipeline):
         match = pipeline[0]["$match"]
@@ -150,3 +171,33 @@ def test_stock_object_can_return_one_trade_date(tmp_path):
     rows = minute_cold_storage.read_object_day_rows(path, "20260628")
     assert rows[0]["trade_date"] == "20260628"
     assert rows[0]["minute"] == "0930"
+
+
+def test_archive_stock_shards_reads_each_stock_independently(tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    first = _bucket()
+    second = _bucket()
+    second["ts_code"] = "000002.SZ"
+    second["symbol"] = "000002"
+    bucket_collection = FakeBucketCollection([first, second])
+    day_index = FakeIndexCollection()
+    coverage = FakeCoverageCollection()
+
+    result = minute_cold_storage.archive_stock_shards(
+        bucket_collection,
+        day_index,
+        coverage,
+        query={"source": "pytdx_history"},
+        config=config,
+    )
+
+    assert result["ok"] is True
+    assert result["exported_days"] == 2
+    assert result["storage_object"] == "stock_jsonl"
+    assert bucket_collection.find_queries == [
+        {"source": "pytdx_history"},
+        {"source": "pytdx_history", "ts_code": "000001.SZ"},
+        {"source": "pytdx_history", "ts_code": "000002.SZ"},
+    ]
+    assert day_index.docs[("pytdx_history", "000001.SZ", "20260627")]["relative_path"] == "objects_stock/pytdx_history/000001.SZ.jsonl"
+    assert day_index.docs[("pytdx_history", "000002.SZ", "20260627")]["relative_path"] == "objects_stock/pytdx_history/000002.SZ.jsonl"

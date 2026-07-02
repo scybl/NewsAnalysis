@@ -389,14 +389,12 @@ def archive_stock_shards(
     runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
 ) -> dict[str, Any]:
     cfg = config or build_config()
-    cursor = bucket_collection.find(query, {"_id": 0}).sort([("source", 1), ("ts_code", 1), ("trade_date", 1)])
+    stock_keys = _stock_keys_for_query(bucket_collection, query)
     exported_days = 0
     skipped_days = 0
     uploaded_files = 0
     failed: list[dict[str, str]] = []
     touched: set[tuple[str, str]] = set()
-    current_key: tuple[str, str] | None = None
-    current_buckets: list[dict[str, Any]] = []
 
     def process_stock(key: tuple[str, str], buckets: list[dict[str, Any]]) -> dict[str, Any]:
         source, ts_code = key
@@ -440,24 +438,14 @@ def archive_stock_shards(
         if isinstance(touched_item, tuple) and len(touched_item) == 2:
             touched.add(touched_item)
 
-    def flush() -> None:
-        nonlocal current_key, current_buckets
-        if not current_key or not current_buckets:
-            return
-        collect(process_stock(current_key, list(current_buckets)))
-        current_key = None
-        current_buckets = []
-
-    for bucket in cursor:
-        ts_code = normalize_ts_code(str(bucket.get("ts_code") or ""))
-        key = (str(bucket.get("source") or ""), ts_code)
-        if current_key is not None and key != current_key:
-            flush()
-            if limit and exported_days >= int(limit):
-                break
-        current_key = key
-        current_buckets.append(bucket)
-    flush()
+    for source, ts_code in stock_keys:
+        if limit and exported_days >= int(limit):
+            break
+        stock_query = {**query, "source": source, "ts_code": ts_code}
+        buckets = list(bucket_collection.find(stock_query, {"_id": 0}).sort([("trade_date", 1)]))
+        if not buckets:
+            continue
+        collect(process_stock((source, ts_code), buckets))
     coverage_rows = [refresh_coverage(day_index, coverage, source=source, ts_code=ts_code) for source, ts_code in sorted(touched)]
     return {
         "ok": not failed,
@@ -468,6 +456,28 @@ def archive_stock_shards(
         "coverage_updated": len(coverage_rows),
         "storage_object": "stock_jsonl",
     }
+
+
+def _stock_keys_for_query(bucket_collection: Any, query: dict[str, Any]) -> list[tuple[str, str]]:
+    pipeline = [
+        {"$match": query},
+        {"$group": {"_id": {"source": "$source", "ts_code": "$ts_code"}}},
+        {"$sort": {"_id.source": 1, "_id.ts_code": 1}},
+    ]
+    if hasattr(bucket_collection, "aggregate"):
+        rows = bucket_collection.aggregate(pipeline, allowDiskUse=True)
+        return [
+            (str((row.get("_id") or {}).get("source") or ""), normalize_ts_code(str((row.get("_id") or {}).get("ts_code") or "")))
+            for row in rows
+            if (row.get("_id") or {}).get("ts_code")
+        ]
+
+    keys = set()
+    for bucket in bucket_collection.find(query, {"_id": 0, "source": 1, "ts_code": 1}):
+        ts_code = normalize_ts_code(str(bucket.get("ts_code") or ""))
+        if ts_code:
+            keys.add((str(bucket.get("source") or ""), ts_code))
+    return sorted(keys)
 
 
 def cleanup_archived_buckets(
