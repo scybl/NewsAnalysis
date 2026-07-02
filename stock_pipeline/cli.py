@@ -478,6 +478,7 @@ def run_minute_cold(args) -> None:
                 config=config,
                 limit=args.limit,
                 upload=True,
+                progress=True,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
             return

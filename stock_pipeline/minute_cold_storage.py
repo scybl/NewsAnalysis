@@ -480,21 +480,38 @@ def archive_stock_year_shards(
     limit: int | None = None,
     upload: bool = False,
     remove_local_after_upload: bool = True,
+    progress: bool = False,
     runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
 ) -> dict[str, Any]:
     cfg = config or build_config()
     stock_keys = _stock_keys_for_query(bucket_collection, query)
+    stock_years = [
+        (source, ts_code, year)
+        for source, ts_code in stock_keys
+        for year in _stock_years_for_query(bucket_collection, {**query, "source": source, "ts_code": ts_code})
+    ]
+    total_files = len(stock_years)
     exported_days = 0
     skipped_days = 0
     uploaded_files = 0
     failed: list[dict[str, str]] = []
     touched: set[tuple[str, str]] = set()
 
-    def process_year(key: tuple[str, str, str], buckets: list[dict[str, Any]]) -> dict[str, Any]:
+    def log(event: str, **fields: Any) -> None:
+        if not progress:
+            return
+        payload = " ".join(f"{name}={value}" for name, value in fields.items() if value is not None)
+        print(f"[minute-cold][{_utc_now_text()}] {event} {payload}".rstrip(), flush=True)
+
+    log("plan", stocks=len(stock_keys), year_files=total_files, upload=upload, storage_object="stock_year_jsonl")
+
+    def process_year(key: tuple[str, str, str], buckets: list[dict[str, Any]], position: int) -> dict[str, Any]:
         source, ts_code, year = key
+        percent = _percent(position, total_files)
         try:
             expected_relative_path = stock_year_object_relative_path(source, ts_code, year).as_posix()
             trade_dates = [normalize_trade_date(str(bucket.get("trade_date") or "")) for bucket in buckets]
+            log("check", current=f"{position}/{total_files}", percent=percent, source=source, ts_code=ts_code, year=year, days=len(buckets))
             already_uploaded = day_index.count_documents(
                 {
                     "source": source,
@@ -506,6 +523,16 @@ def archive_stock_year_shards(
                 }
             )
             if already_uploaded == len(buckets):
+                log(
+                    "skip",
+                    current=f"{position}/{total_files}",
+                    percent=percent,
+                    source=source,
+                    ts_code=ts_code,
+                    year=year,
+                    days=len(buckets),
+                    reason="already_uploaded",
+                )
                 return {
                     "ok": True,
                     "skipped_days": len(buckets),
@@ -513,15 +540,57 @@ def archive_stock_year_shards(
                     "uploaded_files": 0,
                     "touched": (source, ts_code),
                 }
+            log(
+                "write_start",
+                current=f"{position}/{total_files}",
+                percent=percent,
+                source=source,
+                ts_code=ts_code,
+                year=year,
+                days=len(buckets),
+            )
             object_info = write_stock_year_object(buckets, cfg, source=source, ts_code=ts_code, trade_year=year)
+            log(
+                "write_done",
+                current=f"{position}/{total_files}",
+                percent=percent,
+                source=source,
+                ts_code=ts_code,
+                year=year,
+                size=_format_bytes(int(object_info.get("size_bytes") or 0)),
+                rows=object_info.get("row_count"),
+                path=object_info.get("relative_path"),
+            )
             status = "local"
             if upload:
+                log(
+                    "upload_start",
+                    current=f"{position}/{total_files}",
+                    percent=percent,
+                    source=source,
+                    ts_code=ts_code,
+                    year=year,
+                    size=_format_bytes(int(object_info.get("size_bytes") or 0)),
+                    remote=object_info.get("remote_path"),
+                )
                 upload_one(object_info["local_path"], object_info["remote_path"], cfg, runner=runner)
                 status = "uploaded"
+                log("upload_done", current=f"{position}/{total_files}", percent=percent, source=source, ts_code=ts_code, year=year)
                 if remove_local_after_upload:
                     Path(object_info["local_path"]).unlink(missing_ok=True)
+                    log("local_removed", current=f"{position}/{total_files}", percent=percent, source=source, ts_code=ts_code, year=year)
             for bucket in buckets:
                 upsert_day_index(day_index, bucket, object_info, upload_status=status)
+            log(
+                "index_done",
+                current=f"{position}/{total_files}",
+                percent=percent,
+                source=source,
+                ts_code=ts_code,
+                year=year,
+                days=len(buckets),
+                status=status,
+            )
             return {
                 "ok": True,
                 "skipped_days": 0,
@@ -531,6 +600,7 @@ def archive_stock_year_shards(
             }
         except Exception as exc:  # noqa: BLE001
             source, ts_code, year = key
+            log("failed", current=f"{position}/{total_files}", percent=percent, source=source, ts_code=ts_code, year=year, error=str(exc))
             return {"ok": False, "failed": {"source": source, "ts_code": ts_code, "trade_year": year, "error": str(exc)}}
 
     def collect(result: dict[str, Any]) -> None:
@@ -545,19 +615,33 @@ def archive_stock_year_shards(
         if isinstance(touched_item, tuple) and len(touched_item) == 2:
             touched.add(touched_item)
 
-    for source, ts_code in stock_keys:
+    for position, (source, ts_code, year) in enumerate(stock_years, start=1):
         if limit and exported_days >= int(limit):
             break
         stock_query = {**query, "source": source, "ts_code": ts_code}
-        for year in _stock_years_for_query(bucket_collection, stock_query):
-            if limit and exported_days >= int(limit):
-                break
-            year_query = _year_limited_query(stock_query, year)
-            buckets = list(bucket_collection.find(year_query, {"_id": 0}).sort([("trade_date", 1)]))
-            if not buckets:
-                continue
-            collect(process_year((source, ts_code, year), buckets))
+        year_query = _year_limited_query(stock_query, year)
+        buckets = list(bucket_collection.find(year_query, {"_id": 0}).sort([("trade_date", 1)]))
+        if not buckets:
+            log(
+                "empty",
+                current=f"{position}/{total_files}",
+                percent=_percent(position, total_files),
+                source=source,
+                ts_code=ts_code,
+                year=year,
+            )
+            continue
+        collect(process_year((source, ts_code, year), buckets, position))
     coverage_rows = [refresh_coverage(day_index, coverage, source=source, ts_code=ts_code) for source, ts_code in sorted(touched)]
+    log(
+        "summary",
+        ok=not failed,
+        exported_days=exported_days,
+        skipped_days=skipped_days,
+        uploaded_files=uploaded_files,
+        failed=len(failed),
+        coverage_updated=len(coverage_rows),
+    )
     return {
         "ok": not failed,
         "exported_days": exported_days,
@@ -990,6 +1074,25 @@ def normalize_trade_year(value: str) -> str:
     if len(text) != 4 or not text.isdigit():
         raise ValueError(f"交易年份格式应为 YYYY：{value}")
     return text
+
+
+def _utc_now_text() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _percent(position: int, total: int) -> str:
+    if total <= 0:
+        return "100.0%"
+    return f"{min(100.0, position / total * 100):.1f}%"
+
+
+def _format_bytes(value: int) -> str:
+    size = float(max(0, value))
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"
 
 
 def _sha256_file(path: Path) -> str:
