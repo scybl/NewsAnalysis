@@ -6,12 +6,15 @@ from typing import Any
 
 from .config import load_dotenv
 from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
+from .minute_cold_storage import latest_indexed_days, read_cached_or_downloaded_day
 from .secret_store import secret_value
 from .utils import normalize_ts_code
 
 
 DEFAULT_DATABASE = MARKET_DATABASE
 DEFAULT_COLLECTION = MARKET_COLLECTIONS["minute_buckets"]
+DEFAULT_DAY_INDEX_COLLECTION = MARKET_COLLECTIONS["minute_day_index"]
+DEFAULT_COVERAGE_COLLECTION = MARKET_COLLECTIONS["minute_coverage"]
 MINUTE_DATASET_SOURCES = {
     "tdx_intraday_minutes": "tdx",
     "pytdx_history_minutes": "pytdx_history",
@@ -30,16 +33,24 @@ def build_minute_reference(
     row_count = _bucket_row_count(collection, query)
     first = collection.find_one(query, {"_id": 0, "trade_date": 1, "start_minute": 1}, sort=[("trade_date", 1)]) or {}
     last = collection.find_one(query, {"_id": 0, "trade_date": 1, "end_minute": 1}, sort=[("trade_date", -1)]) or {}
+    cold = _coverage_snapshot(collection.database[DEFAULT_COVERAGE_COLLECTION], query)
     return {
         "storage": "mongodb_day_buckets",
+        "cold_storage": "baidu_netdisk_day_objects",
         "database": collection.database.name,
         "collection": collection.name,
+        "day_index_collection": DEFAULT_DAY_INDEX_COLLECTION,
         "dataset": dataset,
         "source": source,
         "ts_code": normalize_ts_code(ts_code),
-        "row_count": row_count,
-        "start_date": str(first.get("trade_date") or ""),
-        "end_date": str(last.get("trade_date") or ""),
+        "row_count": row_count or int(cold.get("archived_rows") or 0),
+        "hot_row_count": row_count,
+        "archived_row_count": int(cold.get("archived_rows") or 0),
+        "archived_days": int(cold.get("archived_days") or 0),
+        "hot_days": int(cold.get("hot_days") or 15),
+        "cache_max_bytes": int(cold.get("cache_max_bytes") or 10 * 1024 * 1024 * 1024),
+        "start_date": str(first.get("trade_date") or cold.get("first_trade_date") or ""),
+        "end_date": str(last.get("trade_date") or cold.get("last_trade_date") or ""),
         "start_minute": str(first.get("start_minute") or ""),
         "end_minute": str(last.get("end_minute") or ""),
     }
@@ -61,7 +72,10 @@ def read_minute_rows(reference: dict[str, Any], limit: int = 80) -> list[dict[st
     }
     client = pymongo.MongoClient(_mongo_uri(database), serverSelectionTimeoutMS=2000, socketTimeoutMS=3000)
     try:
-        return _read_bucket_minute_rows(client[database][collection_name], query, limit)
+        rows = _read_bucket_minute_rows(client[database][collection_name], query, limit)
+        if rows:
+            return rows
+        return _read_cold_minute_rows(client[database][str(reference.get("day_index_collection") or DEFAULT_DAY_INDEX_COLLECTION)], query, limit)
     except Exception:  # MongoDB downtime must not block daily-data reads or analysis.
         return []
     finally:
@@ -89,6 +103,26 @@ def _read_bucket_minute_rows(collection: Any, query: dict[str, Any], limit: int)
                 if len(rows) >= target:
                     rows.reverse()
                     return rows
+    rows.reverse()
+    return rows
+
+
+def _read_cold_minute_rows(day_index: Any, query: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    target = max(1, min(int(limit), 10000))
+    day_limit = max(1, min((target // 200) + 2, 60))
+    rows: list[dict[str, Any]] = []
+    for day in latest_indexed_days(day_index, ts_code=query["ts_code"], source=query["source"], limit=day_limit):
+        day_rows = read_cached_or_downloaded_day(
+            day_index,
+            ts_code=query["ts_code"],
+            trade_date=str(day.get("trade_date") or ""),
+            source=query["source"],
+        )
+        for item in reversed(day_rows):
+            rows.append(item)
+            if len(rows) >= target:
+                rows.reverse()
+                return rows
     rows.reverse()
     return rows
 
@@ -122,6 +156,13 @@ def _bucket_row_count(collection: Any, query: dict[str, Any]) -> int:
         )
     )
     return int((result[0] if result else {}).get("rows") or 0)
+
+
+def _coverage_snapshot(collection: Any, query: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return collection.find_one(query, {"_id": 0}) or {}
+    except Exception:
+        return {}
 
 
 def _mongo_uri(database: str) -> str:

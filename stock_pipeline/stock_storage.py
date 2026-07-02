@@ -395,9 +395,14 @@ def build_local_stock_payload(code: str) -> dict[str, Any]:
     external_rows = read_external_minute_datasets(full_data, limit=4000)
     external_counts = minute_reference_row_counts(full_data)
     for item in build_table_datasets(external_rows):
+        reference = (full_data.get("external_datasets") or {}).get(item["key"]) or {}
         item["row_count"] = external_counts.get(item["key"], len(item["records"]))
         item["loaded_row_count"] = len(item["records"])
-        item["storage"] = "mongodb"
+        item["storage"] = "baidu_netdisk_cold_archive"
+        item["hot_row_count"] = int(reference.get("hot_row_count") or 0)
+        item["archived_row_count"] = int(reference.get("archived_row_count") or 0)
+        item["archived_days"] = int(reference.get("archived_days") or 0)
+        item["hot_days"] = int(reference.get("hot_days") or 15)
         table_datasets.append(item)
     table_datasets.sort(key=lambda item: (item["row_count"] == 0, item["label"]))
     return {

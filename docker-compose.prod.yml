@@ -34,6 +34,7 @@ services:
       MONGODB_DATABASE: ${MONGODB_DATABASE:-news}
       MONGODB_RAW_COLLECTION: ${MONGODB_RAW_COLLECTION:-raw_articles}
       STOCK_ANALYSIS_PROJECT_DIR: /Analysis
+      BDPAN_BIN: /usr/local/bin/bdpan
       RELEASE_VERSION: ${RELEASE_VERSION:-unknown}
       RELEASE_TIME: ${RELEASE_TIME:-unknown}
     ports:
@@ -45,6 +46,8 @@ services:
       - ./reports:/app/reports
       - ./sessions:/app/sessions
       - ../Analysis:/Analysis:ro
+      - /home/ubuntu/.local/bin/bdpan:/usr/local/bin/bdpan:ro
+      - /home/ubuntu/.config/bdpan:/root/.config/bdpan:ro
 
   news-crawler:
     build:

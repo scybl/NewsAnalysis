@@ -14,6 +14,8 @@ STOCK_COLLECTIONS = {
 MARKET_COLLECTIONS = {
     "minute_buckets": "minute_day_buckets",
     "minute_payloads": "market_minute_payloads",
+    "minute_day_index": "stock_minute_day_index",
+    "minute_coverage": "stock_minute_coverage",
     "kaipanla_results": "kaipanla_results",
 }
 

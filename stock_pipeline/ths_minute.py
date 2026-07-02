@@ -158,6 +158,7 @@ def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, 
     succeeded_days = 0
     failed_days = 0
     failures: list[dict[str, str]] = []
+    cold_archive: dict[str, Any] = {"ok": True, "status": "skipped", "reason": "no_new_rows"}
     for start in range(0, len(pending_dates), chunk_size):
         chunk_dates = pending_dates[start : start + chunk_size]
         try:
@@ -169,6 +170,7 @@ def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, 
             continue
         rows = fetched["rows"]
         batch_inserted, batch_updated = upsert_minute_rows(collection, rows)
+        cold_archive = archive_changed_minute_buckets(collection, ts_code, "pytdx_history", rows)
         inserted += batch_inserted
         updated += batch_updated
         rows_count += len(rows)
@@ -194,6 +196,7 @@ def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, 
         "stored_rows": local.get("rows", 0),
         "inserted": inserted,
         "updated": updated,
+        "cold_archive": cold_archive,
         "payload_inserted": 0,
         "local_merged": local["merged"],
         "local_path": local["path"],
@@ -215,6 +218,7 @@ def fetch_store_tdx_stock(ts_code: str, collection: Any, *, pages: int | str = 5
     if not rows:
         raise RuntimeError("通达信分钟 K 未返回数据。")
     inserted, updated = upsert_minute_rows(collection, rows)
+    cold_archive = archive_changed_minute_buckets(collection, ts_code, "tdx", rows)
     local = merge_local_dataset(ts_code, collection, {"source": "tdx"}, dataset=TDX_DATASET, source="tdx")
     dates = sorted({str(row.get("trade_date") or "") for row in rows if row.get("trade_date")})
     return {
@@ -237,6 +241,7 @@ def fetch_store_tdx_stock(ts_code: str, collection: Any, *, pages: int | str = 5
         "stored_rows": local.get("rows", len(rows)),
         "inserted": inserted,
         "updated": updated,
+        "cold_archive": cold_archive,
         "payload_inserted": 0,
         "local_merged": local["merged"],
         "local_path": local["path"],
@@ -251,6 +256,7 @@ def fetch_store_ths_stock(ts_code: str, cfg: ThsMinuteConfig, collection: Any, p
     payload = fetch_ths_minutes(ts_code, cfg)
     rows = normalize_minute_rows(ts_code, payload)
     inserted, updated = upsert_minute_rows(collection, rows)
+    cold_archive = archive_changed_minute_buckets(collection, ts_code, "10jqka", rows)
     payload_inserted = upsert_payload(payload_collection, ts_code, payload)
     local = merge_local_dataset(ts_code, collection, payload, dataset=THS_DATASET, source="10jqka")
     return {
@@ -268,6 +274,7 @@ def fetch_store_ths_stock(ts_code: str, cfg: ThsMinuteConfig, collection: Any, p
         "rows": len(rows),
         "inserted": inserted,
         "updated": updated,
+        "cold_archive": cold_archive,
         "payload_inserted": 1 if payload_inserted else 0,
         "local_merged": local["merged"],
         "local_path": local["path"],
@@ -628,6 +635,34 @@ def normalize_minute_rows(ts_code: str, payload: dict[str, Any]) -> list[dict[st
 
 def upsert_minute_rows(collection: Any, rows: list[dict[str, Any]]) -> tuple[int, int]:
     return _upsert_minute_day_buckets(collection, rows)
+
+
+def archive_changed_minute_buckets(collection: Any, ts_code: str, source: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if os.getenv("STOCK_MINUTE_COLD_ARCHIVE_ON_WRITE", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return {"ok": True, "status": "disabled"}
+    trade_dates = sorted({str(row.get("trade_date") or "") for row in rows if row.get("trade_date")})
+    if not trade_dates:
+        return {"ok": True, "status": "skipped", "reason": "no_trade_dates"}
+    try:
+        import pymongo
+
+        from .minute_cold_storage import archive_buckets, build_config, ensure_indexes
+
+        database = collection.database
+        day_index = database[MARKET_COLLECTIONS["minute_day_index"]]
+        coverage = database[MARKET_COLLECTIONS["minute_coverage"]]
+        ensure_indexes(day_index, coverage, pymongo)
+        upload = os.getenv("STOCK_MINUTE_COLD_UPLOAD_ON_WRITE", "1").strip().lower() not in {"0", "false", "no", "off"}
+        return archive_buckets(
+            collection,
+            day_index,
+            coverage,
+            query={"source": source, "ts_code": normalize_ts_code(ts_code), "trade_date": {"$in": trade_dates}},
+            config=build_config(),
+            upload=upload,
+        )
+    except Exception as exc:  # noqa: BLE001 - cold archive must not break minute ingestion
+        return {"ok": False, "status": "failed", "error": str(exc), "trade_dates": trade_dates[:10]}
 
 
 def _upsert_minute_day_buckets(collection: Any, rows: list[dict[str, Any]]) -> tuple[int, int]:

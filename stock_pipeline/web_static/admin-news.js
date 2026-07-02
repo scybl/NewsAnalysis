@@ -322,7 +322,7 @@ function renderStockStats() {
   const cards = [
     ["股票资料包", stockState.count, "数据库资料包"],
     ["数据集总行数", formatNumber(stockState.totalDatasetRows), "按 metadata 统计"],
-    ["分钟行情行数", formatNumber(stockState.totalMinuteRows), "MongoDB 引用"],
+    ["分钟行情行数", formatNumber(stockState.totalMinuteRows), "15天热数据 + 冷归档索引"],
     ["最近更新", latest, "按 updated_at 排序"],
   ];
   stockDataStats.innerHTML = cards

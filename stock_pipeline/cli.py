@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 from pathlib import Path
+from typing import Any
 
 from .analyst import INITIAL_QUESTION, StockAnalyst, session_path_for
 from .akshare_client import AkshareClient
@@ -20,12 +22,22 @@ from .kaipanla import (
     run_kaipanla_feature,
     validate_kaipanla_integration,
 )
+from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
+from .minute_cold_storage import archive_buckets as archive_minute_buckets
+from .minute_cold_storage import archive_month_shards as archive_minute_month_shards
+from .minute_cold_storage import archive_stock_shards as archive_minute_stock_shards
+from .minute_cold_storage import build_config as build_minute_cold_config
+from .minute_cold_storage import cleanup_archived_buckets as cleanup_minute_archived_buckets
+from .minute_cold_storage import ensure_indexes as ensure_minute_cold_indexes
+from .minute_cold_storage import prune_cache as prune_minute_cache
+from .minute_cold_storage import read_cached_or_downloaded_day
 from .news_library import query_news_library
 from .secret_store import SECRET_ENV_MAP, get_secret_store
 from .ths_minute import build_config as build_ths_minute_config
 from .ths_minute import fetch_and_store_minutes
 from .totp import generate_totp_secret, normalize_totp_secret, otpauth_uri
 from .tushare_client import TushareClient
+from .tushare_kline import KlineBackfillConfig, fetch_all_stock_klines
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 from .value_speculation import VALUE_SPECULATION_QUESTION, build_value_speculation_dossier
 from .web import serve_web
@@ -90,6 +102,16 @@ def main() -> None:
 
     market_parser = subparsers.add_parser("market", help="行情补充数据抓取")
     market_subparsers = market_parser.add_subparsers(dest="market_command", required=True)
+    tushare_kline_parser = market_subparsers.add_parser("tushare-kline", help="使用 Tushare 批量抓取全市场 K 线价量数据")
+    tushare_kline_parser.add_argument("--start-date", default="19900101", help="开始日期，格式 YYYYMMDD")
+    tushare_kline_parser.add_argument("--end-date", default="", help="结束日期，默认今天")
+    tushare_kline_parser.add_argument("--freq", default="daily", help="K 线频率，逗号分隔：daily,weekly,monthly")
+    tushare_kline_parser.add_argument("--codes", default="", help="只抓指定股票，逗号分隔；不传则抓全部上市 A 股")
+    tushare_kline_parser.add_argument("--include-delisted", action="store_true", help="同时包含退市和暂停上市股票")
+    tushare_kline_parser.add_argument("--force", action="store_true", help="即使本地已有覆盖日期范围的数据也重新抓取")
+    tushare_kline_parser.add_argument("--limit", type=int, default=None, help="最多抓取多少只股票，适合先小批量验证")
+    tushare_kline_parser.add_argument("--workers", type=int, default=1, help="并发抓取股票数，建议 2-4，过高可能触发 Tushare 限流")
+    tushare_kline_parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "local_data" / "tushare_kline"), help="输出目录")
     ths_minute_parser = market_subparsers.add_parser("ths-minute", help="抓取指定股票分钟行情到 MongoDB；默认使用通达信/mootdx")
     ths_minute_parser.add_argument("--codes", required=True, help="股票代码，逗号分隔，例如 000001,300033 或 000001.SZ,300033.SZ")
     ths_minute_parser.add_argument("--source", choices=["tdx", "pytdx_history", "ths", "auto"], default="pytdx_history", help="分钟行情源：pytdx_history 为历史分时价量构造分钟 K；tdx 为近期真实分钟 K；ths 为同花顺最新日分时")
@@ -99,6 +121,16 @@ def main() -> None:
     ths_minute_parser.add_argument("--collection", default=None, help="MongoDB 集合名，默认 MARKET_MINUTE_COLLECTION 或 minute_day_buckets")
     ths_minute_parser.add_argument("--sleep", type=parse_sleep, default=(0.8, 1.8), help="股票之间请求间隔，格式: min,max")
     ths_minute_parser.add_argument("--timeout", type=float, default=12.0, help="单次请求超时秒数")
+    minute_cold_parser = market_subparsers.add_parser("minute-cold", help="归档、上传和按需取回股票分钟冷数据")
+    minute_cold_parser.add_argument("action", choices=["export", "export-upload", "export-month-upload", "export-stock-upload", "cleanup-archived", "retrieve", "prune-cache"], help="export 只写本地对象和索引；export-stock-upload 按股票整包同步；cleanup-archived 清理已归档旧 bucket；retrieve 单日取回缓存")
+    minute_cold_parser.add_argument("--codes", default="", help="股票代码，逗号分隔；不传则处理全部")
+    minute_cold_parser.add_argument("--source", default="pytdx_history", help="数据源，默认 pytdx_history")
+    minute_cold_parser.add_argument("--trade-date", default="", help="交易日 YYYYMMDD；retrieve 必填，export 可选")
+    minute_cold_parser.add_argument("--limit", type=int, default=None, help="最多处理多少个股票日 bucket，适合先小批量验证")
+    minute_cold_parser.add_argument("--workers", type=int, default=1, help="export-month-upload 并发上传月分片数，建议 2-4")
+    minute_cold_parser.add_argument("--execute", action="store_true", help="cleanup-archived 默认只 dry-run；传入该参数才真正删除")
+    minute_cold_parser.add_argument("--mongo-db", default=None, help="MongoDB 数据库名，默认 market_data")
+    minute_cold_parser.add_argument("--collection", default=None, help="分钟 bucket 集合名，默认 minute_day_buckets")
 
     kaipanla_parser = subparsers.add_parser("kaipanla", help="开盘啦数据源")
     kaipanla_subparsers = kaipanla_parser.add_subparsers(dest="kaipanla_command", required=True)
@@ -297,6 +329,33 @@ def run_news(args: argparse.Namespace) -> None:
 
 
 def run_market(args: argparse.Namespace) -> None:
+    if args.market_command == "tushare-kline":
+        settings = get_settings(require_deepseek=False)
+        if not settings.tushare_token:
+            raise RuntimeError("缺少 Tushare token。请先运行：.venv/bin/python -m stock_pipeline secrets set tushare.api_token")
+        frequencies = tuple(item.strip() for item in args.freq.split(",") if item.strip())
+        codes = tuple(item.strip() for item in args.codes.split(",") if item.strip())
+        result = fetch_all_stock_klines(
+            TushareClient(settings.tushare_token, settings.tushare_base_url, pause=settings.tushare_pause_seconds),
+            KlineBackfillConfig(
+                output_dir=Path(args.output_dir),
+                start_date=args.start_date,
+                end_date=args.end_date,
+                frequencies=frequencies,
+                include_delisted=args.include_delisted,
+                force=args.force,
+                limit=args.limit,
+                codes=codes,
+                progress=True,
+                workers=args.workers,
+            ),
+        )
+        print(
+            f"Tushare K 线抓取完成：stocks={result['stock_count']} "
+            f"updated={result['updated']} skipped={result['skipped']} failed={result['failed']} rows={result['rows']}"
+        )
+        print(f"manifest：{Path(result['output_dir']) / 'manifest.json'}")
+        return
     if args.market_command == "ths-minute":
         codes = [item.strip() for item in args.codes.split(",") if item.strip()]
         if not codes:
@@ -313,6 +372,115 @@ def run_market(args: argparse.Namespace) -> None:
                 )
             else:
                 print(f"  {item['ts_code']}: 失败：{item.get('error')}")
+        return
+    if args.market_command == "minute-cold":
+        run_minute_cold(args)
+        return
+
+
+def run_minute_cold(args) -> None:
+    try:
+        import pymongo
+    except ImportError as exc:
+        raise RuntimeError("缺少 pymongo，无法连接 MongoDB。") from exc
+
+    database = args.mongo_db or MARKET_DATABASE
+    collection_name = args.collection or MARKET_COLLECTIONS["minute_buckets"]
+    config = build_minute_cold_config()
+    mongo_config = build_ths_minute_config(database=database, collection=collection_name)
+    client = pymongo.MongoClient(mongo_config.mongo_uri, serverSelectionTimeoutMS=8000)
+    try:
+        db = client[database]
+        buckets = db[collection_name]
+        day_index = db[MARKET_COLLECTIONS["minute_day_index"]]
+        coverage = db[MARKET_COLLECTIONS["minute_coverage"]]
+        ensure_minute_cold_indexes(day_index, coverage, pymongo)
+        if args.action in {"export", "export-upload"}:
+            query: dict[str, Any] = {"source": args.source}
+            codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
+            if codes:
+                query["ts_code"] = {"$in": codes}
+            if args.trade_date:
+                query["trade_date"] = args.trade_date.replace("-", "")
+            result = archive_minute_buckets(
+                buckets,
+                day_index,
+                coverage,
+                query=query,
+                config=config,
+                limit=args.limit,
+                upload=args.action == "export-upload",
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            return
+        if args.action == "export-month-upload":
+            query = {"source": args.source}
+            codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
+            if codes:
+                query["ts_code"] = {"$in": codes}
+            if args.trade_date:
+                trade_date = args.trade_date.replace("-", "")
+                query["trade_date"] = {"$regex": f"^{trade_date[:6]}"}
+            result = archive_minute_month_shards(
+                buckets,
+                day_index,
+                coverage,
+                query=query,
+                config=config,
+                limit=args.limit,
+                upload=True,
+                workers=args.workers,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            return
+        if args.action == "export-stock-upload":
+            query = {"source": args.source}
+            codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
+            if codes:
+                query["ts_code"] = {"$in": codes}
+            result = archive_minute_stock_shards(
+                buckets,
+                day_index,
+                coverage,
+                query=query,
+                config=config,
+                limit=args.limit,
+                upload=True,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            return
+        if args.action == "cleanup-archived":
+            codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
+            result = cleanup_minute_archived_buckets(
+                buckets,
+                day_index,
+                coverage,
+                source=args.source,
+                hot_days=config.hot_days,
+                codes=codes,
+                dry_run=not args.execute,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            return
+        if args.action == "retrieve":
+            if not args.codes or not args.trade_date:
+                raise ValueError("retrieve 需要 --codes 单只股票和 --trade-date。")
+            ts_code = normalize_ts_code(args.codes.split(",", 1)[0].strip())
+            rows = read_cached_or_downloaded_day(
+                day_index,
+                ts_code=ts_code,
+                trade_date=args.trade_date,
+                source=args.source,
+                config=config,
+            )
+            print(json.dumps({"ok": True, "ts_code": ts_code, "trade_date": args.trade_date, "rows": len(rows)}, ensure_ascii=False, indent=2))
+            return
+        if args.action == "prune-cache":
+            result = prune_minute_cache(config.cache_root, config.cache_max_bytes)
+            print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
+            return
+    finally:
+        client.close()
 
 
 def run_kaipanla(args: argparse.Namespace) -> None:
