@@ -162,6 +162,20 @@ def test_active_heavy_io_tasks_include_minute_upload_and_market_spider(tmp_path)
     assert "admin_task:news-1" not in blocker_ids
 
 
+def test_ops_snapshot_tolerates_non_dict_crawler_alerts(tmp_path):
+    snapshot = build_ops_snapshot(
+        tmp_path,
+        crawler_snapshot_fn=lambda: {
+            "summary": {"running_count": 0, "expired_running_count": 0},
+            "alerts": ["plain alert"],
+        },
+    )
+    task = _task(snapshot, "news_crawler")
+
+    assert task["status"] == "warning"
+    assert task["last_error"] == "plain alert"
+
+
 def test_ops_status_route_is_admin_only_and_read_only():
     source = (Path(__file__).resolve().parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
     route_start = source.index('if parsed.path == "/api/admin/ops/status":')
@@ -189,6 +203,7 @@ def test_heavy_io_guard_is_wired_to_heavy_start_routes_only():
     assert '_reject_if_heavy_io_running("full_market_daily_fetch")' in source
     assert '_reject_if_heavy_io_running("idle_stock_prefetch_with_minutes")' in source
     assert "已有重 IO 任务正在运行" in source
+    assert "self._ops_snapshot(include_crawler=False)" in source
     assert "_reject_if_heavy_io_running" not in kaipanla
 
 

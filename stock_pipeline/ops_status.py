@@ -161,7 +161,7 @@ def _active_admin_task_snapshots(admin_tasks: list[dict[str, Any]]) -> list[dict
             enabled=True,
         )
         task["task_id"] = task_id
-        task["status"] = "running" if status in _RUNNING_STATUSES else status
+        task["status"] = "running"
         task["running"] = True
         task["last_event"] = _last_event(item)
         task["last_error"] = str(item.get("error") or "")
@@ -230,13 +230,19 @@ def _news_crawler_task(
         task["status"] = "warning" if alerts or expired_count else ("running" if running_count else "idle")
         task["last_event"] = "crawler_status_snapshot"
         task["details"] = {"summary": summary, "alerts": alerts[:5]}
-        task["last_error"] = "; ".join(str(item.get("message") or item.get("title") or item) for item in alerts[:3] if item)
+        task["last_error"] = "; ".join(_alert_message(item) for item in alerts[:3] if item)
         resources["news_crawler"] = {"status": "ok", "error": ""}
     except Exception as exc:  # noqa: BLE001 - ops status must stay readable
         task["status"] = "unknown"
         task["last_error"] = str(exc)
         resources["news_crawler"] = {"status": "error", "error": str(exc)}
     return task
+
+
+def _alert_message(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("message") or item.get("title") or item)
+    return str(item)
 
 
 def _base_task(

@@ -540,6 +540,21 @@ def admin_runtime_alerts() -> list[dict[str, Any]]:
         return []
 
 
+def _public_heavy_io_blockers(tasks: list[dict[str, Any]], *, requested_task_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": task.get("id") or "",
+            "title": task.get("title") or "",
+            "kind": task.get("kind") or "",
+            "status": task.get("status") or "",
+            "last_event": task.get("last_event") or "",
+            "progress": task.get("progress") or {},
+        }
+        for task in tasks
+        if str(task.get("id") or "") != requested_task_id
+    ]
+
+
 class StockWebApp:
     def __init__(self, host: str = "127.0.0.1", port: int = 8765):
         self.host = host
@@ -2321,37 +2336,25 @@ class StockWebApp:
                     return False
                 return True
 
-            def _ops_snapshot(self) -> dict:
+            def _ops_snapshot(self, *, include_crawler: bool = True) -> dict:
                 return build_ops_snapshot(
                     PROJECT_ROOT,
-                    crawler_snapshot_fn=lambda: crawler_status_snapshot(limit=5, failure_limit=50),
+                    crawler_snapshot_fn=(lambda: crawler_status_snapshot(limit=5, failure_limit=50)) if include_crawler else None,
                 )
 
             def _reject_if_heavy_io_running(self, requested_task_id: str) -> bool:
-                blockers = [
-                    task
-                    for task in active_heavy_io_tasks(self._ops_snapshot())
-                    if str(task.get("id") or "") != requested_task_id
-                ]
+                blockers = _public_heavy_io_blockers(
+                    active_heavy_io_tasks(self._ops_snapshot(include_crawler=False)),
+                    requested_task_id=requested_task_id,
+                )
                 if not blockers:
                     return False
-                public_blockers = [
-                    {
-                        "id": task.get("id") or "",
-                        "title": task.get("title") or "",
-                        "kind": task.get("kind") or "",
-                        "status": task.get("status") or "",
-                        "last_event": task.get("last_event") or "",
-                        "progress": task.get("progress") or {},
-                    }
-                    for task in blockers
-                ]
-                title = public_blockers[0].get("title") or "重 IO 任务"
+                title = blockers[0].get("title") or "重 IO 任务"
                 self._json(
                     {
                         "ok": False,
                         "error": f"已有重 IO 任务正在运行：{title}",
-                        "blocking_tasks": public_blockers,
+                        "blocking_tasks": blockers,
                     },
                     status=409,
                 )
