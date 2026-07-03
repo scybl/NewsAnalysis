@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     import_cmd.add_argument("--collection", default="")
     import_cmd.add_argument("--batch-size", type=int, default=1000)
     import_cmd.add_argument("--dry-run", action="store_true")
+    index_cmd = subparsers.add_parser("index-cold", help="Import only bundle metadata into the cold article index.")
+    index_cmd.add_argument("bundle", help="Bundle directory or .tar.gz file.")
+    index_cmd.add_argument("--database", default="")
+    index_cmd.add_argument("--collection", default="")
+    index_cmd.add_argument("--batch-size", type=int, default=1000)
+    index_cmd.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
 
@@ -50,7 +56,10 @@ def main() -> int:
         result = export_bundle(args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    result = import_bundle(args)
+    if args.command == "index-cold":
+        result = index_cold_bundle(args)
+    else:
+        result = import_bundle(args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -114,6 +123,7 @@ def export_bundle(args: argparse.Namespace) -> dict[str, str]:
 
     manifest = {
         "bundle_format": "newsanalysis.news_articles.object.v1",
+        "bundle_name": bundle_dir.name,
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source_name": args.source,
         "database": database,
@@ -129,8 +139,10 @@ def export_bundle(args: argparse.Namespace) -> dict[str, str]:
     }
     write_json(bundle_dir / "manifest.json", manifest)
     write_text(bundle_dir / "import.sh", import_script())
+    write_text(bundle_dir / "index_cold.sh", index_cold_script())
     write_text(bundle_dir / "export_guardian_8000.sh", export_script())
     os.chmod(bundle_dir / "import.sh", 0o755)
+    os.chmod(bundle_dir / "index_cold.sh", 0o755)
     os.chmod(bundle_dir / "export_guardian_8000.sh", 0o755)
     write_text(bundle_dir / "README.md", readme_text(manifest))
 
@@ -178,12 +190,58 @@ def import_bundle(args: argparse.Namespace) -> dict[str, Any]:
     return {"bundle": str(bundle_dir), "dry_run": bool(args.dry_run), "documents": total}
 
 
+def index_cold_bundle(args: argparse.Namespace) -> dict[str, Any]:
+    settings = get_settings()
+    bundle_dir = unpack_if_needed(Path(args.bundle))
+    manifest = read_json(bundle_dir / "manifest.json")
+    index_path = bundle_dir / str(manifest.get("index_file") or "indexes/articles.jsonl")
+    database = args.database or manifest.get("database") or settings.mongodb_database
+    collection_name = args.collection or getattr(settings, "cold_index_collection", "cold_article_index")
+    batch_size = max(1, int(args.batch_size or 1000))
+
+    operations: list[Any] = []
+    total = 0
+    with MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=8000) as client:
+        collection = client[str(database)][str(collection_name)]
+        ensure_cold_index_indexes(collection)
+        with index_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                key = article_key(entry)
+                if not key:
+                    continue
+                document = cold_index_document(entry, manifest)
+                operations.append(ReplaceOne(key, document, upsert=True))
+                total += 1
+                if len(operations) >= batch_size:
+                    if not args.dry_run:
+                        collection.bulk_write(operations, ordered=False)
+                    operations = []
+        if operations and not args.dry_run:
+            collection.bulk_write(operations, ordered=False)
+    return {
+        "bundle": str(bundle_dir),
+        "collection": str(collection_name),
+        "dry_run": bool(args.dry_run),
+        "indexed": total,
+    }
+
+
 def ensure_article_indexes(collection: Any) -> None:
     collection.create_index([("article_id", ASCENDING)], unique=True, name="uk_raw_article_id")
     collection.create_index([("source_external_key", ASCENDING)], unique=True, sparse=True, name="uk_raw_source_external")
     collection.create_index([("canonical_url", ASCENDING)], unique=True, sparse=True, name="uk_raw_canonical_url")
     collection.create_index([("source_name", ASCENDING), ("published_at", DESCENDING)], name="idx_raw_source_published")
     collection.create_index([("published_at", DESCENDING)], name="idx_raw_published")
+
+
+def ensure_cold_index_indexes(collection: Any) -> None:
+    collection.create_index([("article_id", ASCENDING)], unique=True, sparse=True, name="uk_cold_article_id")
+    collection.create_index([("source_external_key", ASCENDING)], unique=True, sparse=True, name="uk_cold_source_external")
+    collection.create_index([("canonical_url", ASCENDING)], unique=True, sparse=True, name="uk_cold_canonical_url")
+    collection.create_index([("source_name", ASCENDING), ("published_at", DESCENDING)], name="idx_cold_source_published")
 
 
 def article_key(doc: dict[str, Any]) -> dict[str, Any]:
@@ -201,6 +259,23 @@ def stable_article_key(doc: dict[str, Any]) -> str:
             return safe_name(value)
     digest = hashlib.sha256(json_util.dumps(doc, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     return digest[:32]
+
+
+def cold_index_document(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": "news.cold_index.v1",
+        "source_name": entry.get("source_name") or manifest.get("source_name") or "",
+        "article_id": entry.get("article_id") or "",
+        "source_external_key": entry.get("source_external_key") or "",
+        "canonical_url": entry.get("canonical_url") or "",
+        "url": entry.get("url") or "",
+        "title": entry.get("title") or "",
+        "published_at": entry.get("published_at") or "",
+        "cold_bundle": Path(str(manifest.get("bundle_name") or "")).name or "",
+        "cold_path": entry.get("path") or "",
+        "sha256": entry.get("sha256") or "",
+        "indexed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
 
 
 def article_object_path(root: Path, published_at: str, key: str) -> Path:
@@ -263,6 +338,14 @@ python3 /opt/NewsAnalysis/scripts/export_news_bundle.py import .
 """
 
 
+def index_cold_script() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
+python3 /opt/NewsAnalysis/scripts/export_news_bundle.py index-cold .
+"""
+
+
 def export_script() -> str:
     return """#!/usr/bin/env bash
 set -euo pipefail
@@ -286,6 +369,12 @@ Import on a NewsAnalysis server:
 
 ```bash
 ./import.sh
+```
+
+Register this bundle as cold data without restoring article bodies:
+
+```bash
+./index_cold.sh
 ```
 
 Re-export the same shape on a server:

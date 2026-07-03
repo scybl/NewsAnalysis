@@ -37,3 +37,11 @@ def test_default_disabled_sources_pause_politico_web(monkeypatch):
 
     assert settings.politico_browser_news_url == "https://www.politico.com/"
     assert settings.disabled_sources == frozenset({"bloomberg", "politico_browser", "politico_rss", "politico_chrome"})
+
+
+def test_cold_index_collection_is_configurable(monkeypatch):
+    monkeypatch.setenv("MONGODB_COLD_INDEX_COLLECTION", "guardian_cold_index")
+
+    settings = get_settings()
+
+    assert settings.cold_index_collection == "guardian_cold_index"

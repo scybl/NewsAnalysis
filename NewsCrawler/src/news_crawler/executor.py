@@ -59,6 +59,13 @@ class TaskExecutor:
                     break
                 result.discovered += 1
                 current_page_stats["discovered"] += 1
+                cold_existing = self._find_cold_ref(ref)
+                if cold_existing:
+                    result.skipped += 1
+                    current_page_stats["existing"] += 1
+                    result.metrics["cold_duplicate"] = int(result.metrics.get("cold_duplicate", 0)) + 1
+                    self.observer.on_article_duplicated(ref, _duplicate_reason(cold_existing, self.dedupe.keys_for_ref(ref)))
+                    continue
                 article = self._fetch_with_retry(provider, ref, result, deadline)
                 _raise_if_timed_out(deadline, self.monotonic_fn, provider.name)
                 if article is None:
@@ -147,6 +154,14 @@ class TaskExecutor:
     def _pause_source(self, source_name: str, issue: CrawlIssue, run_id: str) -> None:
         if self.run_repository and hasattr(self.run_repository, "pause_source"):
             self.run_repository.pause_source(source_name, issue.message, run_id=run_id, issue_code=issue.code)
+
+    def _find_cold_ref(self, ref):
+        if not self.news_repository or not hasattr(self.news_repository, "find_cold_by_keys"):
+            return None
+        keys = self.dedupe.keys_for_ref(ref)
+        if not keys.query_keys():
+            return None
+        return self.news_repository.find_cold_by_keys(keys)
 
 
 class AutoPausedSource(RuntimeError):

@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from .models import CrawlIssue, CrawlResult, NewsArticle
+from .models import ArticleRef, CrawlIssue, CrawlResult, NewsArticle
 
 
 class RunObserver(Protocol):
     def on_run_started(self, result: CrawlResult) -> None: ...
     def on_article_inserted(self, article: NewsArticle) -> None: ...
-    def on_article_duplicated(self, article: NewsArticle, reason: str) -> None: ...
+    def on_article_duplicated(self, article: NewsArticle | ArticleRef, reason: str) -> None: ...
     def on_provider_failed(self, source_name: str, issue: CrawlIssue) -> None: ...
     def on_run_finished(self, result: CrawlResult) -> None: ...
 
@@ -24,7 +24,7 @@ class CompositeRunObserver:
     def on_article_inserted(self, article: NewsArticle) -> None:
         self._notify("on_article_inserted", article)
 
-    def on_article_duplicated(self, article: NewsArticle, reason: str) -> None:
+    def on_article_duplicated(self, article: NewsArticle | ArticleRef, reason: str) -> None:
         self._notify("on_article_duplicated", article, reason)
 
     def on_provider_failed(self, source_name: str, issue: CrawlIssue) -> None:
@@ -48,8 +48,9 @@ class LoggingRunObserver:
     def on_article_inserted(self, article: NewsArticle) -> None:
         logging.info("inserted source=%s title=%s", article.source_name, article.title)
 
-    def on_article_duplicated(self, article: NewsArticle, reason: str) -> None:
-        logging.info("duplicate source=%s reason=%s title=%s", article.source_name, reason, article.title)
+    def on_article_duplicated(self, article: NewsArticle | ArticleRef, reason: str) -> None:
+        label = getattr(article, "title", "") or getattr(article, "url", "")
+        logging.info("duplicate source=%s reason=%s title=%s", article.source_name, reason, label)
 
     def on_provider_failed(self, source_name: str, issue: CrawlIssue) -> None:
         logging.error("provider_failed source=%s code=%s error=%s", source_name, issue.code, issue.message)

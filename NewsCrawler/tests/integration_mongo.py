@@ -14,8 +14,9 @@ def main(uri: str) -> None:
         "news_crawler_integration",
         f"raw_articles_{suffix}",
         f"crawl_runs_{suffix}",
-        f"source_health_{suffix}",
-        f"checkpoints_{suffix}",
+        cold_index_collection=f"cold_article_index_{suffix}",
+        health_collection=f"source_health_{suffix}",
+        checkpoint_collection=f"checkpoints_{suffix}",
     )
     try:
         repository.ensure_indexes()

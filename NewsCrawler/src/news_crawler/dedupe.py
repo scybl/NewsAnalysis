@@ -5,7 +5,7 @@ import re
 import urllib.parse
 from dataclasses import dataclass
 
-from .models import NewsArticle
+from .models import ArticleRef, NewsArticle
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,13 @@ class DedupeKeys:
 
 
 class DedupeService:
+    def keys_for_ref(self, ref: ArticleRef) -> DedupeKeys:
+        canonical = canonicalize_url(ref.url)
+        external_key = f"{ref.source_name}:{ref.external_id}" if ref.external_id else ""
+        stable_seed = external_key or canonical
+        article_id = _sha256(stable_seed)
+        return DedupeKeys(article_id, external_key, canonical, "", "")
+
     def keys_for(self, article: NewsArticle) -> DedupeKeys:
         canonical = canonicalize_url(article.canonical_url or article.url)
         external_key = f"{article.source_name}:{article.external_id}" if article.external_id else ""

@@ -12,6 +12,7 @@ class Settings:
     mongodb_database: str = "news"
     raw_collection: str = "raw_articles"
     runs_collection: str = "crawl_runs"
+    cold_index_collection: str = "cold_article_index"
     guardian_api_key: str = ""
     guardian_base_url: str = "https://content.guardianapis.com"
     bloomberg_latest_url: str = "https://www.bloomberg.com/latest"
@@ -39,6 +40,7 @@ def get_settings() -> Settings:
         mongodb_database=os.getenv("MONGODB_DATABASE", "news"),
         raw_collection=os.getenv("MONGODB_RAW_COLLECTION", "raw_articles"),
         runs_collection=os.getenv("MONGODB_RUNS_COLLECTION", "crawl_runs"),
+        cold_index_collection=os.getenv("MONGODB_COLD_INDEX_COLLECTION", "cold_article_index"),
         guardian_api_key=_env_or_file("GUARDIAN_API_KEY"),
         guardian_base_url=os.getenv("GUARDIAN_BASE_URL", "https://content.guardianapis.com"),
         bloomberg_latest_url=_env_or_file("BLOOMBERG_LATEST_URL") or "https://www.bloomberg.com/latest",

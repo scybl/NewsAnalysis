@@ -65,6 +65,13 @@ class MemoryRepository:
     def find_existing_by_keys(self, keys):
         return self.documents.get(keys.article_id)
 
+    def find_cold_by_keys(self, keys):
+        for key, value in keys.query_keys().items():
+            for document in self.documents.values():
+                if document.get("cold") and document.get(key) == value:
+                    return document
+        return None
+
     def upsert_article(self, article, keys):
         outcome = "updated" if keys.article_id in self.documents else "inserted"
         self.documents[keys.article_id] = {"article_id": keys.article_id}
@@ -87,6 +94,60 @@ def test_executor_inserts_and_then_updates_duplicate():
     second = executor.execute(FakeProvider(), NewsCrawlRequest())
     assert first.inserted == 1
     assert second.updated == 1
+
+
+def test_executor_skips_cold_index_match_before_fetching():
+    class ColdProvider(FakeProvider):
+        def __init__(self):
+            self.fetched = False
+
+        def fetch(self, ref):
+            self.fetched = True
+            return super().fetch(ref)
+
+    repository = MemoryRepository()
+    dedupe = DedupeService()
+    keys = dedupe.keys_for_ref(ArticleRef("fake", "https://example.com/a", "1"))
+    repository.documents[keys.article_id] = {**keys.query_keys(), "cold": True}
+    provider = ColdProvider()
+
+    result = TaskExecutor(repository, repository, dedupe, LoggingRunObserver()).execute(
+        provider,
+        NewsCrawlRequest(),
+    )
+
+    assert provider.fetched is False
+    assert result.discovered == 1
+    assert result.fetched == 0
+    assert result.skipped == 1
+    assert result.metrics["cold_duplicate"] == 1
+
+
+def test_executor_fetches_hot_duplicate_before_upsert():
+    class CountingProvider(FakeProvider):
+        def __init__(self):
+            self.fetch_count = 0
+
+        def fetch(self, ref):
+            self.fetch_count += 1
+            return super().fetch(ref)
+
+    repository = MemoryRepository()
+    dedupe = DedupeService()
+    keys = dedupe.keys_for_ref(ArticleRef("fake", "https://example.com/a", "1"))
+    repository.documents[keys.article_id] = {"article_id": keys.article_id}
+    provider = CountingProvider()
+
+    result = TaskExecutor(repository, repository, dedupe, LoggingRunObserver()).execute(
+        provider,
+        NewsCrawlRequest(),
+    )
+
+    assert provider.fetch_count == 1
+    assert result.fetched == 1
+    assert result.updated == 1
+    assert result.skipped == 0
+    assert "cold_duplicate" not in result.metrics
 
 
 def test_latest_crawl_continues_when_page_still_has_insertions():

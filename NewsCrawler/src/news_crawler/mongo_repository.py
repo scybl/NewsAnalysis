@@ -16,6 +16,7 @@ class MongoNewsRepository:
         database: str,
         raw_collection: str,
         runs_collection: str,
+        cold_index_collection: str = "cold_article_index",
         health_collection: str = "source_health",
         checkpoint_collection: str = "crawler_checkpoints",
         pause_collection: str = "source_pauses",
@@ -27,6 +28,7 @@ class MongoNewsRepository:
         self.client.admin.command("ping")
         db = self.client[database]
         self.articles = db[raw_collection]
+        self.cold_articles = db[cold_index_collection]
         self.runs = db[runs_collection]
         self.health = db[health_collection]
         self.checkpoints = db[checkpoint_collection]
@@ -42,6 +44,10 @@ class MongoNewsRepository:
         self.articles.create_index([("title_time_hash", asc)], sparse=True, name="idx_raw_title_time_hash")
         self.articles.create_index([("source_name", asc), ("published_at", desc)], name="idx_raw_source_published")
         self.articles.create_index([("published_at", desc)], name="idx_raw_published")
+        self.cold_articles.create_index([("article_id", asc)], unique=True, sparse=True, name="uk_cold_article_id")
+        self.cold_articles.create_index([("source_external_key", asc)], unique=True, sparse=True, name="uk_cold_source_external")
+        self.cold_articles.create_index([("canonical_url", asc)], unique=True, sparse=True, name="uk_cold_canonical_url")
+        self.cold_articles.create_index([("source_name", asc), ("published_at", desc)], name="idx_cold_source_published")
         self.runs.create_index([("run_id", asc)], unique=True, name="uk_crawl_run_id")
         self.runs.create_index([("source_name", asc), ("started_at", desc)], name="idx_crawl_source_started")
         self.health.create_index([("source_name", asc)], unique=True, name="uk_source_health")
@@ -51,6 +57,15 @@ class MongoNewsRepository:
     def find_existing_by_keys(self, keys: DedupeKeys) -> dict[str, Any] | None:
         clauses = [{key: value} for key, value in keys.query_keys().items()]
         return self.articles.find_one({"$or": clauses}) if clauses else None
+
+    def find_cold_by_keys(self, keys: DedupeKeys) -> dict[str, Any] | None:
+        query_keys = {
+            key: value
+            for key, value in keys.query_keys().items()
+            if key in {"article_id", "source_external_key", "canonical_url"} and value
+        }
+        clauses = [{key: value} for key, value in query_keys.items()]
+        return self.cold_articles.find_one({"$or": clauses}, {"_id": 0}) if clauses else None
 
     def upsert_article(self, article: NewsArticle, keys: DedupeKeys) -> str:
         document = _article_document(article, keys)

@@ -87,6 +87,7 @@ def main() -> None:
             settings.mongodb_database,
             settings.raw_collection,
             settings.runs_collection,
+            settings.cold_index_collection,
         )
         try:
             repository.ensure_indexes()
@@ -159,6 +160,7 @@ def _run_crawl(args, settings, *, fail_on_error: bool = True):
             settings.mongodb_database,
             settings.raw_collection,
             settings.runs_collection,
+            settings.cold_index_collection,
         )
         repository.ensure_indexes()
     try:
@@ -282,6 +284,7 @@ def _repository(settings, *, ensure_indexes: bool = True):
         settings.mongodb_database,
         settings.raw_collection,
         settings.runs_collection,
+        settings.cold_index_collection,
     )
     if ensure_indexes:
         repository.ensure_indexes()
