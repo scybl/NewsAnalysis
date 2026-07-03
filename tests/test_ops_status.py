@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from stock_pipeline.ops_status import build_ops_snapshot
+from stock_pipeline.ops_status import active_heavy_io_tasks, build_ops_snapshot
 
 
 def _task(snapshot, task_id):
@@ -112,18 +112,84 @@ def test_ops_snapshot_reads_scheduler_and_admin_task_state(tmp_path):
     assert snapshot["overall"]["heavy_io_running"] is True
 
 
+def test_active_heavy_io_tasks_include_minute_upload_and_market_spider(tmp_path):
+    local_data = tmp_path / "local_data"
+    logs_dir = tmp_path / "logs"
+    local_data.mkdir()
+    logs_dir.mkdir()
+    (logs_dir / "minute-cold-stock-year-upload.pid").write_text("321\n", encoding="utf-8")
+    (logs_dir / "minute-cold-stock-year-upload.log").write_text(
+        "[minute-cold][2026-07-03T10:00:00Z] check current=1/2 percent=50 source=pytdx_history ts_code=000001.SZ year=2024\n",
+        encoding="utf-8",
+    )
+    (local_data / "admin_tasks.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_id": "spider-1",
+                        "kind": "spider",
+                        "title": "分钟行情爬虫",
+                        "status": "running",
+                        "updated_epoch": 20,
+                        "metadata": {"source": "ths_market"},
+                    },
+                    {
+                        "task_id": "news-1",
+                        "kind": "news_refetch",
+                        "title": "新闻资料库补抓",
+                        "status": "running",
+                        "updated_epoch": 10,
+                        "metadata": {"source": "guardian"},
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = build_ops_snapshot(
+        tmp_path,
+        pid_checker=lambda pid: pid == 321,
+        now=datetime(2026, 7, 3, 10, 1, tzinfo=timezone.utc),
+    )
+    blockers = active_heavy_io_tasks(snapshot)
+    blocker_ids = {item["id"] for item in blockers}
+
+    assert "minute_cold_stock_year_upload" in blocker_ids
+    assert "admin_task:spider-1" in blocker_ids
+    assert "admin_task:news-1" not in blocker_ids
+
+
 def test_ops_status_route_is_admin_only_and_read_only():
     source = (Path(__file__).resolve().parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
     route_start = source.index('if parsed.path == "/api/admin/ops/status":')
     route = source[route_start : route_start + 700]
+    helper_start = source.index("def _ops_snapshot")
+    helper = source[helper_start : helper_start + 400]
     require_admin_start = source.index("def _require_admin")
     require_admin = source[require_admin_start : require_admin_start + 500]
 
     assert "if not self._require_admin()" in route
-    assert "build_ops_snapshot" in route
+    assert "self._ops_snapshot()" in route
+    assert "build_ops_snapshot" in helper
     assert "_require_data_fetch_approval" not in route
     assert "status=401" in require_admin
     assert "status=403" in require_admin
+
+
+def test_heavy_io_guard_is_wired_to_heavy_start_routes_only():
+    source = (Path(__file__).resolve().parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    kaipanla_start = source.index("def _handle_admin_kaipanla_scheduler")
+    kaipanla = source[kaipanla_start : kaipanla_start + 900]
+
+    assert 'active_heavy_io_tasks' in source
+    assert '_reject_if_heavy_io_running("manual_market_fetch_full")' in source
+    assert '_reject_if_heavy_io_running("full_market_daily_fetch")' in source
+    assert '_reject_if_heavy_io_running("idle_stock_prefetch_with_minutes")' in source
+    assert "已有重 IO 任务正在运行" in source
+    assert "_reject_if_heavy_io_running" not in kaipanla
 
 
 def test_admin_ops_frontend_is_read_only_and_linked():

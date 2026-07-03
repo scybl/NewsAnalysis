@@ -34,7 +34,7 @@ from .eastmoney_client import EastmoneyClient
 from .kaipanla import KAIPANLA_FEATURES, kaipanla_daily_overview, list_kaipanla_features, list_kaipanla_records, read_kaipanla_record, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
 from .news_library import query_news_library
 from .news_search import search_related_news
-from .ops_status import build_ops_snapshot
+from .ops_status import active_heavy_io_tasks, build_ops_snapshot
 from .minute_storage import minute_reference_row_counts
 from .market_dimensions import STOCK_COLLECTIONS, STOCK_DATABASE
 from .raw_news import MongoRawNewsRepository, raw_news_config
@@ -1140,15 +1140,7 @@ class StockWebApp:
                 if parsed.path == "/api/admin/ops/status":
                     if not self._require_admin():
                         return
-                    self._json(
-                        {
-                            "ok": True,
-                            "snapshot": build_ops_snapshot(
-                                PROJECT_ROOT,
-                                crawler_snapshot_fn=lambda: crawler_status_snapshot(limit=5, failure_limit=50),
-                            ),
-                        }
-                    )
+                    self._json({"ok": True, "snapshot": self._ops_snapshot()})
                     return
                 if parsed.path == "/api/admin/news-library":
                     if not self._require_data_console():
@@ -1821,6 +1813,8 @@ class StockWebApp:
                 payload = self._read_json()
                 if not self._require_data_fetch_approval("/api/admin/market-fetch/start", payload):
                     return
+                if self._reject_if_heavy_io_running("manual_market_fetch_full"):
+                    return
                 try:
                     result = app.market_fetch_controller.start(payload)
                     self._json({"ok": True, **result})
@@ -1835,6 +1829,8 @@ class StockWebApp:
                 try:
                     if action == "run_now":
                         if not self._require_data_fetch_approval("/api/admin/daily-market-scheduler:run_now", payload):
+                            return
+                        if self._reject_if_heavy_io_running("full_market_daily_fetch"):
                             return
                         self._json({"ok": True, **app.daily_market_scheduler.run_now()})
                         return
@@ -1853,6 +1849,8 @@ class StockWebApp:
                 try:
                     if action == "run_now":
                         if not self._require_data_fetch_approval("/api/sync-stock-data", payload):
+                            return
+                        if self._reject_if_heavy_io_running("idle_stock_prefetch_with_minutes"):
                             return
                         self._json({"ok": True, **app.idle_stock_prefetch_scheduler.run_now()})
                         return
@@ -2321,6 +2319,42 @@ class StockWebApp:
                 if not _is_admin_role(session.get("role")):
                     self._json({"ok": False, "error": "需要管理员权限"}, status=403)
                     return False
+                return True
+
+            def _ops_snapshot(self) -> dict:
+                return build_ops_snapshot(
+                    PROJECT_ROOT,
+                    crawler_snapshot_fn=lambda: crawler_status_snapshot(limit=5, failure_limit=50),
+                )
+
+            def _reject_if_heavy_io_running(self, requested_task_id: str) -> bool:
+                blockers = [
+                    task
+                    for task in active_heavy_io_tasks(self._ops_snapshot())
+                    if str(task.get("id") or "") != requested_task_id
+                ]
+                if not blockers:
+                    return False
+                public_blockers = [
+                    {
+                        "id": task.get("id") or "",
+                        "title": task.get("title") or "",
+                        "kind": task.get("kind") or "",
+                        "status": task.get("status") or "",
+                        "last_event": task.get("last_event") or "",
+                        "progress": task.get("progress") or {},
+                    }
+                    for task in blockers
+                ]
+                title = public_blockers[0].get("title") or "重 IO 任务"
+                self._json(
+                    {
+                        "ok": False,
+                        "error": f"已有重 IO 任务正在运行：{title}",
+                        "blocking_tasks": public_blockers,
+                    },
+                    status=409,
+                )
                 return True
 
             def _require_data_console(self) -> bool:

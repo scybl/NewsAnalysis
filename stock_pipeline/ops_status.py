@@ -18,6 +18,7 @@ _LOG_LINE = re.compile(r"^\[(?P<prefix>[^\]]+)\]\[(?P<ts>[^\]]+)\]\s*(?P<body>.*
 _RUNNING_STATUSES = {"queued", "running", "stopping", "running_unknown_pid"}
 _FAILED_STATUSES = {"failed", "failed_or_stopped"}
 _WARNING_STATUSES = {"warning", "running_unknown_pid"}
+_SCHEDULER_TASK_KINDS = {"daily_market", "idle_stock_prefetch", "kaipanla"}
 
 
 def build_ops_snapshot(
@@ -63,8 +64,9 @@ def build_ops_snapshot(
             resource_level=NORMAL_IO,
             resources=resources,
         ),
-        _news_crawler_task(crawler_snapshot_fn, resources),
     ]
+    tasks.extend(_active_admin_task_snapshots(admin_tasks))
+    tasks.append(_news_crawler_task(crawler_snapshot_fn, resources))
 
     return {
         "generated_at": now_utc.isoformat().replace("+00:00", "Z"),
@@ -73,6 +75,19 @@ def build_ops_snapshot(
         "data": {},
         "resources": resources,
     }
+
+
+def active_heavy_io_tasks(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    tasks = snapshot.get("tasks") or []
+    if not isinstance(tasks, list):
+        return []
+    return [
+        task
+        for task in tasks
+        if isinstance(task, dict)
+        and task.get("resource_level") == HEAVY_IO
+        and (task.get("running") or task.get("status") in _RUNNING_STATUSES)
+    ]
 
 
 def _minute_cold_upload_task(
@@ -126,6 +141,34 @@ def _minute_cold_upload_task(
         task["status"] = "failed_or_stopped"
         task["last_error"] = task["last_error"] or "进程不存在，且日志中没有 summary。"
     return task
+
+
+def _active_admin_task_snapshots(admin_tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    snapshots = []
+    for item in sorted(admin_tasks, key=lambda task: float(task.get("updated_epoch") or task.get("created_epoch") or 0), reverse=True):
+        status = str(item.get("status") or "")
+        kind = str(item.get("kind") or "admin_task")
+        if kind in _SCHEDULER_TASK_KINDS or status not in _RUNNING_STATUSES:
+            continue
+        task_id = str(item.get("task_id") or "")
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        resource_level = HEAVY_IO if kind == "spider" and str(metadata.get("source") or "") == "ths_market" else NORMAL_IO
+        task = _base_task(
+            f"admin_task:{task_id or kind}",
+            str(item.get("title") or kind),
+            kind,
+            resource_level=resource_level,
+            enabled=True,
+        )
+        task["task_id"] = task_id
+        task["status"] = "running" if status in _RUNNING_STATUSES else status
+        task["running"] = True
+        task["last_event"] = _last_event(item)
+        task["last_error"] = str(item.get("error") or "")
+        task["updated_at"] = str(item.get("updated_at") or "")
+        task["details"] = {"metadata": metadata}
+        snapshots.append(task)
+    return snapshots[:20]
 
 
 def _scheduler_task(
