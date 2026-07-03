@@ -7688,3 +7688,251 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
     grid-template-columns: 1fr;
   }
 }
+
+.ops-console {
+  display: grid;
+  gap: 0;
+}
+
+.ops-summary-kpis .is-ok strong {
+  color: #11845b;
+}
+
+.ops-summary-kpis .is-warning strong {
+  color: #b54708;
+}
+
+.ops-summary-kpis .is-danger strong {
+  color: #b42318;
+}
+
+.ops-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 0.9fr);
+  gap: 18px;
+  padding: 18px;
+  border-bottom: 1px solid #eef1f5;
+}
+
+.ops-data-card {
+  margin: 18px;
+}
+
+.ops-table-wrap {
+  overflow-x: auto;
+}
+
+.ops-table-wrap table {
+  min-width: 920px;
+}
+
+.ops-table-wrap th,
+.ops-table-wrap td {
+  vertical-align: top;
+}
+
+.ops-table-wrap strong,
+.ops-table-wrap small {
+  display: block;
+  min-width: 0;
+}
+
+.ops-table-wrap small {
+  margin-top: 4px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.ops-detail-cell,
+.ops-log-cell {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+}
+
+.ops-log-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.ops-log-cell code {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: #344054;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-log-cell button {
+  min-width: 54px;
+  height: 30px;
+  border: 1px solid #d0d7e2;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ops-status-badge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  border: 1px solid #d0d7e2;
+  border-radius: 999px;
+  padding: 0 9px;
+  background: #f8fafc;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ops-status-badge.is-running,
+.ops-status-badge.is-succeeded,
+.ops-status-badge.is-idle {
+  border-color: #b7e4ce;
+  background: #ecfdf3;
+  color: #067647;
+}
+
+.ops-status-badge.is-warning,
+.ops-status-badge.is-running_unknown_pid {
+  border-color: #fedf89;
+  background: #fffaeb;
+  color: #b54708;
+}
+
+.ops-status-badge.is-danger,
+.ops-status-badge.is-failed,
+.ops-status-badge.is-failed_or_stopped {
+  border-color: #fecdca;
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.ops-status-badge.is-paused,
+.ops-status-badge.is-unknown {
+  border-color: #d0d7e2;
+  background: #f8fafc;
+  color: #667085;
+}
+
+.ops-error-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ops-error-item {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #eef1f5;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfd;
+}
+
+.ops-error-item > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ops-error-item strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #17202a;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-error-item p {
+  margin: 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ops-data-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.ops-data-grid article {
+  border: 1px solid #eef1f5;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfd;
+}
+
+.ops-data-grid strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #17202a;
+  font-size: 13px;
+}
+
+.ops-data-grid pre {
+  max-height: 280px;
+  margin: 0;
+  overflow: auto;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+html.theme-dark .ops-grid,
+html.theme-dark .ops-data-card,
+html.theme-dark .ops-error-item,
+html.theme-dark .ops-data-grid article {
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+html.theme-dark .ops-error-item,
+html.theme-dark .ops-data-grid article {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+html.theme-dark .ops-log-cell code,
+html.theme-dark .ops-error-item strong,
+html.theme-dark .ops-data-grid strong {
+  color: #e5e7eb;
+}
+
+html.theme-dark .ops-error-item p,
+html.theme-dark .ops-data-grid pre,
+html.theme-dark .ops-table-wrap small {
+  color: #a8b3c7;
+}
+
+html.theme-dark .ops-log-cell button {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e5e7eb;
+}
+
+@media (max-width: 980px) {
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .ops-grid,
+  .ops-data-card {
+    margin: 0;
+    padding: 14px;
+  }
+
+  .ops-summary-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

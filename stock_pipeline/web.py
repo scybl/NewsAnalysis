@@ -125,6 +125,7 @@ DATA_CONSOLE_ROLES = {*ADMIN_ROLES, "user"}
 DATA_CONSOLE_PAGES = {"/admin-market.html", "/admin-news.html", "/admin-crawler.html"}
 ADMIN_ONLY_PAGES = {
     "/admin-accounts.html",
+    "/admin-ops.html",
     "/admin-audit.html",
     "/admin-archives.html",
     "/admin-credentials.html",

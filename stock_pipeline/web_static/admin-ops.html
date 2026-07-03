@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>凭据管理 - NewsCrawler</title>
+    <title>运维状态 - NewsCrawler</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -11,12 +11,12 @@
         }
       } catch {}
     </script>
-    <link rel="stylesheet" href="/styles.css?v=admin-unified-20260616-v1" />
+    <link rel="stylesheet" href="/styles.css?v=admin-ops-20260703-v1" />
   </head>
   <body>
     <main class="admin-page admin-shell">
       <aside class="admin-sidebar">
-        <a class="admin-brand" href="/">
+        <a class="admin-brand" href="/admin-ops.html">
           <span class="admin-brand-mark">NC</span>
           <span>
             <strong>NewsCrawler</strong>
@@ -28,7 +28,7 @@
             <span class="admin-nav-icon">A</span>
             <span>账户管理</span>
           </a>
-          <a href="/admin-ops.html">
+          <a class="active" href="/admin-ops.html">
             <span class="admin-nav-icon">O</span>
             <span>运维状态</span>
           </a>
@@ -48,7 +48,7 @@
             <span class="admin-nav-icon">C</span>
             <span>新闻数据</span>
           </a>
-          <a class="active" href="/admin-credentials.html">
+          <a href="/admin-credentials.html">
             <span class="admin-nav-icon">K</span>
             <span>凭据管理</span>
           </a>
@@ -74,23 +74,58 @@
       </aside>
 
       <section class="admin-workspace">
-        <header class="admin-page-head">
+        <header class="admin-page-head ops-page-head">
           <div>
-            <span class="admin-kicker">SECRETS</span>
-            <h1>凭据管理</h1>
-            <p>统一管理模型 key、数据源 token、新闻爬虫 cookie 和代理。</p>
+            <span class="admin-kicker">OPS STATUS</span>
+            <h1>运维状态</h1>
+            <p id="opsMeta">正在读取状态...</p>
           </div>
           <div class="admin-actions">
-            <button id="refreshCredentialsBtn" type="button">刷新状态</button>
+            <button id="opsRefreshBtn" class="primary-action" type="button">刷新</button>
           </div>
         </header>
 
-        <section class="admin-panel credentials-console">
-          <div id="credentialsSummary" class="admin-summary">正在读取凭据状态...</div>
-          <div id="credentialsGrid" class="credential-grid"></div>
+        <section class="admin-panel ops-console">
+          <div id="opsSummary" class="admin-kpis ops-summary-kpis"></div>
+
+          <section class="ops-grid">
+            <section class="admin-card ops-tasks-card">
+              <div class="admin-card-head">
+                <div>
+                  <h4>任务状态</h4>
+                  <p id="opsTaskMeta">等待数据</p>
+                </div>
+              </div>
+              <div class="admin-table-wrap ops-table-wrap">
+                <table id="opsTasksTable"></table>
+              </div>
+            </section>
+
+            <section class="admin-card ops-errors-card">
+              <div class="admin-card-head">
+                <div>
+                  <h4>最近异常</h4>
+                  <p id="opsErrorMeta">等待数据</p>
+                </div>
+              </div>
+              <div id="opsErrors" class="ops-error-list"></div>
+            </section>
+          </section>
+
+          <section class="admin-card ops-data-card">
+            <div class="admin-card-head">
+              <div>
+                <h4>数据覆盖</h4>
+                <p id="opsDataMeta">等待数据</p>
+              </div>
+            </div>
+            <div id="opsData" class="ops-data-grid"></div>
+          </section>
         </section>
       </section>
     </main>
-    <script src="/admin-credentials.js?v=compact-credentials-20260630-v1"></script>
+
+    <script src="/admin.js?v=admin-unified-20260616-v1"></script>
+    <script src="/admin-ops.js?v=admin-ops-20260703-v1"></script>
   </body>
 </html>

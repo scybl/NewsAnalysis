@@ -124,3 +124,21 @@ def test_ops_status_route_is_admin_only_and_read_only():
     assert "_require_data_fetch_approval" not in route
     assert "status=401" in require_admin
     assert "status=403" in require_admin
+
+
+def test_admin_ops_frontend_is_read_only_and_linked():
+    static = Path(__file__).resolve().parents[1] / "stock_pipeline" / "web_static"
+    html = (static / "admin-ops.html").read_text(encoding="utf-8")
+    script = (static / "admin-ops.js").read_text(encoding="utf-8")
+    styles = (static / "styles.css").read_text(encoding="utf-8")
+
+    assert "/api/admin/ops/status" in script
+    assert "/api/admin/market-fetch/start" not in script
+    assert "/api/admin/market-fetch/stop" not in script
+    assert "/api/admin/daily-market-scheduler" not in script
+    assert "/api/admin/idle-stock-prefetch" not in script
+    assert "data-copy-tail" in script
+    assert "opsTasksTable" in html
+    assert ".ops-grid" in styles
+    for path in static.glob("admin-*.html"):
+        assert "/admin-ops.html" in path.read_text(encoding="utf-8"), path.name
