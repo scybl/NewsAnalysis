@@ -674,7 +674,7 @@ class KaipanlaCrawler:
                                 max_consecutive = pid_type
                                 max_stocks = stocks
             
-            except Exception as e:
+            except Exception:
                 # 忽略错误，继续尝试下一个连板高度
                 continue
         
@@ -2060,12 +2060,6 @@ class KaipanlaCrawler:
         except Exception as e:
             print(f"请求实时大幅回撤数据失败: {e}")
             return {}
-            data = crawler.get_realtime_rise_fall_analysis()
-            print(f"日期: {data['date']}")
-            print(f"涨停: {data['limit_up_count']}只")
-            print(f"跌停: {data['limit_down_count']}只")
-            print(f"炸板率: {data['blown_limit_up_rate']:.2f}%")
-            print(f"昨日涨停今表现: {data['yesterday_limit_up_performance']:.2f}%")
 
     def get_realtime_rise_fall_analysis(self, timeout=None):
         """
@@ -3242,9 +3236,7 @@ class KaipanlaCrawler:
         from selenium.webdriver.chrome.service import Service
         from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.common.exceptions import TimeoutException, NoSuchElementException
+        from selenium.common.exceptions import NoSuchElementException
 
         url = "https://eq.10jqka.com.cn/frontend/thsTopRank/index.html#/"
 
@@ -3265,7 +3257,7 @@ class KaipanlaCrawler:
             driver = webdriver.Chrome(service=Service("/usr/bin/chromedriver"), options=chrome_options)
             driver.set_page_load_timeout(timeout)
 
-            print(f"Accessing THS hot rank page...")
+            print("Accessing THS hot rank page...")
             driver.get(url)
 
             # 等待页面加载
@@ -3287,8 +3279,7 @@ class KaipanlaCrawler:
                     name_xpath = f'/html/body/div[1]/div/div[3]/div/div[1]/div/div[2]/div[1]/div/div[{rank}]/div[1]/div[2]/span'
 
                     # 获取排名
-                    rank_element = driver.find_element(By.XPATH, rank_xpath)
-                    rank_value = rank_element.text.strip()
+                    driver.find_element(By.XPATH, rank_xpath)
 
                     # 获取名字
                     name_element = driver.find_element(By.XPATH, name_xpath)
@@ -3322,196 +3313,6 @@ class KaipanlaCrawler:
             if driver:
                 driver.quit()
             return pd.Series()
-
-    def get_plate_news(self, plate_id: str, index: int = 0, page_size: int = 30, timeout: int = 1600):
-        """获取指定板块的最新要闻
-        
-        Args:
-            plate_id: 板块代码，如 "801070"（化工）
-            index: 分页索引，默认0（第一页）
-            page_size: 每页数量，默认30条
-            timeout: 超时时间（秒），默认1600秒
-            
-        Returns:
-            dict: 包含板块要闻列表
-                - plate_id: 板块代码
-                - news_list: 要闻列表，每条包含：
-                    - id: 新闻ID
-                    - title: 标题
-                    - content: 内容
-                    - time: 发布时间（时间戳）
-                    - datetime: 发布时间（datetime对象）
-                    - type: 类型（1=快讯，2=新闻）
-                - total_count: 总数量
-        
-        示例:
-            crawler = KaipanlaCrawler()
-            
-            # 获取化工板块要闻
-            news = crawler.get_plate_news("801070")
-            
-            # 遍历要闻
-            for item in news['news_list']:
-                print(f"[{item['datetime']}] {item['content'][:50]}...")
-            
-            # 获取第二页
-            news_page2 = crawler.get_plate_news("801070", index=30)
-        """
-        # 构造请求参数
-        data_params = {
-            "a": "GetPlateNewsList",
-            "st": str(page_size),
-            "c": "APPComplexData",
-            "PhoneOSNew": "1",
-            "DeviceID": str(uuid.uuid4()),
-            "VerSion": "5.21.0.2",
-            "Index": str(index),
-            "apiv": "w42",
-            "PlateID": plate_id
-        }
-        
-        # 使用专门的要闻API地址
-        url = "https://apparticle.longhuvip.com/w1/api/index.php"
-        
-        # 使用sector_headers（与板块相关的接口使用相同的headers）
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; 23116PN5BC Build/PQ3A.190605.01141736)",
-            "Host": "apparticle.longhuvip.com",
-            "Connection": "Keep-Alive",
-            "Accept-Encoding": "gzip"
-        }
-        
-        try:
-            response = requests.post(
-                url,
-                data=data_params,
-                headers=headers,
-                verify=False,
-                proxies={'http': None, 'https': None},
-                timeout=timeout
-            )
-            response.raise_for_status()
-            result = response.json()
-            
-            if not result or result.get("errcode") != "0":
-                print(f"获取板块要闻失败: {result.get('errcode', 'unknown error')}")
-                return {
-                    "plate_id": plate_id,
-                    "news_list": [],
-                    "total_count": 0
-                }
-            
-            # 解析要闻列表
-            news_list = []
-            raw_list = result.get("List", [])
-            
-            for item in raw_list:
-                news_id = item.get("ID", "")
-                title = item.get("Title", "")
-                content = item.get("Content", "")
-                time_timestamp = int(item.get("Time", 0))
-                news_type = int(item.get("Type", 1))  # 1=快讯，2=新闻
-                
-                # 转换时间戳为datetime对象
-                try:
-                    news_datetime = datetime.fromtimestamp(time_timestamp)
-                except:
-                    news_datetime = None
-                
-                news_item = {
-                    "id": news_id,
-                    "title": title,
-                    "content": content,
-                    "time": time_timestamp,
-                    "datetime": news_datetime,
-                    "type": news_type,
-                    "type_name": "快讯" if news_type == 1 else "新闻"
-                }
-                
-                news_list.append(news_item)
-            
-            return {
-                "plate_id": plate_id,
-                "news_list": news_list,
-                "total_count": len(news_list)
-            }
-            
-        except Exception as e:
-            print(f"请求板块要闻失败 ({plate_id}): {e}")
-            return {
-                "plate_id": plate_id,
-                "news_list": [],
-                "total_count": 0
-            }
-    
-    def get_plate_news_dataframe(self, plate_id: str, max_pages: int = 3, page_size: int = 30, timeout: int = 1600):
-        """获取指定板块的最新要闻（返回DataFrame格式）
-        
-        Args:
-            plate_id: 板块代码
-            max_pages: 最大页数，默认3页
-            page_size: 每页数量，默认30条
-            timeout: 超时时间（秒）
-            
-        Returns:
-            pd.DataFrame: 包含要闻数据的DataFrame
-                - id: 新闻ID
-                - title: 标题
-                - content: 内容
-                - datetime: 发布时间
-                - type_name: 类型名称
-        
-        示例:
-            crawler = KaipanlaCrawler()
-            
-            # 获取化工板块要闻（最多3页，共90条）
-            df = crawler.get_plate_news_dataframe("801070", max_pages=3)
-            
-            # 查看最新10条
-            print(df.head(10))
-            
-            # 筛选快讯
-            flash_news = df[df['type_name'] == '快讯']
-        """
-        all_news = []
-        
-        for page in range(max_pages):
-            index = page * page_size
-            print(f"获取第 {page + 1}/{max_pages} 页...")
-            
-            result = self.get_plate_news(
-                plate_id=plate_id,
-                index=index,
-                page_size=page_size,
-                timeout=timeout
-            )
-            
-            news_list = result.get("news_list", [])
-            
-            if not news_list:
-                print(f"第 {page + 1} 页无数据，停止获取")
-                break
-            
-            all_news.extend(news_list)
-            print(f"  获取到 {len(news_list)} 条要闻")
-        
-        if not all_news:
-            return pd.DataFrame()
-        
-        # 转换为DataFrame
-        df = pd.DataFrame(all_news)
-        
-        # 选择需要的列
-        columns = ['id', 'title', 'content', 'datetime', 'type_name']
-        df = df[columns]
-        
-        # 按时间降序排列
-        df = df.sort_values('datetime', ascending=False).reset_index(drop=True)
-        
-        print(f"\n[OK] 共获取 {len(df)} 条板块要闻")
-        
-        return df
 
     def get_sector_strength(self, sector_code, date=None, timeout=1600):
         """
@@ -3866,7 +3667,7 @@ class KaipanlaCrawler:
         result = self.get_sector_strength_history(sector_code, start_date, end_date, timeout)
         
         if not result['success'] or not result['history_data']:
-            print(f"未获取到有效的历史数据")
+            print("未获取到有效的历史数据")
             return pd.DataFrame()
         
         # 转换为DataFrame
@@ -3973,7 +3774,7 @@ class KaipanlaCrawler:
             result = response.json()
             
             if not result:
-                print(f"获取龙虎榜列表失败: 响应为空")
+                print("获取龙虎榜列表失败: 响应为空")
                 return {
                     "date": date,
                     "user_type": 0,
@@ -4229,7 +4030,7 @@ class KaipanlaCrawler:
         result = self.get_longhubang_stock_list(date, timeout=timeout)
         
         if not result or not result.get("stocks"):
-            print(f"未获取到龙虎榜数据")
+            print("未获取到龙虎榜数据")
             return pd.DataFrame()
         
         # 转换为DataFrame

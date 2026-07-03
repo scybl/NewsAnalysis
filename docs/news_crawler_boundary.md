@@ -1,6 +1,6 @@
-# NewsCrawler 与 NewsAnalysis 项目分离计划
+# NewsCrawler 与 NewsAnalysis 边界说明
 
-## 1. 决策
+## 1. 当前决策
 
 现有工程拆分为两个职责独立、可以分别安装和部署的项目：
 

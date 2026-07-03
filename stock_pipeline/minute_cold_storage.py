@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import PROJECT_ROOT, load_dotenv
-from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
 from .utils import ensure_dir, normalize_ts_code, read_json, today_yyyymmdd
 
 

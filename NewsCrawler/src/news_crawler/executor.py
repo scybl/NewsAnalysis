@@ -142,7 +142,6 @@ class TaskExecutor:
                     _record_error(result, issue)
                     self._pause_source(provider.name, issue, result.run_id)
                     raise AutoPausedSource(str(exc)) from exc
-                issue_code = issue.code
                 if issue.retryable and attempt < self.retries:
                     result.metrics["retry"] = int(result.metrics.get("retry", 0)) + 1
                     self.sleep_fn(min(2 ** (attempt - 1), 4))

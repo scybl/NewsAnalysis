@@ -2,6 +2,8 @@
 
 This package is a thin MCP wrapper over the NewsAnalysis Agent Gateway. REST remains the source of truth and all authorization stays server-side.
 
+Status in NewsAnalysis `1.3.0`: the Agent Gateway is kept as a paused integration surface. The MCP package is retained for local development and future re-enable work, but the Web app does not currently issue `na_agent_...` tokens and protected `/api/agent/v1` calls return unavailable until `AGENT_GATEWAY_AVAILABLE` is explicitly restored.
+
 ## Install
 
 ```bash
@@ -11,7 +13,7 @@ python -m pip install -e .
 
 ## Configure
 
-Create an `R,B` token from **Admin Console -> Agent Gateway**, then set:
+When the Agent Gateway is re-enabled, create an `R,B` token from **Admin Console -> Agent Gateway**, then set:
 
 ```bash
 export NEWSANALYSIS_BASE_URL=http://127.0.0.1:8765

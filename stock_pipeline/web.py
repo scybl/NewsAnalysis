@@ -2024,7 +2024,6 @@ class StockWebApp:
                 try:
                     payload = self._read_json()
                     if not app.settings.stock_analysis_execution_enabled:
-                        app.user_store.record_agent_audit(token, path, "POST", "B", 503, {"reason": "analysis_module_external"})
                         self._json({"ok": False, "error": ANALYSIS_MODULE_STATUS_TEXT, "analysis_module": app.analysis_module_status()}, status=503)
                         return
                     ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
@@ -4346,7 +4345,6 @@ class UserStore:
             demo_accounts = data.setdefault("demo_accounts", {})
             if username in users:
                 user = users[username]
-                role = user.get("role") or user.get("tier") or "user"
                 self._assert_manageable_user(username, user)
                 archived = data.setdefault("archived_users", {})
                 user = users.pop(username)

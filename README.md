@@ -2,10 +2,12 @@
 
 一个面向 A 股研究场景的多源数据采集与多 Agent 分析平台。项目把股票资料包、分钟行情、新闻采集、数据源治理、后台任务、权限隔离和 LLM 投研分析组合成一个可部署、可演示的完整 Web 工程。
 
+当前版本：`1.3.0`
+
 这个仓库不是单一脚本，而是一个产品化系统：
 
 - 前台提供股票检索、资料读取、分钟行情补采、多 Agent 分析和历史报告复用。
-- 后台提供账户管理、只读展示账号、数据源中心、新闻采集状态、行情补采和任务审计。
+- 后台提供运维状态、账户管理、只读展示账号、数据源中心、新闻采集状态、行情补采和任务审计。
 - `NewsCrawler/` 作为独立新闻采集服务写入 MongoDB，`NewsAnalysis` 只读消费标准化 `news.v1` 文档。
 - Docker Compose 部署 Web、MongoDB 和 NewsCrawler，支持一键同步到服务器。
 - 敏感信息进入本地加密密钥库，不写入 `.env` 或仓库。
@@ -17,14 +19,14 @@
 密码：admin_view
 ```
 
-只读账号可以进入 Admin Console 查看数据源、新闻库、采集状态和任务记录，但不能触发抓取、保存、删除、生成分析或修改账号。
+只读账号可以进入 Admin Console 查看运维状态、数据源、新闻库、采集状态和任务记录，但不能触发抓取、保存、删除、生成分析或修改账号。
 
 面试/展示材料：
 
 - [项目简介](docs/PROJECT_BRIEF.md)
 - [HR 演示指南](docs/HR_DEMO_GUIDE.md)
-- [多 Agent 架构](docs/multi_agent_analysis_architecture.md)
-- [Agent Gateway 设计](docs/newsanalysis_agent_gateway.md)
+- [NewsCrawler / NewsAnalysis 边界说明](docs/news_crawler_boundary.md)
+- [版本记录](CHANGELOG.md)
 
 ## 快速开始
 
@@ -120,6 +122,8 @@ Agent API 位于 `/api/agent/v1`，OpenAPI 合约位于 `/api/agent/v1/openapi.j
 账号分为管理员、VIP、普通用户和测试账号。管理员和 VIP 使用本地加密密钥库中的 Tushare / DeepSeek key；普通用户需要在页面内保存自己的 key。用户 key 会用本地加密密钥派生的 Fernet 密钥加密保存，删除时会直接移除密文记录，不保留删除痕迹。管理员可在账户管理页生成 VIP 兑换码，并自定义兑换后的 VIP 天数；兑换码默认 3 天内有效，一次性使用。
 
 股票基础列表由后台“每日股票数据”任务按北京时间自动刷新，默认时间为 `21:30`，不在普通用户前台提供手动刷新入口。其他会访问外部数据源或消耗 API/模型额度的手动动作默认需要审批确认，包括同步股票资料包、补抓分钟行情、单 Agent/多 Agent 分析和立即执行每日股票数据更新。后端会校验 `approved=true`，并把审批动作写入审计日志；如需关闭可设置非敏感参数 `DATA_FETCH_APPROVAL_REQUIRED=0`。
+
+管理员后台的“运维状态”页是只读总览：`/admin-ops.html` 会读取 `/api/admin/ops/status`，展示后台任务、重 IO 占用、分时冷数据上传进度、数据覆盖、资源摘要和最近错误。该页面不会启动、停止或删除任务；重 IO 任务入口会在已有重 IO 运行时返回明确的 `blocking_tasks`，防止分时冷数据上传、全市场日 K 和空闲分钟预抓互相挤占服务器 IO。
 
 新闻采集已经拆分为独立的 `NewsCrawler/` 项目。NewsAnalysis 不再请求新闻网站或启动新闻爬虫，只读取 NewsCrawler 写入的 `news.raw_articles`。
 

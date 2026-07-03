@@ -5,7 +5,6 @@ import json
 import mimetypes
 import os
 import stat
-import sys
 import tempfile
 import time
 import urllib.error

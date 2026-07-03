@@ -21,7 +21,7 @@ from .dossier import build_dossier
 from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
 from .minute_storage import build_minute_reference
 from .secret_store import secret_value
-from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, write_json
+from .utils import CN_TZ, normalize_ts_code, read_json, timestamp
 
 
 DEFAULT_DB = MARKET_DATABASE
