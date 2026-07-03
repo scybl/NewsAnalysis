@@ -34,6 +34,7 @@ from .eastmoney_client import EastmoneyClient
 from .kaipanla import KAIPANLA_FEATURES, kaipanla_daily_overview, list_kaipanla_features, list_kaipanla_records, read_kaipanla_record, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
 from .news_library import query_news_library
 from .news_search import search_related_news
+from .ops_status import build_ops_snapshot
 from .minute_storage import minute_reference_row_counts
 from .market_dimensions import STOCK_COLLECTIONS, STOCK_DATABASE
 from .raw_news import MongoRawNewsRepository, raw_news_config
@@ -1134,6 +1135,19 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._json({"ok": True, "items": app.task_registry.list_tasks()})
+                    return
+                if parsed.path == "/api/admin/ops/status":
+                    if not self._require_admin():
+                        return
+                    self._json(
+                        {
+                            "ok": True,
+                            "snapshot": build_ops_snapshot(
+                                PROJECT_ROOT,
+                                crawler_snapshot_fn=lambda: crawler_status_snapshot(limit=5, failure_limit=50),
+                            ),
+                        }
+                    )
                     return
                 if parsed.path == "/api/admin/news-library":
                     if not self._require_data_console():
