@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ValueScope Portfolio Preview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08111f;
+        --panel: #111827;
+        --panel-2: #172033;
+        --line: #2d3748;
+        --text: #f8fafc;
+        --muted: #a8b3c7;
+        --accent: #8ec5ff;
+        --good: #98f5c6;
+        --warn: #ffd38a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 40px 20px 56px;
+      }
+
+      header {
+        display: grid;
+        gap: 12px;
+        margin-bottom: 28px;
+      }
+
+      .eyebrow {
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(34px, 5vw, 64px);
+        line-height: 1.02;
+      }
+
+      p {
+        color: var(--muted);
+        line-height: 1.7;
+        max-width: 820px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .card,
+      .table {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .card {
+        min-height: 130px;
+        padding: 18px;
+      }
+
+      .label {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .value {
+        margin-top: 18px;
+        font-size: 34px;
+        font-weight: 800;
+      }
+
+      .status {
+        color: var(--good);
+      }
+
+      .warning {
+        color: var(--warn);
+      }
+
+      .table {
+        margin-top: 20px;
+        overflow: hidden;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 16px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--panel-2);
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      td {
+        color: var(--text);
+      }
+
+      .pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 5px 10px;
+        background: rgba(142, 197, 255, 0.14);
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      @media (max-width: 820px) {
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 560px) {
+        main {
+          padding: 28px 14px 40px;
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        table,
+        thead,
+        tbody,
+        tr,
+        th,
+        td {
+          display: block;
+        }
+
+        thead {
+          display: none;
+        }
+
+        td {
+          border-bottom: 0;
+        }
+
+        tr {
+          border-bottom: 1px solid var(--line);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="eyebrow">Portfolio Preview</div>
+        <h1>ValueScope / NewsAnalysis</h1>
+        <p>一个面向个人金融研究的数据中台预览。这里是静态作品集页面，不包含生产源码、不连接后端、不暴露爬虫、同步、部署或凭据逻辑。</p>
+      </header>
+
+      <section class="grid" aria-label="summary">
+        <article class="card">
+          <div class="label">系统状态</div>
+          <div class="value status">正常</div>
+        </article>
+        <article class="card">
+          <div class="label">数据抽检</div>
+          <div class="value status">通过</div>
+        </article>
+        <article class="card">
+          <div class="label">冷备份</div>
+          <div class="value">已索引</div>
+        </article>
+        <article class="card">
+          <div class="label">重 IO 任务</div>
+          <div class="value warning">空闲</div>
+        </article>
+      </section>
+
+      <section class="table" aria-label="tasks">
+        <table>
+          <thead>
+            <tr>
+              <th>模块</th>
+              <th>能力</th>
+              <th>公开展示方式</th>
+              <th>保护策略</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="pill">数据治理</span></td>
+              <td>覆盖范围、缺口、健康检查、审计报告</td>
+              <td>脱敏文档和 mock API</td>
+              <td>不公开真实索引和查询实现</td>
+            </tr>
+            <tr>
+              <td><span class="pill">冷备份</span></td>
+              <td>历史分时数据归档、按需读取、本地缓存</td>
+              <td>架构说明和静态样例</td>
+              <td>不公开上传逻辑和对象路径</td>
+            </tr>
+            <tr>
+              <td><span class="pill">系统治理</span></td>
+              <td>任务状态、随机抽检、审计日志</td>
+              <td>静态预览</td>
+              <td>不公开生产 API 和部署脚本</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

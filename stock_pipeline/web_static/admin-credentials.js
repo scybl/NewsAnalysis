@@ -1,26 +1,11 @@
-const themeToggleBtn = document.querySelector("#themeToggleBtn");
-const logoutBtn = document.querySelector("#logoutBtn");
+(() => {
 const refreshCredentialsBtn = document.querySelector("#refreshCredentialsBtn");
 const credentialsSummary = document.querySelector("#credentialsSummary");
 const credentialsGrid = document.querySelector("#credentialsGrid");
 
-let adminReadonly = false;
+let credentialsAdminReadonly = false;
 
-initializeTheme();
-initializeCredentialsPage();
-
-themeToggleBtn?.addEventListener("click", () => {
-  const nextTheme = document.documentElement.classList.contains("theme-dark") ? "light" : "dark";
-  try {
-    localStorage.setItem("stockTheme", nextTheme);
-  } catch {}
-  applyTheme(nextTheme);
-});
-
-logoutBtn?.addEventListener("click", async () => {
-  await fetch("/api/logout", { method: "POST" });
-  window.location.href = "/login";
-});
+initializeCredentialsPane();
 
 refreshCredentialsBtn?.addEventListener("click", () => loadCredentials());
 
@@ -29,7 +14,7 @@ credentialsGrid?.addEventListener("click", async (event) => {
   const deleteButton = event.target.closest("[data-credential-delete]");
   if (!saveButton && !deleteButton) return;
   const name = saveButton?.dataset.credentialSave || deleteButton?.dataset.credentialDelete || "";
-  if (!name || adminReadonly) return;
+  if (!name || credentialsAdminReadonly) return;
   if (saveButton) {
     await saveCredential(name, saveButton);
   } else {
@@ -37,24 +22,8 @@ credentialsGrid?.addEventListener("click", async (event) => {
   }
 });
 
-function initializeTheme() {
-  let savedTheme = "light";
-  try {
-    savedTheme = localStorage.getItem("stockTheme") || "light";
-  } catch {}
-  applyTheme(savedTheme === "dark" ? "dark" : "light");
-}
-
-function applyTheme(theme) {
-  const isDark = theme === "dark";
-  document.documentElement.classList.toggle("theme-dark", isDark);
-  if (themeToggleBtn) {
-    themeToggleBtn.textContent = isDark ? "浅色模式" : "深色模式";
-    themeToggleBtn.setAttribute("aria-pressed", String(isDark));
-  }
-}
-
-async function initializeCredentialsPage() {
+async function initializeCredentialsPane() {
+  if (!credentialsGrid) return;
   try {
     const response = await fetch("/api/session");
     const payload = await readApiPayload(response, "读取会话失败");
@@ -66,7 +35,7 @@ async function initializeCredentialsPage() {
       window.location.href = "/";
       return;
     }
-    adminReadonly = payload.role === "admin_readonly";
+    credentialsAdminReadonly = payload.role === "admin_readonly";
     await loadCredentials();
   } catch {
     window.location.href = "/login";
@@ -172,11 +141,11 @@ function renderCredentialItem(item) {
       <time>${escapeHtml(item.updated_at || "-")}</time>
       <label class="credential-input">
         <span class="sr-only">新值</span>
-        <textarea data-credential-value="${escapeAttr(item.name)}" autocomplete="off" spellcheck="false" placeholder="${escapeAttr(placeholder)}" ${adminReadonly ? "disabled" : ""}></textarea>
+        <textarea data-credential-value="${escapeAttr(item.name)}" autocomplete="off" spellcheck="false" placeholder="${escapeAttr(placeholder)}" ${credentialsAdminReadonly ? "disabled" : ""}></textarea>
       </label>
       <div class="credential-actions">
-        <button class="primary-action" type="button" data-credential-save="${escapeAttr(item.name)}" ${adminReadonly ? "disabled" : ""}>保存</button>
-        <button type="button" data-credential-delete="${escapeAttr(item.name)}" ${adminReadonly || !item.configured ? "disabled" : ""}>移除</button>
+        <button class="primary-action" type="button" data-credential-save="${escapeAttr(item.name)}" ${credentialsAdminReadonly ? "disabled" : ""}>保存</button>
+        <button type="button" data-credential-delete="${escapeAttr(item.name)}" ${credentialsAdminReadonly || !item.configured ? "disabled" : ""}>移除</button>
       </div>
       <small class="credential-message" data-credential-message="${escapeAttr(item.name)}">${item.reloads_next_run ? "下一轮采集前生效" : "后续请求立即使用"}</small>
     </article>
@@ -253,3 +222,4 @@ function escapeHtml(value) {
 function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#096;");
 }
+})();

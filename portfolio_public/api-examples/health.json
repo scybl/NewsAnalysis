@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "status": "ok",
+  "time": "2026-07-08T10:37:00Z",
+  "web": {
+    "host": "demo.local",
+    "port": 8765
+  },
+  "config": {
+    "tushare_status": "archived",
+    "deepseek_configured": true,
+    "stock_agent_engine": "legacy"
+  },
+  "storage": {
+    "local_data_exists": true,
+    "web_user_store_exists": true
+  },
+  "tasks": {
+    "count": 6
+  }
+}

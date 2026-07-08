@@ -14,7 +14,7 @@ window.addEventListener("hashchange", () => {
 });
 
 function activateAccountPane(name, updateHash) {
-  const normalized = new Set(["accounts", "archives"]).has(name) ? name : "accounts";
+  const normalized = new Set(["accounts", "archives", "credentials"]).has(name) ? name : "accounts";
   accountTabs.forEach((button) => {
     button.classList.toggle("active", button.dataset.accountTab === normalized);
   });

@@ -413,13 +413,13 @@ async function loadAdminOverview() {
   if (adminSummary) adminSummary.textContent = adminAuditPage ? "正在读取审计日志..." : "正在读取账户和邀请码...";
   try {
     const response = await fetch("/api/admin/overview");
-    const payload = await readApiPayload(response, "读取账户管理失败");
+    const payload = await readApiPayload(response, "读取访问与安全失败");
     renderSystemApiKeys(payload.system_api_keys || {});
     renderAdminAgentTokens(payload.agent_tokens || []);
     renderAdminAgentAudit(payload.agent_audit_logs || []);
     const invites = payload.invites || [];
     if (adminSummary) {
-      adminSummary.textContent = adminAuditPage ? "" : "账户管理仅保留数据端用户与邀请码；分析端额度能力已迁出。";
+      adminSummary.textContent = adminAuditPage ? "" : "用户与邀请码仅保留数据端账号；分析端额度能力已迁出。";
     }
     renderAdminUsers(payload.users || []);
     renderAdminInvites(invites);

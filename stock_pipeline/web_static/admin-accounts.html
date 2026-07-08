@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>账户管理 - NewsCrawler</title>
+    <title>访问与安全 - NewsCrawler</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -26,7 +26,7 @@
         <nav class="admin-nav" aria-label="后台导航">
           <a class="active" href="/admin-accounts.html">
             <span class="admin-nav-icon">A</span>
-            <span>账户管理</span>
+            <span>访问与安全</span>
           </a>
           <a href="/admin-ops.html">
             <span class="admin-nav-icon">O</span>
@@ -43,10 +43,6 @@
           <a href="/admin-crawler.html">
             <span class="admin-nav-icon">C</span>
             <span>新闻数据</span>
-          </a>
-          <a href="/admin-credentials.html">
-            <span class="admin-nav-icon">K</span>
-            <span>凭据管理</span>
           </a>
           <a class="admin-nav-unavailable" aria-disabled="true" title="数据分发维护中，暂不可用">
             <span class="admin-nav-icon">D</span>
@@ -68,18 +64,19 @@
       <section class="admin-workspace">
         <header class="admin-page-head">
           <div>
-            <span class="admin-kicker">ACCESS</span>
-            <h1>账户管理</h1>
-            <p>管理注册账号、邀请码和已归档账号。</p>
+            <span class="admin-kicker">ACCESS & SECURITY</span>
+            <h1>访问与安全</h1>
+            <p>管理注册账号、邀请码、归档账号和外部服务凭据。</p>
           </div>
           <div class="admin-actions">
             <button id="createInviteBtn" class="primary-action" type="button">生成邀请码</button>
           </div>
         </header>
 
-        <nav class="account-tabs governance-tabs" aria-label="账户管理视图">
+        <nav class="account-tabs governance-tabs" aria-label="访问与安全视图">
           <button class="active" type="button" data-account-tab="accounts">用户与邀请码</button>
           <button type="button" data-account-tab="archives">归档账号</button>
+          <button type="button" data-account-tab="credentials">凭据管理</button>
         </nav>
 
         <div class="account-pane active" data-account-pane="accounts">
@@ -146,10 +143,28 @@
           </div>
         </div>
         </div>
+
+        <div class="account-pane" data-account-pane="credentials">
+          <section class="admin-panel credentials-console">
+            <div class="admin-page-head account-credentials-head">
+              <div>
+                <span class="admin-kicker">SECRETS</span>
+                <h2>凭据管理</h2>
+                <p>统一管理模型 key、数据源 token、新闻爬虫 cookie、代理和百度网盘凭据。</p>
+              </div>
+              <div class="admin-actions">
+                <button id="refreshCredentialsBtn" type="button">刷新状态</button>
+              </div>
+            </div>
+            <div id="credentialsSummary" class="admin-summary">正在读取凭据状态...</div>
+            <div id="credentialsGrid" class="credential-grid"></div>
+          </section>
+        </div>
       </section>
     </main>
     <script src="/admin.js?v=time-archive-20260708-v1"></script>
     <script src="/admin-archives.js?v=time-archive-20260708-v1"></script>
-    <script src="/admin-account-tabs.js?v=account-tabs-20260708-v1"></script>
+    <script src="/admin-credentials.js?v=access-security-20260708-v1"></script>
+    <script src="/admin-account-tabs.js?v=access-security-20260708-v1"></script>
   </body>
 </html>

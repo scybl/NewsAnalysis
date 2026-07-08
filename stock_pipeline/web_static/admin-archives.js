@@ -1,5 +1,4 @@
-const themeToggleBtn = document.querySelector("#themeToggleBtn");
-const logoutBtn = document.querySelector("#logoutBtn");
+(() => {
 const archiveSearchInput = document.querySelector("#archiveSearchInput");
 const archiveSearchBtn = document.querySelector("#archiveSearchBtn");
 const archiveSummary = document.querySelector("#archiveSummary");
@@ -9,41 +8,7 @@ const archiveUserCount = document.querySelector("#archiveUserCount");
 const archiveDemoCount = document.querySelector("#archiveDemoCount");
 const archiveQueryLabel = document.querySelector("#archiveQueryLabel");
 
-initializeTheme();
 initializeArchivePage();
-
-function initializeTheme() {
-  let savedTheme = "light";
-  try {
-    savedTheme = localStorage.getItem("stockTheme") || "light";
-  } catch {}
-  applyTheme(savedTheme === "dark" ? "dark" : "light");
-}
-
-function applyTheme(theme) {
-  const isDark = theme === "dark";
-  document.documentElement.classList.toggle("theme-dark", isDark);
-  if (themeToggleBtn) {
-    themeToggleBtn.textContent = isDark ? "浅色模式" : "深色模式";
-    themeToggleBtn.setAttribute("aria-pressed", String(isDark));
-  }
-}
-
-themeToggleBtn?.addEventListener("click", () => {
-  const nextTheme = document.documentElement.classList.contains("theme-dark") ? "light" : "dark";
-  try {
-    localStorage.setItem("stockTheme", nextTheme);
-  } catch {}
-  applyTheme(nextTheme);
-});
-
-logoutBtn?.addEventListener("click", async () => {
-  try {
-    await fetch("/api/logout", { method: "POST" });
-  } finally {
-    window.location.href = "/login.html";
-  }
-});
 
 function initializeArchivePage() {
   if (!archiveUsersTable) return;
@@ -147,3 +112,4 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+})();
