@@ -21,7 +21,7 @@ NewsCrawler                         NewsAnalysis
 
 ---
 
-## 当前实施状态（2026-06-25）
+## 当前实施状态（2026-07-08）
 
 计划内工程任务已经完成：
 
@@ -39,7 +39,7 @@ NewsCrawler                         NewsAnalysis
 - NewsAnalysis 已删除内部新闻采集 CLI、旧 MySQL 新闻链路和已被替代的爬虫源码。
 - NewsAnalysis Web 不再启动同花顺或 Guardian 新闻爬虫；原进程控制目前只保留非新闻的分钟行情补采。
 - NewsAnalysis 管理端提供 NewsCrawler 只读采集状态面板，展示 `source_health` 与近期 `crawl_runs`，但不反向启动或控制爬虫。
-- NewsAnalysis 管理端将“新闻采集”作为独立只读运维页面，不与新闻库、股票资料或其他数据源控制混排；页面明确展示数据所有权、运行事实、来源健康和错误详情。
+- NewsAnalysis 管理端将“新闻数据”作为独立只读运维页面，不与股票资料、行情数据或其他控制面混排；页面明确展示数据所有权、运行事实、来源健康和错误详情。
 - 原 `/api/admin/spider/*` 已改为明确的 `/api/admin/market-fetch/*`。
 - 两份 `news.v1` JSON Schema 完全一致，并有契约测试。
 - NewsAnalysis 已实现 `latest`、`get_by_article_id`、`list_unprocessed` 和独立消费状态记录。
@@ -473,11 +473,11 @@ NewsAnalysis 必须覆盖：
 
 ### 前端适配
 
-- 后台导航提供独立“新闻采集”入口。
+- 后台导航提供独立“新闻数据”入口。
 - 不可用或调试中的模块统一排在后台导航末尾，避免打断主要运维路径。
-- 开盘啦作为数据源在“数据源”页统一配置、调度和查看记录，不占用独立后台一级模块。
+- 开盘啦作为行情数据在“行情数据”页统一配置、调度和查看记录，不占用独立后台一级模块。
 - 行情补采复用股票搜索索引，支持股票代码、名称、全拼和首字母缩写检索，并在启动任务前解析为标准 `ts_code`。
-- 新闻采集页只读取 `crawl_runs`、`source_health` 和 collection 名称，不提供启动、停止、取消或修改 NewsCrawler 的操作。
+- 新闻数据页只读取 `crawl_runs`、`source_health` 和 collection 名称，不提供启动、停止、取消或修改 NewsCrawler 的操作。
 - 页面明确表达 `NewsCrawler → raw_articles → NewsAnalysis` 的单向所有权边界。
 - 来源健康展示成功率、连续失败、最近成功/失败、最近新增和平均耗时。
 - 近期运行表格字段与 `CrawlResult` 一一对应，至少展示状态、起止时间、耗时、发现、获取、新增、更新、跳过和失败。

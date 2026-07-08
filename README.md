@@ -23,9 +23,9 @@ ValueScope / NewsAnalysis 更接近一个 **个人金融数据中台 + 后台运
 | 行情数据 | 东方财富、开盘啦、同花顺、pytdx / mootdx / tdxpy、AkShare 候选源 | 股票资料包、日 K、分时、涨停连板、龙虎榜、市场情绪 |
 | 新闻采集 | 独立 `NewsCrawler`、Requests、Selenium、BeautifulSoup、lxml | Guardian、同花顺、Bloomberg、Politico 等新闻源采集与标准化 |
 | AI 分析 | DeepSeek、LangGraph 可选、多 Agent 投研链路 | 股票研究报告、反方审计、历史结论复盘 |
-| 前端界面 | 原生 HTML / CSS / JavaScript | 数据中台首页、账户管理、系统治理、数据抽检、新闻和行情控制台 |
+| 前端界面 | 原生 HTML / CSS / JavaScript | 数据中台首页、访问与安全、系统治理、股票数据、行情数据和新闻数据控制台 |
 | 运维部署 | Docker Compose、GitHub Actions、Prometheus 可选、bdpan CLI | 生产部署、CI 校验、健康检查、百度网盘同步 |
-| 安全治理 | Fernet 加密密钥库、TOTP、签名 Cookie、角色权限 | 管理员二次验证、凭据隔离、只读账号、测试账号额度控制 |
+| 安全治理 | Fernet 加密密钥库、TOTP、签名 Cookie、角色权限 | 管理员二次验证、凭据隔离、只读账号和后台操作审计 |
 | 测试体系 | pytest、API smoke、集成测试、前端静态契约、回归测试、轻量性能基线 | 防止接口、页面、数据治理和部署脚本回归 |
 
 > Tushare 目前处于封存状态：项目保留历史本地数据读取和必要回滚入口，但新的数据抓取与资料包更新不再默认依赖 Tushare。
@@ -33,7 +33,7 @@ ValueScope / NewsAnalysis 更接近一个 **个人金融数据中台 + 后台运
 这个仓库不是单一脚本，而是一个产品化系统：
 
 - 前台提供股票检索、资料读取、分钟行情补采、多 Agent 分析和历史报告复用。
-- 后台提供运维状态、账户管理、只读展示账号、数据源中心、新闻采集状态、行情补采和任务审计。
+- 后台提供访问与安全、系统治理、只读展示账号、股票数据、行情数据、新闻数据、冷备份进度和任务审计。
 - `NewsCrawler/` 作为独立新闻采集服务写入 MongoDB，`NewsAnalysis` 只读消费标准化 `news.v1` 文档。
 - Docker Compose 部署 Web、MongoDB 和 NewsCrawler，支持一键同步到服务器。
 - 敏感信息进入本地加密密钥库，不写入 `.env` 或仓库。
@@ -45,7 +45,7 @@ ValueScope / NewsAnalysis 更接近一个 **个人金融数据中台 + 后台运
 密码：admin_view
 ```
 
-只读账号可以进入 Admin Console 查看运维状态、数据源、新闻库、采集状态和任务记录，但不能触发抓取、保存、删除、生成分析或修改账号。
+只读账号可以进入 Admin Console 查看系统治理、股票数据、行情数据、新闻数据、采集状态和任务记录，但不能触发抓取、保存、删除、生成分析或修改账号。
 
 面试/展示材料：
 
@@ -64,15 +64,16 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-敏感信息不要写入 `.env`。首次运行先把 key、管理员密码和连接密码写入本地加密密钥库：
+敏感信息不要写入 `.env`。首次运行先把管理员账号、会话密钥和连接密码写入本地加密密钥库：
 
 ```bash
-.venv/bin/python -m stock_pipeline secrets set tushare.api_token
 .venv/bin/python -m stock_pipeline secrets set web.admin_username
 .venv/bin/python -m stock_pipeline secrets set web.admin_password
 .venv/bin/python -m stock_pipeline secrets set web.session_secret
 .venv/bin/python -m stock_pipeline secrets set mongo.password
 ```
+
+Tushare 当前封存，不作为新数据抓取的默认依赖；只有在你明确重新启用 Tushare 时，才需要配置 `tushare.api_token`。DeepSeek、Guardian、Bloomberg、Politico、百度网盘等运行凭据建议在管理员后台“访问与安全 / 凭据管理”中维护。
 
 管理员账号支持 Authenticator/TOTP 二次验证。启用方式：
 
@@ -88,7 +89,7 @@ python3 -m venv .venv
 .venv/bin/python -m stock_pipeline secrets migrate-env
 ```
 
-密钥库保存在 `local_data/secure/secrets.json.enc`，本地 master key 保存在 `local_data/secure/master.key`，两者都会设置为当前用户可读写。`.env` 只保留非敏感运行参数，例如 `DEEPSEEK_MODEL`、缓存 TTL、MongoDB host/collection 等。DeepSeek key 可继续用管理员账号进入“账户管理”页，在“系统模型 Key”中验证并锁定；保存后不回显明文。
+密钥库保存在 `local_data/secure/secrets.json.enc`，本地 master key 保存在 `local_data/secure/master.key`，两者都会设置为当前用户可读写。`.env` 只保留非敏感运行参数，例如 `DEEPSEEK_MODEL`、缓存 TTL、MongoDB host/collection 等。系统级 DeepSeek key 可用管理员账号进入“访问与安全 / 凭据管理”页验证并锁定；保存后不回显明文。
 
 运行一次完整分析：
 
@@ -120,11 +121,11 @@ scripts/run_web.sh
 
 前端默认启用账号密码登录。若未配置，默认账号密码为 `admin/admin`，只适合本地测试；部署到服务器前请务必用 `stock_pipeline secrets set web.admin_username/web.admin_password/web.session_secret` 写入加密密钥库，并运行 `stock_pipeline secrets setup-admin-totp` 启用管理员 Authenticator 二次验证。
 
-注册功能只接受管理员后台生成的邀请码。管理员登录后可在“管理”面板生成 6 位数字邀请码，默认 3 天有效，成功注册后会被标记为已使用，不能再次注册。`STOCK_WEB_INVITE_CODES` 只作为可选启动种子，不建议日常使用。朋友测试账号也在管理员面板生成，默认每 24 小时最多 30 次 API 请求，可用 `STOCK_WEB_DEMO_REQUEST_LIMIT` 和 `STOCK_WEB_DEMO_WINDOW_SECONDS` 调整新生成测试账号的默认额度。
+注册功能只接受管理员后台生成的邀请码。管理员登录后可在“访问与安全 / 用户与邀请码”生成 6 位数字邀请码，默认 3 天有效，成功注册后会被标记为已使用，不能再次注册。`STOCK_WEB_INVITE_CODES` 只作为可选启动种子，不建议日常使用。
 
-管理员后台分为账户管理和行情补采。账户管理可查看用户用量、配置系统 DeepSeek key、生成邀请码、生成 VIP 兑换码、发放/撤销用户 VIP、禁用/启用用户、重置测试账号额度，并查看后台任务和权限操作审计日志。禁用用户会立即移除该用户当前会话。
+管理员后台当前按实际运维域划分：访问与安全管理用户、邀请码、归档账号和外部服务凭据；系统治理集中展示运维状态、数据抽检和审计日志；股票数据管理资料包、日 K、分时覆盖和存储状态；行情数据管理开盘啦和全市场定时任务；新闻数据只读展示 NewsCrawler 的来源健康与采集运行。禁用用户会立即移除该用户当前会话。
 
-股票数据按股票代码共享保存到 `local_data/{ts_code}`，不是按用户隔离。`STOCK_DATA_CACHE_TTL_SECONDS` 控制共享缓存有效期，默认 24 小时内同一只股票不会重复调用 Tushare 更新。`STOCK_ANALYSIS_REUSE_TTL_SECONDS` 控制近期 DeepSeek / 多 Agent 分析结果的复用窗口，默认 30 分钟。`STOCK_ANALYSIS_HISTORY_REVIEW_LIMIT` 控制 LLM 分析时纳入最近几份历史分析做复盘，默认 3 份。
+股票数据按股票代码共享保存到 `local_data/{ts_code}`，不是按用户隔离。`STOCK_DATA_CACHE_TTL_SECONDS` 控制共享缓存有效期，默认 24 小时内同一只股票不会重复更新本地资料包。Tushare 封存期间，新抓取优先使用东方财富、腾讯兜底和本地缓存兼容数据。`STOCK_ANALYSIS_REUSE_TTL_SECONDS` 控制近期 DeepSeek / 多 Agent 分析结果的复用窗口，默认 30 分钟。`STOCK_ANALYSIS_HISTORY_REVIEW_LIMIT` 控制 LLM 分析时纳入最近几份历史分析做复盘，默认 3 份。
 
 多 Agent 引擎默认使用稳定旧版 `legacy`。设置 `STOCK_AGENT_ENGINE=langgraph` 后会启用 LangGraph 工作流：第一轮专题 agent、反方审计、第二轮修正、最终汇总。该模式会增加一次审计和一次修正轮，结果更可审计，但会增加模型调用成本。
 
@@ -143,17 +144,17 @@ LangGraph 模式会把每次最终结论写入 `local_data/{ts_code}/current/dec
 
 Agent API 位于 `/api/agent/v1`，OpenAPI 合约位于 `/api/agent/v1/openapi.json`。完整任务记录和 `Idempotency-Key` 重放结果保存在 `local_data/agent_jobs.json`；服务重启时未完成任务会标记为中断，不会假装继续运行。
 
-仓库内 `mcp_server/` 是 Agent Gateway 的薄 MCP 包装，提供健康检查、股票搜索、本地资料读取和分析任务提交/轮询。MCP 只转发 scoped token，不接触管理员密码、浏览器 Cookie、Tushare key 或 DeepSeek key。安装与配置见 `mcp_server/README.md`。
+仓库内 `mcp_server/` 是 Agent Gateway 的薄 MCP 包装，提供健康检查、股票搜索、本地资料读取和分析任务提交/轮询。MCP 只转发 scoped token，不接触管理员密码、浏览器 Cookie、数据源 key 或 DeepSeek key。安装与配置见 `mcp_server/README.md`。
 
-账号分为管理员、VIP、普通用户和测试账号。管理员和 VIP 使用本地加密密钥库中的 Tushare / DeepSeek key；普通用户需要在页面内保存自己的 key。用户 key 会用本地加密密钥派生的 Fernet 密钥加密保存，删除时会直接移除密文记录，不保留删除痕迹。管理员可在账户管理页生成 VIP 兑换码，并自定义兑换后的 VIP 天数；兑换码默认 3 天内有效，一次性使用。
+访问与安全页面管理管理员、只读管理员、注册用户、邀请码、归档账号和系统凭据。普通用户的私有模型 key 继续由用户侧保存；系统级 DeepSeek、Guardian、Bloomberg、Politico、百度网盘等凭据通过凭据管理写入服务器安全目录，不在页面回显。旧 VIP / 临时账号接口仍兼容历史数据，但不再作为当前后台主流程展示。
 
 股票基础列表由后台“每日股票数据”任务按北京时间自动刷新，默认时间为 `21:30`，不在普通用户前台提供手动刷新入口。其他会访问外部数据源或消耗 API/模型额度的手动动作默认需要审批确认，包括同步股票资料包、补抓分钟行情、单 Agent/多 Agent 分析和立即执行每日股票数据更新。后端会校验 `approved=true`，并把审批动作写入审计日志；如需关闭可设置非敏感参数 `DATA_FETCH_APPROVAL_REQUIRED=0`。
 
-管理员后台的“运维状态”页是只读总览：`/admin-ops.html` 会读取 `/api/admin/ops/status`，展示后台任务、重 IO 占用、分时冷数据上传进度、数据覆盖、资源摘要和最近错误。该页面不会启动、停止或删除任务；重 IO 任务入口会在已有重 IO 运行时返回明确的 `blocking_tasks`，防止分时冷数据上传、全市场日 K 和空闲分钟预抓互相挤占服务器 IO。
+管理员后台的“系统治理”页是只读总览：`/admin-ops.html` 会读取 `/api/admin/ops/status`，展示后台任务、重 IO 占用、分时冷数据上传进度、数据覆盖、资源摘要和最近错误，并整合数据抽检和审计日志。该页面不会启动、停止或删除任务；重 IO 任务入口会在已有重 IO 运行时返回明确的 `blocking_tasks`，防止分时冷数据上传、全市场日 K 和空闲分钟预抓互相挤占服务器 IO。
 
 新闻采集已经拆分为独立的 `NewsCrawler/` 项目。NewsAnalysis 不再请求新闻网站或启动新闻爬虫，只读取 NewsCrawler 写入的 `news.raw_articles`。
 
-管理员后台的“新闻采集”页是只读运维视图：展示 `source_health`、`crawl_runs`、运行错误和数据所有权边界，不会从 NewsAnalysis 启动、停止或修改 NewsCrawler。
+管理员后台的“新闻数据”页是只读运维视图：展示 `source_health`、`crawl_runs`、运行错误和数据所有权边界，不会从 NewsAnalysis 启动、停止或修改 NewsCrawler。
 
 ```bash
 cd NewsCrawler
@@ -207,9 +208,9 @@ NewsAnalysis 仍可独立检索已采集新闻：
 
 两个项目只通过 `news.v1` 文档契约通信。契约文件分别位于 `contracts/` 和 `NewsCrawler/contracts/`。
 
-### 数据源中心
+### 股票数据
 
-管理员后台“数据源”页是统一的数据资产入口：上方展示本地缓存、开盘啦、同花顺、东方财富、AkShare 和 Tushare 的状态，下方按标准数据类型归并为股票基础信息、日行情、分钟行情、涨停/连板、龙虎榜、板块、市场情绪、资金流、新闻、财务摘要和估值指标。
+管理员后台“股票数据”页是统一的股票数据资产入口：上方展示本地缓存、同花顺、东方财富、AkShare 候选源和 Tushare 封存兼容状态，下方按标准数据类型归并为股票基础信息、日行情、分钟行情、涨停/连板、龙虎榜、板块、市场情绪、资金流、新闻、财务摘要和估值指标。
 
 Tushare 现在默认处于 `archived` 封存状态：本地历史资料包仍可读取，但新同步、每日股票数据更新和搜索索引刷新不会默认调用 Tushare。股票资料包同步会优先使用东方财富 provider 生成兼容的 `full_data.datasets`，覆盖股票基础信息、日/周/月行情、估值快照、涨跌停估算、利润表、资产负债表、现金流量表、财务指标和行业归属。东方财富 K 线接口异常时会使用腾讯 K 线作为行情兜底，并在记录中标记 `source=tencent_fallback`。
 
@@ -223,7 +224,7 @@ python -m stock_pipeline kaipanla validate
 python -m stock_pipeline kaipanla run daily_data --params '{"end_date":"2026-01-16"}'
 ```
 
-管理员后台不再为开盘啦设置独立导航模块；“数据源”页统一提供开盘啦功能选择、参数 JSON、定时配置、立即抓取和本地记录查看。当前集成覆盖交易日完整数据、百日新高、连板梯队、板块排行/强度/资金、实时情绪、指数/个股/板块分时、板块新闻、龙虎榜、ETF、竞价 tick 等公开方法。个别功能可能依赖后续配置，例如 Selenium/Chrome 或开盘啦侧 Token/Cookie；这些功能会保留入口，便于后续补权限后继续调试。
+管理员后台不再为开盘啦设置独立导航模块；“行情数据”页统一提供开盘啦功能选择、参数 JSON、定时配置、立即抓取和本地记录查看。当前集成覆盖交易日完整数据、百日新高、连板梯队、板块排行/强度/资金、实时情绪、指数/个股/板块分时、板块新闻、龙虎榜、ETF、竞价 tick 等公开方法。个别功能可能依赖后续配置，例如 Selenium/Chrome 或开盘啦侧 Token/Cookie；这些功能会保留入口，便于后续补权限后继续调试。
 
 ## 服务器部署
 
@@ -238,7 +239,6 @@ NewsCrawler 单个来源的单次采集默认最多运行 300 秒，超时会把
 生产环境同样不要把 key 写入 `.env`。部署后在服务器目录执行：
 
 ```bash
-.venv/bin/python -m stock_pipeline secrets set tushare.api_token
 .venv/bin/python -m stock_pipeline secrets set web.admin_password
 .venv/bin/python -m stock_pipeline secrets set web.session_secret
 .venv/bin/python -m stock_pipeline secrets set mongo.password
@@ -254,7 +254,7 @@ DEEPSEEK_MODEL=deepseek-v4-pro
 PUBLIC_WEB_PORT=8765
 ```
 
-部署完成后，用管理员账号登录后台，在“账户管理 / 系统模型 Key”里录入 DeepSeek key。
+部署完成后，用管理员账号登录后台，在“访问与安全 / 凭据管理”里录入 DeepSeek、新闻源和百度网盘等运行凭据。
 
 从本机一键同步并部署到服务器。先创建只保存在本机的连接配置：
 
@@ -343,7 +343,7 @@ docker compose -f docker-compose.prod.yml down
 curl http://127.0.0.1:8765/api/health
 ```
 
-返回内容会包含 Web、Tushare/DeepSeek 配置状态、本地数据目录、爬虫状态和后台任务数量。生产环境可以用这个接口做 uptime 或反向代理探活。
+返回内容会包含 Web 配置状态、本地数据目录、爬虫状态和后台任务数量。生产环境可以用这个接口做 uptime 或反向代理探活。
 
 `docker-compose.prod.yml` 使用 `restart: unless-stopped`，所以 Docker 启动后服务会自动恢复；Web 容器异常退出也会自动重启。服务器上建议只开放 Web 端口 `PUBLIC_WEB_PORT`，MongoDB 不对公网暴露。
 
@@ -359,7 +359,7 @@ curl http://127.0.0.1:8765/api/health
 
 默认输出到 `reports/{股票代码}_{时间戳}/`：
 
-- `raw/*.json`：每个 Tushare 接口的原始结构化结果
+- `raw/*.json`：资料包构建过程中的原始结构化结果；历史包可能保留旧 Tushare 文件名
 - `dossier.json`：压缩后的股票研究资料包
 - `analysis.md`：DeepSeek 首轮分析报告
 
@@ -377,7 +377,7 @@ curl http://127.0.0.1:8765/api/health
 - 行业现状：申万行业归属、行业成分股、行业指数日行情
 - 公告：上市公司公告，重点筛选年报/半年报/季报等标题
 
-不同 Tushare 接口有不同积分和权限要求；权限不足时会写入 `dossier["fetch_errors"]`。
+不同公开数据源可能存在限流、字段变动或权限缺口；失败会写入 `dossier["fetch_errors"]` 或对应任务日志。本地历史 Tushare 数据只作为兼容输入，新的默认抓取不依赖 Tushare。
 
 ## 免责声明
 

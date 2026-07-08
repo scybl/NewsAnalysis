@@ -9,7 +9,7 @@ The production source code is intentionally not included here. This package is d
 - A full-stack financial data platform for stock, market, and news workflows.
 - MongoDB-backed hot storage with Baidu Netdisk cold backup for low-frequency minute data.
 - Data quality checks, random audits, gap tracking, and operational reporting.
-- Admin console for credentials, accounts, system governance, crawler status, and task health.
+- Admin console for access/security, system governance, stock storage status, market data, news data, and task health.
 - Safe deployment concepts that avoid interrupting long-running crawlers or uploads.
 - Test coverage across API contracts, integration flows, frontend contracts, regression checks, and lightweight performance baselines.
 

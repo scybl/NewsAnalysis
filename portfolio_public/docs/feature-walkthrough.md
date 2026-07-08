@@ -56,13 +56,12 @@ What this demonstrates:
 - Retrieval-oriented archive design.
 - Separation between hot analysis data and cold historical payloads.
 
-## 5. Account and Credential Management
+## 5. Access and Security
 
-The admin console separates:
+The admin console groups access and security into one operational area:
 
 - Registered users.
 - Archived accounts.
-- Demo accounts.
 - System credentials.
 - Read-only access.
 
