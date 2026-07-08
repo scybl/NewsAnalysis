@@ -129,11 +129,27 @@ def test_changed_admin_pages_bust_static_cache_versions():
         "admin-ops.html": "time-ops-20260708-v1",
         "admin-crawler.html": "time-crawler-20260708-v1",
         "admin-news.html": "time-news-20260708-v1",
-        "index.html": "time-labels-20260708-v1",
+        "index.html": "time-maintenance-20260708-v1",
     }
 
     for filename, marker in expected.items():
         assert marker in (STATIC / filename).read_text(encoding="utf-8"), filename
+
+
+def test_frontend_copy_does_not_present_tushare_as_default_update_source():
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "更新资料包" in html
+    assert "Tushare API（封存兼容）" in html
+    for stale_copy in (
+        "更新 Tushare",
+        "数据源：Tushare",
+        "Tushare 资料包",
+        "请先点击“更新 Tushare”",
+    ):
+        assert stale_copy not in html
+        assert stale_copy not in app
 
 
 def test_admin_time_formatters_hide_year_and_seconds_in_changed_scripts():

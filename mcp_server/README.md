@@ -2,7 +2,7 @@
 
 This package is a thin MCP wrapper over the NewsAnalysis Agent Gateway. REST remains the source of truth and all authorization stays server-side.
 
-Status in NewsAnalysis `1.3.0`: the Agent Gateway is kept as a paused integration surface. The MCP package is retained for local development and future re-enable work, but the Web app does not currently issue `na_agent_...` tokens and protected `/api/agent/v1` calls return unavailable until `AGENT_GATEWAY_AVAILABLE` is explicitly restored.
+Status in NewsAnalysis `1.4.x`: the Agent Gateway remains a paused integration surface. The MCP package is retained for local development and future re-enable work, but the Web app does not currently issue `na_agent_...` tokens and protected `/api/agent/v1` calls return unavailable until `AGENT_GATEWAY_AVAILABLE` is explicitly restored.
 
 ## Install
 

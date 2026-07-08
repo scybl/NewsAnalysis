@@ -4,7 +4,6 @@ import argparse
 import getpass
 import json
 from pathlib import Path
-from typing import Any
 
 from .analyst import INITIAL_QUESTION, StockAnalyst, session_path_for
 from .akshare_client import AkshareClient

@@ -575,7 +575,7 @@ function renderApiKeyPanel(session) {
   if (saveUserApiKeysBtn) saveUserApiKeysBtn.disabled = false;
   if (deleteUserApiKeysBtn) deleteUserApiKeysBtn.disabled = !keys.tushare?.configured && !keys.deepseek?.configured;
   if (apiKeyStatus) {
-    apiKeyStatus.textContent = `Tushare：${keys.tushare?.configured ? "已保存" : "未保存"}；DeepSeek：${keys.deepseek?.configured ? "已保存" : "未保存"}。`;
+    apiKeyStatus.textContent = `Tushare 兼容：${keys.tushare?.configured ? "已保存" : "未保存"}；DeepSeek：${keys.deepseek?.configured ? "已保存" : "未保存"}。`;
   }
 }
 
@@ -621,7 +621,7 @@ function formatApiKeyError(message) {
   const raw = String(message || "");
   const parts = [];
   if (/Tushare key 验证失败|stock_basic|token不对|tushare/i.test(raw)) {
-    parts.push("Tushare API 验证失败，请检查 token 是否正确。");
+    parts.push("Tushare 兼容 token 验证失败，请检查 token 是否正确。");
   }
   if (/DeepSeek key 验证失败|Authentication Fails|authentication_error|api key|invalid/i.test(raw)) {
     parts.push("DeepSeek API 验证失败，请检查 key 是否有效。");
@@ -683,7 +683,7 @@ function selectStock(item) {
 async function syncSelectedData(options = {}) {
   if (!selected) return;
   const force = options.force !== false;
-  if (!approveDataFetch(`更新 ${selected.name}（${selected.ts_code}）的 Tushare ${historyScopeText()}数据`)) return;
+  if (!approveDataFetch(`更新 ${selected.name}（${selected.ts_code}）的股票资料包（${historyScopeText()}）`)) return;
   const token = ++syncToken;
   updateDataBtn.disabled = true;
   if (updateThsMarketBtn) updateThsMarketBtn.disabled = true;
@@ -691,7 +691,7 @@ async function syncSelectedData(options = {}) {
   multiAgentBtn.disabled = true;
   readAnalysisBtn.disabled = true;
   readAgentRunBtn.disabled = true;
-  output.textContent = `正在全量更新 ${selected.name}（${selected.ts_code}）的 Tushare ${historyScopeText()}数据，请稍等...`;
+  output.textContent = `正在全量更新 ${selected.name}（${selected.ts_code}）的股票资料包（${historyScopeText()}），请稍等...`;
   try {
     const response = await fetch("/api/sync-stock-data", {
       method: "POST",
@@ -712,7 +712,7 @@ async function syncSelectedData(options = {}) {
     const cacheLine = payload.cache_hit
       ? `已复用共享缓存，缓存年龄：${formatDurationText(payload.cache_age_seconds)}。`
       : "本地数据已更新。";
-    output.textContent = `${cacheLine}\n数据源：Tushare\n采集范围：${range}\n每日行情覆盖：${dailySummary}\n资料包：已保存\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或继续补抓分钟行情。`;
+    output.textContent = `${cacheLine}\n数据源：默认股票资料源\n采集范围：${range}\n每日行情覆盖：${dailySummary}\n资料包：已保存\n更新时间：${formatUpdateTime(meta.updated_at)}\n历史快照：${snapshotCount} 个\n\n现在可以点击“读取数据”查看中文表格，或继续补抓分钟行情。`;
     await refreshAnalysisResults();
   } catch (error) {
     if (token === syncToken) {
@@ -755,7 +755,7 @@ async function syncSelectedThsMarketData() {
     syncMinuteButtonState();
     renderStockMetricsFromDatasets(loadedDatasets);
     const result = payload.market_result?.results?.[0] || {};
-    const localText = result.local_merged ? "MongoDB 引用已写入资料包。" : "本地 Tushare 资料包尚不存在，分钟数据已写入 MongoDB。";
+    const localText = result.local_merged ? "MongoDB 引用已写入资料包。" : "本地资料包尚不存在，分钟数据已写入 MongoDB。";
     const dateRange = result.date_range?.start && result.date_range?.end ? `${result.date_range.start} - ${result.date_range.end}` : result.trade_date || "-";
     const pageText = result.requested_pages === "all"
       ? `全部可取页；实际 ${result.pages_fetched ?? "-"} 页 × ${result.page_size ?? "-"} 根/页${result.source_exhausted ? "；已到数据源尽头" : ""}`
@@ -1458,7 +1458,7 @@ function syncMinuteButtonState() {
   updateThsMarketBtn.disabled = !selected || !selectedHasDailyData;
   updateThsMarketBtn.title = selectedHasDailyData
     ? "补抓分钟行情"
-    : "请先点击“更新 Tushare”，生成 daily 交易日列表";
+    : "请先点击“更新资料包”，生成 daily 交易日列表";
 }
 
 function datasetsHaveDailyRows(datasets, datasetRows = {}) {

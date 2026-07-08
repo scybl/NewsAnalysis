@@ -100,7 +100,6 @@ def build_report_payload(client: pymongo.MongoClient, *, progress: Progress) -> 
 
     progress("统计新闻数据和冷新闻索引")
     raw_stats = collection_stats(news_db, "raw_articles")
-    cold_news_stats = collection_stats(news_db, "cold_article_index")
     raw_by_source = group_counts(news_db["raw_articles"], "source_name")
     cold_by_source = group_counts(news_db["cold_article_index"], "source_name")
     for source in sorted(set(raw_by_source) | set(cold_by_source)):
@@ -136,7 +135,6 @@ def build_report_payload(client: pymongo.MongoClient, *, progress: Progress) -> 
     progress("统计股票分时热数据和百度网盘冷备份索引")
     minute_bucket_stats = collection_stats(market_db, MARKET_COLLECTIONS["minute_buckets"])
     minute_index_stats = collection_stats(market_db, MARKET_COLLECTIONS["minute_day_index"])
-    minute_coverage_stats = collection_stats(market_db, MARKET_COLLECTIONS["minute_coverage"])
     minute_sources = sorted(
         set(market_db[MARKET_COLLECTIONS["minute_buckets"]].distinct("source"))
         | set(market_db[MARKET_COLLECTIONS["minute_day_index"]].distinct("source"))
@@ -301,7 +299,7 @@ def label_for_source(source: str) -> str:
 
 def render_markdown(payload: dict[str, Any]) -> str:
     lines = [
-        f"# 服务器数据自查报告",
+        "# 服务器数据自查报告",
         "",
         f"- 生成时间：`{payload['generated_at']}`",
         f"- 服务器存储估算合计：`{format_bytes(payload['totals']['server_storage_bytes'])}`",
