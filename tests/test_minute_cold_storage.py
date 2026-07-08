@@ -69,6 +69,10 @@ class FakeIndexCollection:
         self.docs[key] = doc
         return SimpleNamespace(upserted_id=None, modified_count=1)
 
+    def find_one(self, query, projection=None):
+        rows = self.find(query, projection)
+        return rows[0] if rows else None
+
     def count_documents(self, query):
         total = 0
         trade_dates = set((query.get("trade_date") or {}).get("$in") or [])
@@ -390,6 +394,68 @@ def test_stock_year_object_can_return_one_trade_date(tmp_path):
     rows = minute_cold_storage.read_object_day_rows(path, "20261228")
     assert rows[0]["trade_date"] == "20261228"
     assert rows[0]["minute"] == "0930"
+
+
+def test_read_cached_or_downloaded_day_downloads_stock_year_object_and_reuses_cache(tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    second = _bucket()
+    second["trade_date"] = "20261228"
+    second["minutes"] = [{"minute": "0930", "price": 10.2}]
+    info = minute_cold_storage.write_stock_year_object(
+        [_bucket(), second],
+        config,
+        source="pytdx_history",
+        ts_code="000001.SZ",
+        trade_year="2026",
+    )
+    day_index = FakeIndexCollection()
+    minute_cold_storage.upsert_day_index(day_index, second, info, upload_status="uploaded")
+    remote_source = Path(info["local_path"])
+    cache_path = config.cache_root / info["relative_path"]
+    downloads = []
+
+    def fake_download(args):
+        downloads.append(args)
+        Path(args[-1]).write_bytes(remote_source.read_bytes())
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    rows = minute_cold_storage.read_cached_or_downloaded_day(
+        day_index,
+        source="pytdx_history",
+        ts_code="000001.SZ",
+        trade_date="20261228",
+        config=config,
+        runner=fake_download,
+    )
+
+    assert rows == [
+        {
+            "dataset": "pytdx_history_minutes",
+            "minute": "0930",
+            "price": 10.2,
+            "source": "pytdx_history",
+            "symbol": "000001",
+            "trade_date": "20261228",
+            "ts_code": "000001.SZ",
+        }
+    ]
+    assert downloads == [[config.bdpan_bin, "--no-check-update", "download", info["remote_path"], str(cache_path)]]
+    indexed = day_index.docs[("pytdx_history", "000001.SZ", "20261228")]
+    assert indexed["cache.local_path"] == str(cache_path)
+    assert indexed["cache.last_accessed_at"]
+
+    downloads.clear()
+    rows_again = minute_cold_storage.read_cached_or_downloaded_day(
+        day_index,
+        source="pytdx_history",
+        ts_code="000001.SZ",
+        trade_date="20261228",
+        config=config,
+        runner=fake_download,
+    )
+
+    assert rows_again == rows
+    assert downloads == []
 
 
 def test_archive_stock_shards_reads_each_stock_independently(tmp_path):

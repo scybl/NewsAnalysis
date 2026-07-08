@@ -72,3 +72,23 @@ def test_deploy_workflow_skips_when_production_secrets_are_missing():
     assert "GITHUB_STEP_SUMMARY" in workflow
     assert "if: steps.deployment_secrets.outputs.enabled == 'true'" in workflow
     assert "Validate deployment secrets" not in workflow
+
+
+def test_ci_workflow_is_split_but_keeps_validate_gate():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    for job_name in (
+        "CI / hygiene",
+        "CI / tests",
+        "CI / frontend-contract",
+        "CI / compose",
+        "CI / docker-build",
+        "CI / validate",
+    ):
+        assert f"name: {job_name}" in workflow
+    assert "needs: [hygiene, tests, frontend_contract, compose, docker_build]" in workflow
+    for dependency in ("hygiene", "tests", "frontend_contract", "compose", "docker_build"):
+        assert f"needs.{dependency}.result" in workflow
+    assert "python -m pytest -q tests NewsCrawler/tests" in workflow
+    assert "docker compose -f docker-compose.prod.yml config --quiet" in workflow
+    assert "docker build --tag newsanalysis:ci ." in workflow

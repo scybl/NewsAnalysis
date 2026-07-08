@@ -380,8 +380,14 @@ def test_market_and_data_source_pages_have_explicit_layout_sections():
     assert ".data-source-overview-grid" in styles
     assert 'data-stock-tab="storage"' in stock_sources
     assert "stockStorageTable" in stock_sources
+    assert "stockStorageFilterSelect" in stock_sources
+    for option in ("daily_missing", "minute_missing", "cold_pending", "health_attention"):
+        assert f'value="{option}"' in stock_sources
     assert "idlePrefetchRefreshDays" in stock_sources
-    assert "/api/admin/stock-storage-status" in (STATIC / "admin-news.js").read_text(encoding="utf-8")
+    stock_script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
+    assert "/api/admin/stock-storage-status" in stock_script
+    assert "stockStorageMatchesFilter" in stock_script
+    assert "stockStorageFilterSelect?.addEventListener" in stock_script
     assert "stock_storage_status_snapshot" in (STATIC.parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
     assert ".stock-health-pill" in styles
 

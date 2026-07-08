@@ -295,6 +295,16 @@
                   <input id="stockStorageSearchInput" type="search" placeholder="代码、名称、行业" />
                 </label>
                 <label>
+                  <span>过滤</span>
+                  <select id="stockStorageFilterSelect">
+                    <option value="all" selected>全部股票</option>
+                    <option value="daily_missing">日K异常</option>
+                    <option value="minute_missing">分时异常</option>
+                    <option value="cold_pending">冷备份未完成</option>
+                    <option value="health_attention">需要关注</option>
+                  </select>
+                </label>
+                <label>
                   <span>排序</span>
                   <select id="stockStorageSortSelect">
                     <option value="health" selected>健康状态</option>

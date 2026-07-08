@@ -24,6 +24,7 @@ const stockStorageMeta = document.querySelector("#stockStorageMeta");
 const stockStorageStats = document.querySelector("#stockStorageStats");
 const stockStorageTable = document.querySelector("#stockStorageTable");
 const stockStorageSearchInput = document.querySelector("#stockStorageSearchInput");
+const stockStorageFilterSelect = document.querySelector("#stockStorageFilterSelect");
 const stockStorageSortSelect = document.querySelector("#stockStorageSortSelect");
 const dataSourceMeta = document.querySelector("#dataSourceMeta");
 const dataSourceStats = document.querySelector("#dataSourceStats");
@@ -187,6 +188,7 @@ function bindEvents() {
     window.clearTimeout(stockStorageSearchTimer);
     stockStorageSearchTimer = window.setTimeout(renderStockStorage, 160);
   });
+  stockStorageFilterSelect?.addEventListener("change", renderStockStorage);
   stockStorageSortSelect?.addEventListener("change", renderStockStorage);
   stockTabs.forEach((button) => {
     button.addEventListener("click", () => activateStockPane(button.dataset.stockTab || "sources", true));
@@ -482,13 +484,11 @@ function renderStockStorageStats() {
 function renderStockStorage() {
   if (!stockStorageTable) return;
   const query = (stockStorageSearchInput?.value || "").trim().toLowerCase();
+  const filterKey = stockStorageFilterSelect?.value || "all";
   const sortKey = stockStorageSortSelect?.value || "health";
   const items = stockStorageState.items
-    .filter((item) => {
-      if (!query) return true;
-      return [item.ts_code, item.name, item.industry, item.market]
-        .some((value) => String(value || "").toLowerCase().includes(query));
-    })
+    .filter((item) => stockStorageMatchesQuery(item, query))
+    .filter((item) => stockStorageMatchesFilter(item, filterKey))
     .sort((left, right) => compareStockStorageRows(left, right, sortKey));
   if (!items.length) {
     stockStorageTable.innerHTML = `<tbody><tr><td class="news-empty">当前条件下没有股票存储状态。</td></tr></tbody>`;
@@ -509,6 +509,37 @@ function renderStockStorage() {
       ${items.map(renderStockStorageRow).join("")}
     </tbody>
   `;
+}
+
+function stockStorageMatchesQuery(item, query) {
+  if (!query) return true;
+  return [item.ts_code, item.name, item.industry, item.market]
+    .some((value) => String(value || "").toLowerCase().includes(query));
+}
+
+function stockStorageMatchesFilter(item, filterKey) {
+  if (!filterKey || filterKey === "all") return true;
+  const hot = item.hot_storage || {};
+  const cold = item.cold_backup || {};
+  const daily = item.daily_coverage || {};
+  const minute = item.minute_coverage || {};
+  const dailyMissing = Number(daily.missing_days || 0) + Number(daily.partial_days || 0);
+  const minuteMissing = Number(minute.missing_days || 0) + Number(minute.partial_days || 0);
+  const coldIndexedDays = Number(cold.indexed_days || 0);
+  const coldUploadedDays = Number(cold.uploaded_days || 0);
+  if (filterKey === "daily_missing") {
+    return dailyMissing > 0 || Number(hot.daily_rows || 0) === 0;
+  }
+  if (filterKey === "minute_missing") {
+    return minuteMissing > 0;
+  }
+  if (filterKey === "cold_pending") {
+    return coldIndexedDays > 0 && coldUploadedDays < coldIndexedDays;
+  }
+  if (filterKey === "health_attention") {
+    return !["ok"].includes(item.health_status || "");
+  }
+  return true;
 }
 
 function renderStockStorageRow(item) {
