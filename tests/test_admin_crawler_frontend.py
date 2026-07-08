@@ -331,7 +331,7 @@ def test_governance_ops_layout_keeps_tables_aligned():
     script = (STATIC / "admin-ops.js").read_text(encoding="utf-8")
     styles = (STATIC / "styles.css").read_text(encoding="utf-8")
 
-    assert "align-items: start" in styles
+    assert "align-items: stretch" in styles
     assert ".ops-grid > .admin-card" in styles
     assert "table-layout: fixed" in styles
     assert "align-content: start" in styles

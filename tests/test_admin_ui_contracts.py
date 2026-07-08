@@ -126,7 +126,7 @@ def test_changed_admin_pages_bust_static_cache_versions():
     expected = {
         "admin-accounts.html": "time-archive-20260708-v1",
         "admin-market.html": "time-archive-20260708-v1",
-        "admin-ops.html": "time-ops-20260708-v1",
+        "admin-ops.html": "time-ops-layout-20260709-v1",
         "admin-crawler.html": "time-crawler-20260708-v1",
         "admin-news.html": "time-news-20260708-v1",
         "index.html": "time-maintenance-20260708-v1",
@@ -222,6 +222,8 @@ def test_ops_task_table_uses_colgroup_for_alignment():
 
     for column in ("ops-task-col", "ops-status-col", "ops-running-col", "ops-resource-col", "ops-progress-col", "ops-event-col", "ops-log-col"):
         assert column in script
+    for cell in ("ops-task-cell", "ops-status-cell", "ops-running-cell", "ops-resource-cell", "ops-progress-cell", "ops-detail-cell", "ops-log-cell"):
+        assert cell in script
     assert "<colgroup>" in script
 
 
@@ -238,10 +240,14 @@ def test_ops_log_column_preserves_table_cell_layout():
 def test_ops_column_widths_keep_last_event_and_log_separate():
     styles = (STATIC / "styles.css").read_text(encoding="utf-8")
 
+    assert "min-width: 1240px" in styles
     assert ".ops-event-col" in styles
-    assert "width: 20%" in styles
+    assert "width: 21%" in styles
     assert ".ops-log-col" in styles
-    assert "width: 12%" in styles
+    assert "width: 14%" in styles
+    assert ".ops-table-wrap td {\n  max-width: none" in styles
+    assert "text-overflow: clip" in styles
+    assert "white-space: normal" in styles
     assert "table-layout: fixed" in styles
 
 

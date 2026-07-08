@@ -7746,8 +7746,8 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 
 .ops-grid {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(280px, 0.9fr);
-  align-items: start;
+  grid-template-columns: minmax(780px, 2fr) minmax(360px, 0.95fr);
+  align-items: stretch;
   gap: 18px;
   padding: 18px;
   border-bottom: 1px solid #eef1f5;
@@ -7755,7 +7755,11 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 
 .ops-grid > .admin-card {
   min-width: 0;
-  align-self: start;
+  height: 100%;
+}
+
+.ops-grid .admin-card-head {
+  min-height: 72px;
 }
 
 .ops-data-card {
@@ -7767,35 +7771,48 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 }
 
 .ops-table-wrap table {
-  min-width: 920px;
+  min-width: 1240px;
   table-layout: fixed;
 }
 
 .ops-task-col {
-  width: 24%;
+  width: 26%;
 }
 
-.ops-status-col,
+.ops-status-col {
+  width: 12%;
+}
+
 .ops-running-col {
+  width: 7%;
+}
+
+.ops-progress-col {
   width: 10%;
 }
 
-.ops-resource-col,
-.ops-progress-col {
-  width: 12%;
+.ops-resource-col {
+  width: 10%;
 }
 
 .ops-event-col {
-  width: 20%;
+  width: 21%;
 }
 
 .ops-log-col {
-  width: 12%;
+  width: 14%;
 }
 
 .ops-table-wrap th,
 .ops-table-wrap td {
   vertical-align: top;
+}
+
+.ops-table-wrap td {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .ops-table-wrap strong,
@@ -7810,10 +7827,25 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
   font-size: 12px;
 }
 
+.ops-task-cell strong {
+  overflow-wrap: anywhere;
+}
+
+.ops-status-cell,
+.ops-running-cell {
+  text-align: center;
+}
+
+.ops-resource-cell,
+.ops-progress-cell,
 .ops-detail-cell,
 .ops-log-cell {
-  max-width: 220px;
   overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ops-detail-cell {
+  line-height: 1.45;
 }
 
 .ops-log-command {
@@ -7821,6 +7853,7 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .ops-log-command code {
@@ -7842,6 +7875,16 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
   color: #344054;
   font-size: 12px;
   font-weight: 800;
+}
+
+@media (max-width: 1180px) {
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ops-grid .admin-card-head {
+    min-height: 0;
+  }
 }
 
 .ops-status-badge {

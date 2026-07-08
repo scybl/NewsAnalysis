@@ -125,14 +125,14 @@ function renderOpsTasks(tasks) {
   opsTaskMeta.textContent = tasks.length ? `${tasks.length} 个状态源` : "暂无状态源";
   const rows = tasks.map((task) => `
     <tr>
-      <td>
+      <td class="ops-task-cell">
         <strong>${escapeHtml(task.title || task.id || "-")}</strong>
         <small>${escapeHtml(taskKindLabel(task.kind))}</small>
       </td>
-      <td>${statusBadge(task.status)}</td>
-      <td>${task.running ? "是" : "否"}</td>
-      <td>${escapeHtml(task.resource_level === "heavy_io" ? "heavy_io" : "normal")}</td>
-      <td>${escapeHtml(progressText(task.progress || {}))}</td>
+      <td class="ops-status-cell">${statusBadge(task.status)}</td>
+      <td class="ops-running-cell">${task.running ? "是" : "否"}</td>
+      <td class="ops-resource-cell">${escapeHtml(task.resource_level === "heavy_io" ? "heavy_io" : "normal")}</td>
+      <td class="ops-progress-cell">${escapeHtml(progressText(task.progress || {}))}</td>
       <td class="ops-detail-cell">${escapeHtml(detailText(task))}</td>
       <td class="ops-log-cell">${logCommand(task)}</td>
     </tr>
