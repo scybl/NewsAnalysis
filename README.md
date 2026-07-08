@@ -1,8 +1,34 @@
 # ValueScope / NewsAnalysis
 
-一个面向 A 股研究场景的多源数据采集与多 Agent 分析平台。项目把股票资料包、分钟行情、新闻采集、数据源治理、后台任务、权限隔离和 LLM 投研分析组合成一个可部署、可演示的完整 Web 工程。
+一个面向 A 股研究和个人金融数据治理场景的多源数据中台。项目把股票资料包、日 K / 分钟行情、财经新闻采集、冷热分层存储、数据质量检查、后台任务调度、权限隔离和 LLM 投研分析组合成一个可部署、可运维、可演示的完整 Web 工程。
 
-当前版本：`1.3.0`
+当前版本：`1.4.0`
+
+## 项目定位
+
+ValueScope / NewsAnalysis 更接近一个 **个人金融数据中台 + 后台运维控制台**：
+
+- 采集层负责从东方财富、开盘啦、同花顺、通达信链路、Guardian 等来源接入市场、股票和新闻数据。
+- 治理层负责数据源状态、覆盖范围、缺口追踪、随机抽检、审计报告和冷热分层归档。
+- 存储层以 MongoDB 为热数据主库，本地缓存承接运行态文件，百度网盘承接低频访问的分时冷备份。
+- 服务层向前端和分析模块提供统一 API，用于股票检索、行情阅读、新闻证据、后台任务和数据健康状态。
+- 运维层提供账户、凭据、调度、爬虫状态、部署同步、任务审计和系统健康检查。
+
+## 技术栈
+
+| 层级 | 技术栈 | 用途 |
+| --- | --- | --- |
+| 后端服务 | Python 3、`http.server` / `ThreadingHTTPServer`、CLI | Web API、后台任务、数据同步和运维命令 |
+| 数据存储 | MongoDB 7、PyMongo、JSON / JSONL、本地 `local_data`、百度网盘冷备份 | 热数据查询、运行态缓存、分时冷数据归档 |
+| 行情数据 | 东方财富、开盘啦、同花顺、pytdx / mootdx / tdxpy、AkShare 候选源 | 股票资料包、日 K、分时、涨停连板、龙虎榜、市场情绪 |
+| 新闻采集 | 独立 `NewsCrawler`、Requests、Selenium、BeautifulSoup、lxml | Guardian、同花顺、Bloomberg、Politico 等新闻源采集与标准化 |
+| AI 分析 | DeepSeek、LangGraph 可选、多 Agent 投研链路 | 股票研究报告、反方审计、历史结论复盘 |
+| 前端界面 | 原生 HTML / CSS / JavaScript | 数据中台首页、账户管理、系统治理、数据抽检、新闻和行情控制台 |
+| 运维部署 | Docker Compose、GitHub Actions、Prometheus 可选、bdpan CLI | 生产部署、CI 校验、健康检查、百度网盘同步 |
+| 安全治理 | Fernet 加密密钥库、TOTP、签名 Cookie、角色权限 | 管理员二次验证、凭据隔离、只读账号、测试账号额度控制 |
+| 测试体系 | pytest、API smoke、集成测试、前端静态契约、回归测试、轻量性能基线 | 防止接口、页面、数据治理和部署脚本回归 |
+
+> Tushare 目前处于封存状态：项目保留历史本地数据读取和必要回滚入口，但新的数据抓取与资料包更新不再默认依赖 Tushare。
 
 这个仓库不是单一脚本，而是一个产品化系统：
 
@@ -236,6 +262,25 @@ PUBLIC_WEB_PORT=8765
 cp .deploy.env.sample .deploy.env
 # 编辑 .deploy.env 后执行：
 scripts/deploy_server.sh
+```
+
+常用本机快捷同步建议指向仓库脚本：
+
+```bash
+alias tongbu="cd /Users/libingze/Desktop/sandbox/NewsAnalysis && scripts/tongbu.sh"
+alias qiangzhitongbu="cd /Users/libingze/Desktop/sandbox/NewsAnalysis && scripts/qiangzhitongbu.sh"
+```
+
+`tongbu` 是安全同步：先同步代码并构建镜像，部署前会检查 `local_data/admin_tasks.json` 里是否存在 `queued`、`running`、`stopping` 后台任务，也会检查分时冷备份、百度网盘上传进程，以及 `news-crawler` 运行记录中正在执行的新闻抓取。若有任务正在运行，会延迟激活新版本，只同步代码并构建镜像，不重启容器，因此不会打断抓取或上传；若没有运行任务，则会正常重启并激活新版本。
+
+`qiangzhitongbu` 是强制同步并重启：跳过运行任务保护，同步代码、构建镜像，并通过 `docker compose up -d --build --force-recreate` 重建服务，用于你确认可以中断当前抓取、上传或预取任务，并需要立即激活新版本的时候。
+
+分时冷备份上传应从独立 worker 启动，避免 web 容器部署时打断上传：
+
+```bash
+cd /opt/NewsAnalysis
+scripts/start_minute_cold_worker_upload.sh
+docker compose -f docker-compose.prod.yml exec -T minute-cold-worker tail -f /app/logs/minute-cold-stock-year-upload.log
 ```
 
 本机部署脚本和 GitHub Actions 都不会上传 `.env`、用户数据、MongoDB 数据、会话、日志、报告、私钥、证书、本地数据库文件或 `local_data/secure` 密钥库。生产密钥库只在服务器维护，`local_data` 等运行目录通过 Docker 卷持续保留。

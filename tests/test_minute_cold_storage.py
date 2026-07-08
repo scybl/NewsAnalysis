@@ -81,7 +81,10 @@ class FakeIndexCollection:
                 continue
             if query.get("relative_path") and doc.get("relative_path") != query["relative_path"]:
                 continue
-            if query.get("storage_object") and doc.get("storage_object") != query["storage_object"]:
+            storage_filter = query.get("storage_object")
+            if isinstance(storage_filter, dict) and "$in" in storage_filter and doc.get("storage_object") not in storage_filter["$in"]:
+                continue
+            if isinstance(storage_filter, str) and doc.get("storage_object") != storage_filter:
                 continue
             if query.get("upload_status") and doc.get("upload_status") != query["upload_status"]:
                 continue
@@ -232,6 +235,122 @@ def test_month_object_can_return_one_trade_date(tmp_path):
     assert rows == [{"dataset": "pytdx_history_minutes", "minute": "0930", "price": 10.2, "source": "pytdx_history", "symbol": "000001", "trade_date": "20260628", "ts_code": "000001.SZ", "volume": 80}]
 
 
+def test_archive_complete_month_upload_skips_incomplete_month(monkeypatch, tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    first = _complete_bucket("20260627")
+    bucket_collection = FakeBucketCollection([first])
+    day_index = FakeIndexCollection()
+    coverage = FakeCoverageCollection()
+    monkeypatch.setattr(minute_cold_storage, "_local_reference_trade_dates", lambda code: ["20260627", "20260628"])
+
+    result = minute_cold_storage.archive_month_shards(
+        bucket_collection,
+        day_index,
+        coverage,
+        query={"source": "pytdx_history"},
+        config=config,
+        upload=True,
+        complete_months_only=True,
+        closed_months_only=True,
+        runner=lambda args: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["ok"] is True
+    assert result["exported_days"] == 0
+    assert result["uploaded_files"] == 0
+    assert result["skipped_months"] == 1
+    assert day_index.docs == {}
+
+
+def test_archive_complete_month_upload_writes_complete_closed_month(monkeypatch, tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    first = _complete_bucket("20260627")
+    second = _complete_bucket("20260628")
+    bucket_collection = FakeBucketCollection([first, second])
+    day_index = FakeIndexCollection()
+    coverage = FakeCoverageCollection()
+    uploads = []
+    monkeypatch.setattr(minute_cold_storage, "_local_reference_trade_dates", lambda code: ["20260627", "20260628"])
+
+    result = minute_cold_storage.archive_month_shards(
+        bucket_collection,
+        day_index,
+        coverage,
+        query={"source": "pytdx_history"},
+        config=config,
+        upload=True,
+        complete_months_only=True,
+        closed_months_only=True,
+        runner=lambda args: uploads.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["ok"] is True
+    assert result["exported_days"] == 2
+    assert result["uploaded_files"] == 1
+    assert result["skipped_months"] == 0
+    assert uploads
+    assert day_index.docs[("pytdx_history", "000001.SZ", "20260627")]["storage_object"] == "month_jsonl"
+    assert day_index.docs[("pytdx_history", "000001.SZ", "20260628")]["upload_status"] == "uploaded"
+
+
+def test_archive_complete_months_as_stock_year_upload_writes_year_object(monkeypatch, tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    first = _complete_bucket("20260627")
+    second = _complete_bucket("20260628")
+    open_month = _complete_bucket("20260701")
+    bucket_collection = FakeBucketCollection([first, second, open_month])
+    day_index = FakeIndexCollection()
+    coverage = FakeCoverageCollection()
+    uploads = []
+    monkeypatch.setattr(minute_cold_storage, "_local_reference_trade_dates", lambda code: ["20260627", "20260628", "20260701"])
+
+    result = minute_cold_storage.archive_complete_months_as_stock_year_shards(
+        bucket_collection,
+        day_index,
+        coverage,
+        query={"source": "pytdx_history"},
+        config=config,
+        upload=True,
+        runner=lambda args: uploads.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["ok"] is True
+    assert result["exported_days"] == 2
+    assert result["skipped_days"] == 1
+    assert result["skipped_months"] == 1
+    assert result["uploaded_files"] == 1
+    assert result["storage_object"] == "stock_year_jsonl"
+    assert uploads[0][-1] == "NewsAnalysis/cold/stock_minute/v1/objects_stock_year/pytdx_history/000001.SZ/2026.jsonl"
+    assert day_index.docs[("pytdx_history", "000001.SZ", "20260627")]["storage_object"] == "stock_year_jsonl"
+    assert ("pytdx_history", "000001.SZ", "20260701") not in day_index.docs
+
+
+def test_archive_complete_month_upload_skips_open_month(monkeypatch, tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    first = _complete_bucket("20260701")
+    bucket_collection = FakeBucketCollection([first])
+    day_index = FakeIndexCollection()
+    coverage = FakeCoverageCollection()
+    monkeypatch.setattr(minute_cold_storage, "_local_reference_trade_dates", lambda code: ["20260701"])
+
+    result = minute_cold_storage.archive_month_shards(
+        bucket_collection,
+        day_index,
+        coverage,
+        query={"source": "pytdx_history"},
+        config=config,
+        upload=True,
+        complete_months_only=True,
+        closed_months_only=True,
+        runner=lambda args: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["exported_days"] == 0
+    assert result["uploaded_files"] == 0
+    assert result["skipped_months"] == 1
+    assert day_index.docs == {}
+
+
 def test_stock_object_can_return_one_trade_date(tmp_path):
     config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
     second = _bucket()
@@ -337,3 +456,54 @@ def test_archive_stock_year_shards_reads_each_year_independently(tmp_path):
     assert second_index["relative_path"] == "objects_stock_year/pytdx_history/000001.SZ/2027.jsonl"
     assert first_index["object_trade_year"] == "2026"
     assert second_index["object_trade_year"] == "2027"
+
+
+def test_cleanup_legacy_remote_objects_dry_run_reports_planned_paths(tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    day_index = FakeIndexCollection()
+    info = {
+        "relative_path": "objects_stock_year/pytdx_history/000001.SZ/2026.jsonl",
+        "remote_path": "NewsAnalysis/cold/stock_minute/v1/objects_stock_year/pytdx_history/000001.SZ/2026.jsonl",
+        "sha256": "digest",
+        "size_bytes": 100,
+        "row_count": minute_cold_storage.EXPECTED_DAY_ROWS,
+        "storage_object": "stock_year_jsonl",
+        "object_trade_year": "2026",
+    }
+    minute_cold_storage.upsert_day_index(day_index, _complete_bucket("20260627"), info, upload_status="uploaded")
+
+    result = minute_cold_storage.cleanup_legacy_remote_objects(day_index, source="pytdx_history", config=config)
+
+    assert result["dry_run"] is True
+    assert result["legacy_index_days"] == 0
+    assert result["stock_year_uploaded_days"] == 1
+    assert result["planned_remote_paths"] == [
+        "NewsAnalysis/cold/stock_minute/v1/objects",
+        "NewsAnalysis/cold/stock_minute/v1/objects_month",
+        "NewsAnalysis/cold/stock_minute/v1/objects_stock",
+    ]
+
+
+def test_cleanup_legacy_remote_objects_execute_deletes_only_when_legacy_index_clear(tmp_path):
+    config = minute_cold_storage.MinuteColdConfig(local_root=tmp_path / "archive", cache_root=tmp_path / "cache")
+    day_index = FakeIndexCollection()
+    deleted = []
+
+    result = minute_cold_storage.cleanup_legacy_remote_objects(
+        day_index,
+        source="pytdx_history",
+        config=config,
+        dry_run=False,
+        runner=lambda args: deleted.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    assert result["ok"] is True
+    assert len(deleted) == 3
+    assert deleted[0][-2:] == ["-f", "NewsAnalysis/cold/stock_minute/v1/objects"]
+
+
+def _complete_bucket(trade_date):
+    bucket = _bucket()
+    bucket["trade_date"] = trade_date
+    bucket["row_count"] = minute_cold_storage.EXPECTED_DAY_ROWS
+    return bucket

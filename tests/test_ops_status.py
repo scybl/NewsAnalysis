@@ -18,8 +18,34 @@ def test_ops_snapshot_handles_missing_files_without_failing(tmp_path):
     assert snapshot["overall"]["status"] == "ok"
     assert _task(snapshot, "minute_cold_stock_year_upload")["status"] == "unknown"
     assert _task(snapshot, "daily_market_scheduler")["status"] == "unknown"
+    assert _task(snapshot, "data_random_audit_scheduler")["status"] == "unknown"
     assert snapshot["resources"]["files"]["admin_tasks"]["status"] == "missing"
     assert snapshot["resources"]["files"]["kaipanla_scheduler"]["status"] == "missing"
+
+
+def test_ops_snapshot_includes_data_random_audit_scheduler(tmp_path):
+    local_data = tmp_path / "local_data"
+    local_data.mkdir()
+    (local_data / "data_random_audit_scheduler.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "idle_seconds": 1800,
+                "interval_seconds": 21600,
+                "sample_size": 20,
+                "last_run_at": "20260707_120000",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = build_ops_snapshot(tmp_path, crawler_snapshot_fn=lambda: {"summary": {}, "alerts": []})
+    task = _task(snapshot, "data_random_audit_scheduler")
+
+    assert task["kind"] == "data_random_audit"
+    assert task["status"] == "idle"
+    assert task["resource_level"] == "normal"
+    assert task["details"]["scheduler"]["sample_size"] == 20
 
 
 def test_ops_snapshot_parses_minute_upload_progress(tmp_path):
@@ -222,4 +248,7 @@ def test_admin_ops_frontend_is_read_only_and_linked():
     assert "opsTasksTable" in html
     assert ".ops-grid" in styles
     for path in static.glob("admin-*.html"):
-        assert "/admin-ops.html" in path.read_text(encoding="utf-8"), path.name
+        page = path.read_text(encoding="utf-8")
+        if '<nav class="admin-nav"' not in page:
+            continue
+        assert "/admin-ops.html" in page, path.name

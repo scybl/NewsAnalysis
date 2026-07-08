@@ -20,6 +20,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from http.cookies import SimpleCookie
 from cryptography.fernet import Fernet, InvalidToken
+import pymongo
 
 from .agent_jobs import PersistentAgentJobStore
 from .analysis_frameworks import get_analysis_framework, list_analysis_frameworks
@@ -29,6 +30,7 @@ from .composite_client import FallbackStockClient
 from .crawler_monitor import crawler_status_snapshot, news_crawler_prometheus_metrics
 from .crawler_failure_actions import retry_failure_group
 from .data_sources import configure_data_sources, data_source_snapshot, provider_available, provider_status
+from .data_random_audit import build_random_audit_payload
 from .deepseek_client import DeepSeekClient, DeepSeekError
 from .eastmoney_client import EastmoneyClient
 from .kaipanla import KAIPANLA_FEATURES, kaipanla_daily_overview, list_kaipanla_features, list_kaipanla_records, read_kaipanla_record, run_kaipanla_batch, run_kaipanla_feature, validate_kaipanla_integration
@@ -53,6 +55,7 @@ from .stock_storage import (
     read_current_full_data,
     read_current_metadata,
     read_analysis_result,
+    stock_storage_status_snapshot,
     stock_exists,
     stock_status,
     sync_daily_market_for_existing_stocks,
@@ -126,6 +129,7 @@ DATA_CONSOLE_PAGES = {"/admin-market.html", "/admin-news.html", "/admin-crawler.
 ADMIN_ONLY_PAGES = {
     "/admin-accounts.html",
     "/admin-ops.html",
+    "/admin-data-audit.html",
     "/admin-audit.html",
     "/admin-archives.html",
     "/admin-credentials.html",
@@ -133,6 +137,7 @@ ADMIN_ONLY_PAGES = {
     "/admin-agent.html",
 }
 CRAWLER_SECRET_DIR = PROJECT_ROOT / "local_data" / "secure" / "news_crawler"
+BAIDU_PAN_SECRET_DIR = PROJECT_ROOT / "local_data" / "secure" / "baidu_pan"
 CREDENTIAL_PUBLIC_FIELDS = {
     "name",
     "source",
@@ -191,6 +196,66 @@ ADMIN_CREDENTIALS = (
         "file_env": "BAIDU_TRANSLATE_SECRET_KEY_FILE",
         "path": "baidu_translate_secret_key.txt",
         "description": "百度翻译开放平台的密钥，用于新闻中文翻译。",
+        "reloads_next_run": False,
+    },
+    {
+        "name": "baidu_pan.app_key",
+        "label": "AppKey",
+        "source": "Baidu Netdisk",
+        "kind": "api_key",
+        "storage": "file",
+        "env": "BAIDU_PAN_APP_KEY",
+        "path": "app_key",
+        "secret_dir": "baidu_pan",
+        "description": "百度网盘开放平台 AppKey，用于冷数据上传和取回。",
+        "reloads_next_run": False,
+    },
+    {
+        "name": "baidu_pan.secret_key",
+        "label": "SecretKey",
+        "source": "Baidu Netdisk",
+        "kind": "api_key",
+        "storage": "file",
+        "env": "BAIDU_PAN_SECRET_KEY",
+        "path": "secret_key",
+        "secret_dir": "baidu_pan",
+        "description": "百度网盘开放平台 SecretKey。",
+        "reloads_next_run": False,
+    },
+    {
+        "name": "baidu_pan.sign_key",
+        "label": "SignKey",
+        "source": "Baidu Netdisk",
+        "kind": "api_key",
+        "storage": "file",
+        "env": "BAIDU_PAN_SIGN_KEY",
+        "path": "sign_key",
+        "secret_dir": "baidu_pan",
+        "description": "百度网盘开放平台 SignKey。",
+        "reloads_next_run": False,
+    },
+    {
+        "name": "baidu_pan.access_token",
+        "label": "Access Token",
+        "source": "Baidu Netdisk",
+        "kind": "api_key",
+        "storage": "file",
+        "env": "BAIDU_PAN_ACCESS_TOKEN",
+        "path": "access_token",
+        "secret_dir": "baidu_pan",
+        "description": "百度网盘访问令牌，用于 bdpan/API 访问。",
+        "reloads_next_run": False,
+    },
+    {
+        "name": "baidu_pan.refresh_token",
+        "label": "Refresh Token",
+        "source": "Baidu Netdisk",
+        "kind": "api_key",
+        "storage": "file",
+        "env": "BAIDU_PAN_REFRESH_TOKEN",
+        "path": "refresh_token",
+        "secret_dir": "baidu_pan",
+        "description": "百度网盘刷新令牌，用于后续更新 access token。",
         "reloads_next_run": False,
     },
     {
@@ -357,6 +422,16 @@ def _public_stock_client(settings) -> FallbackStockClient:
     )
 
 
+def _stock_metadata_age_seconds(updated_at: str) -> int | None:
+    if not updated_at:
+        return None
+    try:
+        value = datetime.strptime(updated_at, "%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
+    return max(0, int((datetime.now() - value).total_seconds()))
+
+
 def _credential_spec(name: str) -> dict[str, Any]:
     for spec in ADMIN_CREDENTIALS:
         if spec["name"] == name:
@@ -366,8 +441,9 @@ def _credential_spec(name: str) -> dict[str, Any]:
 
 def _credential_file_path(spec: dict[str, Any]) -> Path:
     path_name = str(spec.get("path") or "")
-    path = (CRAWLER_SECRET_DIR / path_name).resolve()
-    if CRAWLER_SECRET_DIR.resolve() not in path.parents:
+    base_dir = BAIDU_PAN_SECRET_DIR if spec.get("secret_dir") == "baidu_pan" else CRAWLER_SECRET_DIR
+    path = (base_dir / path_name).resolve()
+    if base_dir.resolve() not in path.parents:
         raise ValueError("凭据文件路径无效。")
     return path
 
@@ -593,6 +669,11 @@ class StockWebApp:
         self.idle_stock_prefetch_scheduler = IdleStockPrefetchScheduler(
             self,
             PROJECT_ROOT / "local_data" / "idle_stock_prefetch_scheduler.json",
+            self.task_registry,
+        )
+        self.data_random_audit_scheduler = DataRandomAuditScheduler(
+            self,
+            PROJECT_ROOT / "local_data" / "data_random_audit_scheduler.json",
             self.task_registry,
         )
         self.market_fetch_controller = MarketFetchController(PROJECT_ROOT, self.task_registry)
@@ -1157,6 +1238,34 @@ class StockWebApp:
                         return
                     self._json({"ok": True, "snapshot": self._ops_snapshot()})
                     return
+                if parsed.path == "/api/admin/data-random-audit":
+                    if not self._require_admin():
+                        return
+                    query = parse_qs(parsed.query)
+                    sample_size = max(1, min(200, int(query.get("sample_size", ["20"])[0] or 20)))
+                    cold_read_samples = max(0, min(10, int(query.get("cold_read_samples", ["0"])[0] or 0)))
+                    if self._is_readonly_admin_session():
+                        cold_read_samples = 0
+                    seed_text = str(query.get("seed", [""])[0] or "").strip()
+                    seed = int(seed_text) if seed_text.isdigit() else None
+                    config = build_ths_minute_config(database="market_data", collection="minute_day_buckets")
+                    client = pymongo.MongoClient(config.mongo_uri, serverSelectionTimeoutMS=8000)
+                    try:
+                        payload = build_random_audit_payload(
+                            client,
+                            sample_size=sample_size,
+                            seed=seed,
+                            cold_read_samples=cold_read_samples,
+                        )
+                    finally:
+                        client.close()
+                    self._json({"ok": True, "audit": payload})
+                    return
+                if parsed.path == "/api/admin/data-random-audit/scheduler":
+                    if not self._require_admin():
+                        return
+                    self._json({"ok": True, **app.data_random_audit_scheduler.status()})
+                    return
                 if parsed.path == "/api/admin/news-library":
                     if not self._require_data_console():
                         return
@@ -1231,6 +1340,13 @@ class StockWebApp:
                     if not self._require_data_console():
                         return
                     self._json({"ok": True, **list_local_stock_summaries()})
+                    return
+                if parsed.path == "/api/admin/stock-storage-status":
+                    if not self._require_data_console():
+                        return
+                    query = parse_qs(parsed.query)
+                    limit = max(1, min(2000, int(query.get("limit", ["500"])[0] or 500)))
+                    self._json({"ok": True, **stock_storage_status_snapshot(limit=limit, query=query.get("q", [""])[0])})
                     return
                 if parsed.path == "/api/admin/data-distribution/status":
                     if not self._require_admin():
@@ -1370,6 +1486,11 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._handle_admin_idle_stock_prefetch()
+                    return
+                if parsed.path == "/api/admin/data-random-audit/scheduler":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_data_random_audit_scheduler()
                     return
                 if parsed.path == "/api/admin/kaipanla/run":
                     if not self._require_admin():
@@ -1874,10 +1995,38 @@ class StockWebApp:
                             enabled=bool(payload.get("enabled")),
                             idle_seconds=max(300, int(payload.get("idle_seconds") or app.settings.idle_stock_prefetch_seconds)),
                             minutes_enabled=payload.get("minutes_enabled"),
+                            refresh_existing_days=payload.get("refresh_existing_days"),
                         )
                         self._json({"ok": True, **app.idle_stock_prefetch_scheduler.status()})
                         return
                     self._json({"ok": False, "error": "未知空闲股票预抓操作。"}, status=400)
+                except (ValueError, RuntimeError) as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+
+            def _handle_admin_data_random_audit_scheduler(self) -> None:
+                payload = self._read_json()
+                action = str(payload.get("action") or "save").strip()
+                try:
+                    if action == "run_now":
+                        if self._reject_if_heavy_io_running("data_random_audit_manual"):
+                            return
+                        self._json({"ok": True, **app.data_random_audit_scheduler.run_now()})
+                        return
+                    if action == "save":
+                        self._json(
+                            {
+                                "ok": True,
+                                **app.data_random_audit_scheduler.configure(
+                                    enabled=bool(payload.get("enabled")),
+                                    idle_seconds=max(300, int(payload.get("idle_seconds") or 1800)),
+                                    interval_seconds=max(1800, int(payload.get("interval_seconds") or 21600)),
+                                    sample_size=max(1, min(200, int(payload.get("sample_size") or 20))),
+                                    cold_read_samples=max(0, min(10, int(payload.get("cold_read_samples") or 0))),
+                                ),
+                            }
+                        )
+                        return
+                    self._json({"ok": False, "error": "未知数据抽检调度操作。"}, status=400)
                 except (ValueError, RuntimeError) as exc:
                     self._json({"ok": False, "error": str(exc)}, status=400)
 
@@ -2788,6 +2937,11 @@ class TaskRegistry:
             "trigger": result.get("trigger", ""),
             "total": result.get("total", ""),
             "succeeded": result.get("succeeded", ""),
+            "status": result.get("status", ""),
+            "seed": result.get("seed", ""),
+            "sample_size": result.get("sample_size", ""),
+            "summary_status": (result.get("summary") or {}).get("status", "") if isinstance(result.get("summary"), dict) else "",
+            "anomalies": (result.get("summary") or {}).get("anomalies", "") if isinstance(result.get("summary"), dict) else "",
         }
 
 
@@ -2803,14 +2957,16 @@ class IdleStockPrefetchScheduler:
         self.thread = threading.Thread(target=self._loop, name="idle-stock-prefetch-scheduler", daemon=True)
         self.thread.start()
 
-    def configure(self, enabled: bool, idle_seconds: int, minutes_enabled: Any = None) -> dict:
+    def configure(self, enabled: bool, idle_seconds: int, minutes_enabled: Any = None, refresh_existing_days: Any = None) -> dict:
         with self.lock:
             current_minutes_enabled = self.config.get("minutes_enabled", self.app.settings.idle_stock_prefetch_minutes_enabled)
+            current_refresh_days = int(self.config.get("refresh_existing_days") or self.app.settings.idle_stock_prefetch_refresh_existing_days)
             self.config.update(
                 {
                     "enabled": bool(enabled),
                     "idle_seconds": max(300, int(idle_seconds)),
                     "minutes_enabled": current_minutes_enabled if minutes_enabled is None else bool(minutes_enabled),
+                    "refresh_existing_days": current_refresh_days if refresh_existing_days is None else max(0, int(refresh_existing_days)),
                     "full_history": True,
                     "updated_at": timestamp(),
                 }
@@ -2834,6 +2990,7 @@ class IdleStockPrefetchScheduler:
                 "idle_seconds": idle_seconds,
                 "full_history": True,
                 "minutes_enabled": bool(config.get("minutes_enabled", self.app.settings.idle_stock_prefetch_minutes_enabled)),
+                "refresh_existing_days": int(config.get("refresh_existing_days") or self.app.settings.idle_stock_prefetch_refresh_existing_days),
                 "running": running,
                 "last_request_at": activity.get("last_request_at") or "",
                 "last_request_code": activity.get("last_request_code") or "",
@@ -2890,9 +3047,16 @@ class IdleStockPrefetchScheduler:
                 return
             ts_code = str(candidate.get("ts_code") or "")
             candidate_name = str(candidate.get("name") or "")
-            self.task_registry.add_event(task_id, "running", f"开始预抓 {ts_code} 全量资料包。", {"ts_code": ts_code, "full_history": True})
+            candidate_reason = str(candidate.get("reason") or "missing_package")
+            force_refresh = candidate_reason == "stale_package"
+            self.task_registry.add_event(
+                task_id,
+                "running",
+                f"开始{'刷新' if force_refresh else '预抓'} {ts_code} 全量资料包。",
+                {"ts_code": ts_code, "full_history": True, "reason": candidate_reason, "force": force_refresh},
+            )
             client = self.app.tushare if provider_available("tushare") and self.app.settings.tushare_token else _public_stock_client(self.app.settings)
-            payload = sync_stock_data(client, ts_code, years=None, full_history=True, force=False)
+            payload = sync_stock_data(client, ts_code, years=None, full_history=True, force=force_refresh)
             minutes_result = self._prefetch_minutes(ts_code, task_id)
             result = {
                 "ok": True,
@@ -2900,6 +3064,7 @@ class IdleStockPrefetchScheduler:
                 "trigger": trigger,
                 "ts_code": ts_code,
                 "name": candidate_name,
+                "reason": candidate_reason,
                 "full_history": True,
                 "cache_hit": payload.get("cache_hit", False),
                 "dataset_count": len(payload.get("datasets") or []),
@@ -2972,6 +3137,10 @@ class IdleStockPrefetchScheduler:
     def _next_candidate(self) -> dict | None:
         rows = self.app.index.stocks(refresh=False)
         recent_failed = self._recent_failed_codes()
+        stale_candidates: list[dict[str, Any]] = []
+        refresh_days = int(self.config.get("refresh_existing_days") or self.app.settings.idle_stock_prefetch_refresh_existing_days)
+        refresh_seconds = refresh_days * 86400 if refresh_days > 0 else 0
+        metadata_by_code = {str(item.get("ts_code") or ""): item for item in list_local_stock_summaries().get("items", [])}
         for row in rows:
             ts_code = str(row.get("ts_code") or "")
             if not ts_code or ts_code in recent_failed:
@@ -2981,7 +3150,15 @@ class IdleStockPrefetchScheduler:
             except ValueError:
                 continue
             if not stock_exists(normalized):
-                return {**row, "ts_code": normalized}
+                return {**row, "ts_code": normalized, "reason": "missing_package"}
+            if refresh_seconds:
+                metadata = metadata_by_code.get(normalized) or {}
+                age = _stock_metadata_age_seconds(str(metadata.get("updated_at") or ""))
+                if age is None or age >= refresh_seconds:
+                    stale_candidates.append({**row, "ts_code": normalized, "reason": "stale_package", "package_age_seconds": age})
+        if stale_candidates:
+            stale_candidates.sort(key=lambda item: int(item.get("package_age_seconds") if item.get("package_age_seconds") is not None else 10**12), reverse=True)
+            return stale_candidates[0]
         return None
 
     def _recent_failed_codes(self) -> set[str]:
@@ -3019,6 +3196,7 @@ class IdleStockPrefetchScheduler:
                     data["enabled"] = data.get("enabled", self.app.settings.idle_stock_prefetch_enabled) is not False
                     data["idle_seconds"] = max(300, int(data.get("idle_seconds") or self.app.settings.idle_stock_prefetch_seconds))
                     data["minutes_enabled"] = data.get("minutes_enabled", self.app.settings.idle_stock_prefetch_minutes_enabled) is not False
+                    data["refresh_existing_days"] = max(0, int(data.get("refresh_existing_days") or self.app.settings.idle_stock_prefetch_refresh_existing_days))
                     data["full_history"] = True
                     data.setdefault("last_result", {})
                     return data
@@ -3028,12 +3206,207 @@ class IdleStockPrefetchScheduler:
             "enabled": bool(self.app.settings.idle_stock_prefetch_enabled),
             "idle_seconds": max(300, int(self.app.settings.idle_stock_prefetch_seconds)),
             "minutes_enabled": bool(self.app.settings.idle_stock_prefetch_minutes_enabled),
+            "refresh_existing_days": max(0, int(self.app.settings.idle_stock_prefetch_refresh_existing_days)),
             "full_history": True,
             "last_run_at": "",
             "last_task_id": "",
             "last_result": {},
             "last_error": "",
             "attempts": {},
+        }
+
+    def _write_config_locked(self) -> None:
+        write_json(self.config_path, self.config)
+
+
+class DataRandomAuditScheduler:
+    def __init__(self, app: StockWebApp, config_path: Path, task_registry: TaskRegistry):
+        self.app = app
+        self.config_path = config_path
+        self.task_registry = task_registry
+        self.lock = threading.Lock()
+        self.worker: threading.Thread | None = None
+        self.stop_event = threading.Event()
+        self.config = self._load_config()
+        self.thread = threading.Thread(target=self._loop, name="data-random-audit-scheduler", daemon=True)
+        self.thread.start()
+
+    def configure(self, enabled: bool, idle_seconds: int, interval_seconds: int, sample_size: int, cold_read_samples: int) -> dict:
+        with self.lock:
+            self.config.update(
+                {
+                    "enabled": bool(enabled),
+                    "idle_seconds": max(300, int(idle_seconds)),
+                    "interval_seconds": max(1800, int(interval_seconds)),
+                    "sample_size": max(1, min(200, int(sample_size))),
+                    "cold_read_samples": max(0, min(10, int(cold_read_samples))),
+                    "updated_at": timestamp(),
+                }
+            )
+            self._write_config_locked()
+        return self.status()
+
+    def run_now(self) -> dict:
+        return self._start_run(trigger="manual")
+
+    def status(self) -> dict:
+        activity = self.app.stock_request_state()
+        with self.lock:
+            config = dict(self.config)
+            running = bool(self.worker and self.worker.is_alive())
+        idle_seconds = int(config.get("idle_seconds") or 1800)
+        interval_seconds = int(config.get("interval_seconds") or 21600)
+        last_run_epoch = float(config.get("last_run_epoch") or 0)
+        since_last_run = max(0, int(time.time() - last_run_epoch)) if last_run_epoch else 0
+        return {
+            "scheduler": {
+                "enabled": bool(config.get("enabled")),
+                "idle_seconds": idle_seconds,
+                "interval_seconds": interval_seconds,
+                "sample_size": max(1, min(200, int(config.get("sample_size") or 20))),
+                "cold_read_samples": max(0, min(10, int(config.get("cold_read_samples") or 0))),
+                "running": running,
+                "last_request_at": activity.get("last_request_at") or "",
+                "current_idle_seconds": activity.get("idle_seconds") or 0,
+                "remaining_idle_seconds": max(0, idle_seconds - int(activity.get("idle_seconds") or 0)),
+                "since_last_run_seconds": since_last_run,
+                "remaining_interval_seconds": max(0, interval_seconds - since_last_run) if last_run_epoch else 0,
+                "last_run_at": config.get("last_run_at") or "",
+                "last_task_id": config.get("last_task_id") or "",
+                "last_result": config.get("last_result") or {},
+                "last_error": config.get("last_error") or "",
+            }
+        }
+
+    def _loop(self) -> None:
+        while not self.stop_event.wait(60):
+            try:
+                with self.lock:
+                    enabled = bool(self.config.get("enabled"))
+                    running = bool(self.worker and self.worker.is_alive())
+                    idle_seconds = int(self.config.get("idle_seconds") or 1800)
+                    interval_seconds = int(self.config.get("interval_seconds") or 21600)
+                    last_run_epoch = float(self.config.get("last_run_epoch") or 0)
+                if not enabled or running:
+                    continue
+                if int(self.app.stock_request_state().get("idle_seconds") or 0) < idle_seconds:
+                    continue
+                if last_run_epoch and time.time() - last_run_epoch < interval_seconds:
+                    continue
+                if self._heavy_io_blockers("data_random_audit_idle"):
+                    continue
+                self._start_run(trigger="idle")
+            except Exception as exc:  # noqa: BLE001 - background scheduler must keep ticking
+                with self.lock:
+                    self.config["last_error"] = str(exc)
+                    self._write_config_locked()
+
+    def _start_run(self, trigger: str) -> dict:
+        with self.lock:
+            if self.worker and self.worker.is_alive():
+                raise RuntimeError("数据随机抽检任务正在运行。")
+            sample_size = max(1, min(200, int(self.config.get("sample_size") or 20)))
+            cold_read_samples = max(0, min(10, int(self.config.get("cold_read_samples") or 0)))
+            task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
+            self.config["last_task_id"] = task_id
+            self._write_config_locked()
+        self.task_registry.create_task(
+            task_id,
+            "data_random_audit",
+            "数据随机抽检",
+            metadata={"trigger": trigger, "sample_size": sample_size, "cold_read_samples": cold_read_samples},
+        )
+        self.task_registry.update_task(task_id, status="running")
+        self.task_registry.add_event(task_id, "running", "开始随机抽检服务器数据健康。", {"trigger": trigger, "sample_size": sample_size})
+        self.worker = threading.Thread(
+            target=self._run_task,
+            args=(task_id, trigger, sample_size, cold_read_samples),
+            name=f"data-random-audit-{task_id}",
+            daemon=True,
+        )
+        self.worker.start()
+        return self.status()
+
+    def _run_task(self, task_id: str, trigger: str, sample_size: int, cold_read_samples: int) -> None:
+        client = None
+        try:
+            if trigger != "manual" and self._heavy_io_blockers(task_id):
+                result = {"ok": True, "status": "skipped", "reason": "heavy_io_running", "trigger": trigger}
+                self.task_registry.update_task(task_id, status="succeeded", result=result)
+                self.task_registry.add_event(task_id, "succeeded", "检测到重 IO 任务，本轮抽检已跳过。", result)
+                self._remember_result(result)
+                return
+            config = build_ths_minute_config(database="market_data", collection="minute_day_buckets")
+            client = pymongo.MongoClient(config.mongo_uri, serverSelectionTimeoutMS=8000)
+            payload = build_random_audit_payload(
+                client,
+                sample_size=sample_size,
+                cold_read_samples=cold_read_samples,
+                progress=lambda message: self.task_registry.add_event(task_id, "running", str(message), {}),
+            )
+            summary = payload.get("summary") or {}
+            status = "succeeded" if payload.get("ok") else "failed"
+            result = {
+                "ok": bool(payload.get("ok")),
+                "status": status,
+                "trigger": trigger,
+                "generated_at": payload.get("generated_at") or "",
+                "seed": payload.get("seed") or "",
+                "sample_size": payload.get("sample_size") or sample_size,
+                "cold_read_samples": payload.get("cold_read_samples") or cold_read_samples,
+                "summary": summary,
+            }
+            self.task_registry.update_task(task_id, status=status, error="" if payload.get("ok") else "数据抽检发现危险项。", result=result)
+            self.task_registry.add_event(task_id, status, f"数据抽检完成：{summary.get('status', 'unknown')}，异常 {summary.get('anomalies', 0)} 个。", result)
+            self._remember_result(result)
+        except Exception as exc:  # noqa: BLE001 - keep task readable
+            result = {"ok": False, "status": "failed", "trigger": trigger, "error": str(exc)}
+            self.task_registry.update_task(task_id, status="failed", error=str(exc), result=result)
+            self.task_registry.add_event(task_id, "failed", "数据随机抽检失败。", result)
+            self._remember_result(result)
+        finally:
+            if client is not None:
+                client.close()
+
+    def _heavy_io_blockers(self, requested_task_id: str) -> list[dict]:
+        return _public_heavy_io_blockers(
+            active_heavy_io_tasks(build_ops_snapshot(PROJECT_ROOT, crawler_snapshot_fn=None)),
+            requested_task_id=requested_task_id,
+        )
+
+    def _remember_result(self, result: dict) -> None:
+        with self.lock:
+            self.config["last_run_at"] = timestamp()
+            self.config["last_run_epoch"] = time.time()
+            self.config["last_result"] = result
+            self.config["last_error"] = "" if result.get("ok") else str(result.get("error") or "数据随机抽检失败")
+            self._write_config_locked()
+
+    def _load_config(self) -> dict:
+        if self.config_path.exists():
+            try:
+                data = read_json(self.config_path)
+                if isinstance(data, dict):
+                    data["enabled"] = data.get("enabled", False) is True
+                    data["idle_seconds"] = max(300, int(data.get("idle_seconds") or 1800))
+                    data["interval_seconds"] = max(1800, int(data.get("interval_seconds") or 21600))
+                    data["sample_size"] = max(1, min(200, int(data.get("sample_size") or 20)))
+                    data["cold_read_samples"] = max(0, min(10, int(data.get("cold_read_samples") or 0)))
+                    data.setdefault("last_result", {})
+                    return data
+            except Exception:
+                pass
+        return {
+            "enabled": False,
+            "idle_seconds": 1800,
+            "interval_seconds": 21600,
+            "sample_size": 20,
+            "cold_read_samples": 0,
+            "last_run_at": "",
+            "last_run_epoch": 0,
+            "last_task_id": "",
+            "last_result": {},
+            "last_error": "",
         }
 
     def _write_config_locked(self) -> None:
@@ -4546,8 +4919,10 @@ class UserStore:
         if needle:
             users = [item for item in users if self._archive_matches(item, needle)]
             demo_accounts = [item for item in demo_accounts if self._archive_matches(item, needle)]
+        items = sorted([*users, *demo_accounts], key=lambda item: item.get("archived_at", ""), reverse=True)
         return {
             "query": query,
+            "items": items,
             "users": users,
             "demo_accounts": demo_accounts,
             "counts": {

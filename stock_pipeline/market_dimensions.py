@@ -9,6 +9,7 @@ STOCK_COLLECTIONS = {
     "metadata": "stock_metadata",
     "rows": "stock_dataset_rows",
     "files": "stock_json_files",
+    "daily_coverage": "stock_daily_coverage",
 }
 
 MARKET_COLLECTIONS = {

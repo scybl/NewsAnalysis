@@ -9,9 +9,12 @@ from typing import Any
 from .collector import StockDataCollector
 from .analysis_frameworks import ANALYSIS_FRAMEWORKS, build_all_analysis_dossiers, build_analysis_dossier, get_analysis_framework, list_analysis_frameworks
 from .config import PROJECT_ROOT
+from .daily_k_coverage import ensure_indexes as ensure_daily_k_coverage_indexes
+from .daily_k_coverage import refresh_daily_k_coverage
 from .dossier import build_dossier
 from .field_labels import build_table_datasets
 from .local_data_mongo import (
+    _client as mongo_client,
     list_mongo_stock_codes,
     list_mongo_stock_metadata,
     read_mongo_analysis_dossier,
@@ -21,7 +24,7 @@ from .local_data_mongo import (
     save_stock_package_to_mongo,
     sync_current_stock_to_mongo,
 )
-from .market_dimensions import STOCK_COLLECTIONS, STOCK_DATABASE
+from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE, STOCK_COLLECTIONS, STOCK_DATABASE
 from .minute_storage import minute_reference_row_counts, read_external_minute_datasets
 from .tushare_client import TushareClient
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, today_yyyymmdd, write_json
@@ -166,6 +169,42 @@ def list_local_stock_summaries() -> dict[str, Any]:
     }
 
 
+def stock_storage_status_snapshot(limit: int = 500, query: str = "") -> dict[str, Any]:
+    summary = list_local_stock_summaries()
+    search = str(query or "").strip().lower()
+    items = [
+        item for item in summary.get("items", [])
+        if not search
+        or any(str(item.get(key) or "").lower().find(search) >= 0 for key in ("ts_code", "name", "industry", "market"))
+    ][: max(1, min(2000, int(limit or 500)))]
+    daily_coverage = _daily_coverage_by_code()
+    minute_coverage = _minute_coverage_by_code()
+    minute_upload = _minute_upload_by_code()
+
+    enriched = [
+        _stock_storage_status_item(item, daily_coverage.get(str(item.get("ts_code") or "")) or {}, minute_coverage.get(str(item.get("ts_code") or "")) or {}, minute_upload.get(str(item.get("ts_code") or "")) or {})
+        for item in items
+    ]
+    status_counts: dict[str, int] = {}
+    for item in enriched:
+        status = str(item.get("health_status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    return {
+        "items": enriched,
+        "count": len(enriched),
+        "total": summary.get("count", 0),
+        "summary": {
+            "stock_count": summary.get("count", 0),
+            "visible_count": len(enriched),
+            "dataset_rows": summary.get("total_dataset_rows", 0),
+            "minute_rows": summary.get("total_minute_rows", 0),
+            "cold_uploaded_days": sum(int((item.get("cold_backup") or {}).get("uploaded_days") or 0) for item in enriched),
+            "cold_uploaded_bytes": sum(int((item.get("cold_backup") or {}).get("uploaded_bytes") or 0) for item in enriched),
+            "health": status_counts,
+        },
+    }
+
+
 def stock_status(code: str) -> dict[str, Any]:
     ts_code = normalize_ts_code(code)
     ensure_current_layout(ts_code)
@@ -289,6 +328,7 @@ def sync_daily_market_for_existing_stocks(
         else:
             result["failed"] += 1
         result["items"].append(item)
+    result["daily_coverage"] = _refresh_daily_k_coverage_safe(selected, date)
     return result
 
 
@@ -468,6 +508,30 @@ def _save_stock_package_safe(
             ),
         }
     except Exception as exc:  # noqa: BLE001 - surface Mongo failures without losing the main error context.
+        return {"ok": False, "error": str(exc)}
+
+
+def _refresh_daily_k_coverage_safe(codes: list[str], target_date: str) -> dict[str, Any]:
+    if not codes:
+        return {"ok": True, "stocks_checked": 0, "missing_days": 0}
+    try:
+        import pymongo
+    except ImportError as exc:
+        return {"ok": False, "error": f"缺少 pymongo，无法刷新日K覆盖：{exc}"}
+    try:
+        with mongo_client(STOCK_DATABASE) as client:
+            db = client[STOCK_DATABASE]
+            coverage = db[STOCK_COLLECTIONS["daily_coverage"]]
+            ensure_daily_k_coverage_indexes(coverage, pymongo)
+            result = refresh_daily_k_coverage(
+                db[STOCK_COLLECTIONS["rows"]],
+                db[STOCK_COLLECTIONS["metadata"]],
+                coverage,
+                codes=codes,
+                end_date=target_date,
+            )
+            return {key: value for key, value in result.items() if key != "items"} | {"item_count": len(result.get("items") or [])}
+    except Exception as exc:  # noqa: BLE001 - daily quotes should survive coverage bookkeeping failures.
         return {"ok": False, "error": str(exc)}
 
 
@@ -749,6 +813,231 @@ def _validate_full_data(full_data: dict[str, Any]) -> None:
     if missing:
         joined = "、".join(missing)
         raise RuntimeError(f"本次更新缺少关键数据集：{joined}，已保留原 current。")
+
+
+def _daily_coverage_by_code() -> dict[str, dict[str, Any]]:
+    try:
+        with mongo_client(STOCK_DATABASE) as client:
+            cursor = client[STOCK_DATABASE][STOCK_COLLECTIONS["daily_coverage"]].find(
+                {},
+                {
+                    "_id": 0,
+                    "ts_code": 1,
+                    "status": 1,
+                    "updated_at": 1,
+                    "first_expected_date": 1,
+                    "last_expected_date": 1,
+                    "first_indexed_date": 1,
+                    "last_indexed_date": 1,
+                    "expected_days": 1,
+                    "indexed_days": 1,
+                    "missing_days": 1,
+                    "tail_missing_days": 1,
+                    "internal_missing_days": 1,
+                    "partial_days": 1,
+                },
+            )
+            items: dict[str, dict[str, Any]] = {}
+            for doc in cursor:
+                try:
+                    code = normalize_ts_code(str(doc.get("ts_code") or ""))
+                except ValueError:
+                    continue
+                items[code] = _jsonable_doc(doc)
+            return items
+    except Exception:
+        return {}
+
+
+def _minute_coverage_by_code() -> dict[str, dict[str, Any]]:
+    try:
+        with mongo_client(MARKET_DATABASE) as client:
+            cursor = client[MARKET_DATABASE][MARKET_COLLECTIONS["minute_coverage"]].find(
+                {"source": "pytdx_history"},
+                {
+                    "_id": 0,
+                    "ts_code": 1,
+                    "source": 1,
+                    "has_minute_data": 1,
+                    "first_trade_date": 1,
+                    "last_trade_date": 1,
+                    "archived_days": 1,
+                    "archived_rows": 1,
+                    "complete_days": 1,
+                    "partial_days": 1,
+                    "missing_days": 1,
+                    "hot_days": 1,
+                    "cache_max_bytes": 1,
+                    "updated_at": 1,
+                },
+            )
+            items: dict[str, dict[str, Any]] = {}
+            for doc in cursor:
+                try:
+                    code = normalize_ts_code(str(doc.get("ts_code") or ""))
+                except ValueError:
+                    continue
+                items[code] = _jsonable_doc(doc)
+            return items
+    except Exception:
+        return {}
+
+
+def _minute_upload_by_code() -> dict[str, dict[str, Any]]:
+    try:
+        with mongo_client(MARKET_DATABASE) as client:
+            cursor = client[MARKET_DATABASE][MARKET_COLLECTIONS["minute_day_index"]].aggregate(
+                [
+                    {"$match": {"source": "pytdx_history"}},
+                    {
+                        "$group": {
+                            "_id": "$ts_code",
+                            "indexed_days": {"$sum": 1},
+                            "uploaded_days": {"$sum": {"$cond": [{"$eq": ["$upload_status", "uploaded"]}, 1, 0]}},
+                            "uploaded_rows": {"$sum": {"$cond": [{"$eq": ["$upload_status", "uploaded"]}, "$row_count", 0]}},
+                            "uploaded_bytes": {"$sum": {"$cond": [{"$eq": ["$upload_status", "uploaded"]}, "$size_bytes", 0]}},
+                            "last_uploaded_date": {"$max": {"$cond": [{"$eq": ["$upload_status", "uploaded"]}, "$trade_date", ""]}},
+                        }
+                    },
+                ],
+                allowDiskUse=True,
+            )
+            items: dict[str, dict[str, Any]] = {}
+            for doc in cursor:
+                try:
+                    code = normalize_ts_code(str(doc.get("_id") or ""))
+                except ValueError:
+                    continue
+                items[code] = {
+                    "indexed_days": int(doc.get("indexed_days") or 0),
+                    "uploaded_days": int(doc.get("uploaded_days") or 0),
+                    "uploaded_rows": int(doc.get("uploaded_rows") or 0),
+                    "uploaded_bytes": int(doc.get("uploaded_bytes") or 0),
+                    "last_uploaded_date": str(doc.get("last_uploaded_date") or ""),
+                }
+            return items
+    except Exception:
+        return {}
+
+
+def _stock_storage_status_item(
+    item: dict[str, Any],
+    daily_coverage: dict[str, Any],
+    minute_coverage: dict[str, Any],
+    minute_upload: dict[str, Any],
+) -> dict[str, Any]:
+    dataset_rows = item.get("dataset_rows") if isinstance(item.get("dataset_rows"), dict) else {}
+    ts_code = str(item.get("ts_code") or "")
+    package_age = _age_seconds(str(item.get("updated_at") or ""))
+    daily_missing = int(daily_coverage.get("missing_days") or 0)
+    daily_partial = int(daily_coverage.get("partial_days") or 0)
+    cold_indexed_days = int(minute_upload.get("indexed_days") or minute_coverage.get("archived_days") or 0)
+    cold_uploaded_days = int(minute_upload.get("uploaded_days") or 0)
+    minute_partial = int(minute_coverage.get("partial_days") or 0)
+    minute_missing = int(minute_coverage.get("missing_days") or 0) if minute_coverage.get("missing_days") is not None else 0
+    health_status = _storage_health_status(
+        package_exists=True,
+        daily_missing=daily_missing,
+        daily_partial=daily_partial,
+        minute_partial=minute_partial,
+        minute_missing=minute_missing,
+        cold_indexed_days=cold_indexed_days,
+        cold_uploaded_days=cold_uploaded_days,
+    )
+    latest_check = max(
+        str(daily_coverage.get("updated_at") or ""),
+        str(minute_coverage.get("updated_at") or ""),
+    )
+    return {
+        "ts_code": ts_code,
+        "name": item.get("name") or "",
+        "industry": item.get("industry") or "",
+        "market": item.get("market") or "",
+        "updated_at": item.get("updated_at") or "",
+        "package_age_seconds": package_age,
+        "date_range": item.get("date_range") or {},
+        "daily_date_range": item.get("daily_date_range") or {},
+        "hot_storage": {
+            "package": True,
+            "dataset_count": int(item.get("dataset_count") or 0),
+            "dataset_rows": sum(int(count or 0) for count in dataset_rows.values()),
+            "daily_rows": int(dataset_rows.get("daily") or 0),
+            "latest_daily_date": item.get("latest_daily_date") or (item.get("daily_date_range") or {}).get("end_date") or "",
+        },
+        "cold_backup": {
+            "has_minute_data": bool(minute_coverage.get("has_minute_data") or cold_indexed_days),
+            "indexed_days": cold_indexed_days,
+            "uploaded_days": cold_uploaded_days,
+            "uploaded_rows": int(minute_upload.get("uploaded_rows") or minute_coverage.get("archived_rows") or 0),
+            "uploaded_bytes": int(minute_upload.get("uploaded_bytes") or 0),
+            "last_uploaded_date": minute_upload.get("last_uploaded_date") or minute_coverage.get("last_trade_date") or "",
+            "first_trade_date": minute_coverage.get("first_trade_date") or "",
+            "last_trade_date": minute_coverage.get("last_trade_date") or "",
+        },
+        "daily_coverage": daily_coverage,
+        "minute_coverage": minute_coverage,
+        "last_health_check_at": latest_check,
+        "health_status": health_status,
+        "health_message": _storage_health_message(health_status, daily_missing, daily_partial, minute_missing, minute_partial, cold_indexed_days, cold_uploaded_days),
+    }
+
+
+def _storage_health_status(
+    *,
+    package_exists: bool,
+    daily_missing: int,
+    daily_partial: int,
+    minute_partial: int,
+    minute_missing: int,
+    cold_indexed_days: int,
+    cold_uploaded_days: int,
+) -> str:
+    if not package_exists:
+        return "danger"
+    if daily_missing or daily_partial or minute_partial or minute_missing:
+        return "warning"
+    if cold_indexed_days and cold_uploaded_days < cold_indexed_days:
+        return "warning"
+    return "ok"
+
+
+def _storage_health_message(
+    status: str,
+    daily_missing: int,
+    daily_partial: int,
+    minute_missing: int,
+    minute_partial: int,
+    cold_indexed_days: int,
+    cold_uploaded_days: int,
+) -> str:
+    if status == "ok":
+        return "资料包、日K覆盖和冷备份索引未发现异常。"
+    messages = []
+    if daily_missing:
+        messages.append(f"日K缺口 {daily_missing} 天")
+    if daily_partial:
+        messages.append(f"日K部分异常 {daily_partial} 天")
+    if minute_missing:
+        messages.append(f"分时缺口 {minute_missing} 天")
+    if minute_partial:
+        messages.append(f"分时部分异常 {minute_partial} 天")
+    if cold_indexed_days and cold_uploaded_days < cold_indexed_days:
+        messages.append(f"冷备份 {cold_uploaded_days}/{cold_indexed_days} 天")
+    return "；".join(messages) or "覆盖索引不足，建议执行数据抽检。"
+
+
+def _jsonable_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    return {str(key): _jsonable_value(value) for key, value in doc.items()}
+
+
+def _jsonable_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return _jsonable_doc(value)
+    if isinstance(value, list):
+        return [_jsonable_value(item) for item in value]
+    return value
 
 
 def _age_seconds(updated_at: str | None) -> int | None:

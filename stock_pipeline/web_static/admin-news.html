@@ -30,11 +30,7 @@
           </a>
           <a href="/admin-ops.html">
             <span class="admin-nav-icon">O</span>
-            <span>运维状态</span>
-          </a>
-          <a href="/admin-archives.html">
-            <span class="admin-nav-icon">R</span>
-            <span>归档账号</span>
+            <span>系统治理</span>
           </a>
           <a href="/admin-market.html">
             <span class="admin-nav-icon">S</span>
@@ -51,10 +47,6 @@
           <a href="/admin-credentials.html">
             <span class="admin-nav-icon">K</span>
             <span>凭据管理</span>
-          </a>
-          <a href="/admin-audit.html">
-            <span class="admin-nav-icon">L</span>
-            <span>审计日志</span>
           </a>
           <a class="admin-nav-unavailable" aria-disabled="true" title="数据分发维护中，暂不可用">
             <span class="admin-nav-icon">D</span>
@@ -88,6 +80,13 @@
         </header>
 
         <section class="admin-panel data-library-console">
+          <nav class="governance-tabs stock-data-tabs" aria-label="股票数据视图">
+            <button class="active" type="button" data-stock-tab="sources">来源标准</button>
+            <button type="button" data-stock-tab="library">资料库运维</button>
+            <button type="button" data-stock-tab="storage">存储状态</button>
+          </nav>
+
+          <div class="governance-pane active" data-stock-pane="sources">
           <section class="admin-section-block" data-admin-operation-section>
             <div class="admin-section-heading">
               <div><span>SOURCE MAP</span><h2>股票来源与标准</h2></div>
@@ -114,7 +113,9 @@
           </section>
             </div>
           </section>
+          </div>
 
+          <div class="governance-pane" data-stock-pane="library">
           <section class="admin-section-block" data-admin-operation-section>
             <div class="admin-section-heading">
               <div><span>MANUAL FETCH</span><h2>手动行情补采</h2></div>
@@ -204,6 +205,11 @@
                 <input id="idlePrefetchSeconds" type="number" min="300" step="60" value="1800" />
                 <span>秒后触发</span>
               </label>
+              <label class="idle-prefetch-interval">
+                <span>已有资料包</span>
+                <input id="idlePrefetchRefreshDays" type="number" min="0" max="90" step="1" value="14" />
+                <span>天后刷新</span>
+              </label>
               <div class="admin-actions">
                 <button id="saveIdlePrefetchBtn" type="button">保存</button>
                 <button id="runIdlePrefetchNowBtn" type="button">立即预抓一只</button>
@@ -273,11 +279,47 @@
             </div>
           </section>
           </section>
+          </div>
+
+          <div class="governance-pane" data-stock-pane="storage">
+          <section class="admin-section-block">
+            <div class="admin-section-heading">
+              <div><span>STORAGE HEALTH</span><h2>股票存储状态</h2></div>
+              <p>按股票查看热数据、分时冷备份、覆盖索引和最近健康检查状态。</p>
+            </div>
+            <section class="admin-card stock-storage-card">
+              <div class="admin-card-head">
+                <h4>每只股票存储状态</h4>
+                <span id="stockStorageMeta">正在读取存储状态...</span>
+              </div>
+              <div id="stockStorageStats" class="admin-kpis news-kpis"></div>
+              <div class="news-filter-grid stock-data-filter-grid">
+                <label class="news-search-field">
+                  <span>搜索股票</span>
+                  <input id="stockStorageSearchInput" type="search" placeholder="代码、名称、行业" />
+                </label>
+                <label>
+                  <span>排序</span>
+                  <select id="stockStorageSortSelect">
+                    <option value="health" selected>健康状态</option>
+                    <option value="updated_at">资料包更新</option>
+                    <option value="cold_uploaded_days">冷备份天数</option>
+                    <option value="dataset_rows">热数据行数</option>
+                    <option value="ts_code">股票代码</option>
+                  </select>
+                </label>
+              </div>
+              <div class="admin-table-wrap stock-data-table-wrap">
+                <table id="stockStorageTable"></table>
+              </div>
+            </section>
+          </section>
+          </div>
         </section>
       </section>
     </main>
 
-    <script src="/admin.js?v=admin-unified-20260616-v1"></script>
-    <script src="/admin-news.js?v=guardian-translation-20260630-v1"></script>
+    <script src="/admin.js?v=time-archive-20260708-v1"></script>
+    <script src="/admin-news.js?v=time-news-20260708-v1"></script>
   </body>
 </html>

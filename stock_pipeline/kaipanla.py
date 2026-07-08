@@ -277,12 +277,19 @@ def list_kaipanla_records(limit: int = 80, feature: str = "") -> dict[str, Any]:
 
 
 def kaipanla_daily_overview(target_date: str = "") -> dict[str, Any]:
-    normalized_date = _normalize_date_text(target_date)
+    requested_date = _normalize_date_text(target_date)
+    normalized_date = requested_date
+    fallback = False
     with _kaipanla_collection() as collection:
         if not normalized_date:
-            latest = collection.find_one({"archived": {"$ne": True}}, {"_id": 0, "saved_at": 1, "params": 1}, sort=[("saved_at", DESCENDING)])
-            normalized_date = _normalize_date_text(str((latest or {}).get("saved_at") or "")[:8]) or _record_trade_date(latest or {}) or ""
+            normalized_date = _latest_kaipanla_trade_date(collection, require_daily_packet=True)
         records = _kaipanla_records_for_date(collection, normalized_date)
+        if requested_date and not _overview_has_daily_packet(records):
+            fallback_date = _latest_kaipanla_trade_date(collection, upper_bound=requested_date, require_daily_packet=True)
+            if fallback_date and fallback_date != normalized_date:
+                normalized_date = fallback_date
+                fallback = True
+                records = _kaipanla_records_for_date(collection, normalized_date)
     latest_by_feature: dict[str, dict[str, Any]] = {}
     for record in records:
         feature = str(record.get("feature") or "")
@@ -294,6 +301,9 @@ def kaipanla_daily_overview(target_date: str = "") -> dict[str, Any]:
     return {
         "date": normalized_date,
         "display_date": _display_date(normalized_date),
+        "requested_date": requested_date,
+        "requested_display_date": _display_date(requested_date),
+        "fallback": fallback,
         "coverage": {
             "total_features": len(KAIPANLA_FEATURES),
             "collected_features": len(latest_by_feature),
@@ -314,6 +324,33 @@ def kaipanla_daily_overview(target_date: str = "") -> dict[str, Any]:
         "features": feature_cards,
         "data_dir": f"mongodb://{DEFAULT_DB}/{KAIPANLA_COLLECTION}",
     }
+
+
+def _latest_kaipanla_trade_date(collection: Any, *, upper_bound: str = "", require_daily_packet: bool = False) -> str:
+    upper = _normalize_date_text(upper_bound)
+    query = {"archived": {"$ne": True}}
+    if require_daily_packet:
+        query["feature"] = "daily_data"
+    cursor = collection.find(
+        query,
+        {"_id": 0, "saved_at": 1, "trade_date": 1, "params": 1, "payload.trade_date": 1},
+    ).sort([("saved_at", DESCENDING), ("feature", ASCENDING)]).limit(2000)
+    candidates = {
+        trade_date
+        for record in cursor
+        if (trade_date := _record_trade_date(record)) and (not upper or trade_date <= upper)
+    }
+    if candidates:
+        return max(candidates)
+    if require_daily_packet:
+        return _latest_kaipanla_trade_date(collection, upper_bound=upper)
+    if upper:
+        return _latest_kaipanla_trade_date(collection)
+    return ""
+
+
+def _overview_has_daily_packet(records: list[dict[str, Any]]) -> bool:
+    return any(str(record.get("feature") or "") == "daily_data" and bool(record.get("ok")) for record in records)
 
 
 def repair_kaipanla_overview_history(target_date: str, *, dry_run: bool = False) -> dict[str, Any]:
@@ -560,8 +597,25 @@ def _overview_kpis(records: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     items = []
     for label, keys in candidates:
         value = _overview_kpi_value(label, records, payloads, keys)
-        items.append({"label": label, "value": value if value is not None else "-", "hint": "从最新开盘啦记录自动识别"})
+        items.append(
+            {
+                "label": label,
+                "value": value if value is not None else "-",
+                "status": "available" if value is not None else "missing",
+                "hint": _overview_kpi_hint(label, value),
+            }
+        )
     return items
+
+
+def _overview_kpi_hint(label: str, value: int | float | None) -> str:
+    if value is None:
+        if label in {"炸板", "最高连板"}:
+            return "开盘啦当前记录未提供，待数据齐全后本地计算"
+        return "从最新开盘啦记录自动识别"
+    if label in {"炸板", "最高连板"}:
+        return "开盘啦接口已返回或从明细识别"
+    return "从最新开盘啦记录自动识别"
 
 
 def _overview_kpi_value(label: str, records: dict[str, dict[str, Any]], payloads: list[Any], keys: list[str]) -> int | float | None:
@@ -578,6 +632,7 @@ def _overview_kpi_value(label: str, records: dict[str, dict[str, Any]], payloads
             return None
         return _count_like_value(payload) or _result_count(payload, _result_rows(payload))
     if label == "最高连板":
+        saw_explicit_zero = False
         for payload in (
             _record_result(records.get("consecutive_limit_up")),
             _record_result(records.get("market_limit_up_ladder")),
@@ -586,7 +641,14 @@ def _overview_kpi_value(label: str, records: dict[str, dict[str, Any]], payloads
             found = _find_number(payload, ["max_consecutive", "最高连板", "最高板", "height"])
             if found not in (None, 0):
                 return found
-        return 0 if any(_record_result(records.get(key)) is not None for key in ("consecutive_limit_up", "market_limit_up_ladder", "limit_up_ladder")) else None
+            if found == 0:
+                saw_explicit_zero = True
+            derived = _max_consecutive_from_payload(payload)
+            if derived not in (None, 0):
+                return derived
+            if derived == 0:
+                saw_explicit_zero = True
+        return 0 if saw_explicit_zero else None
     if label == "百日新高":
         payload = _record_result(records.get("new_high_data"))
         if payload is None:
@@ -671,6 +733,27 @@ def _count_like_value(value: Any) -> int | float | None:
     if isinstance(value, list):
         return len(value)
     return _to_number(value)
+
+
+def _max_consecutive_from_payload(value: Any) -> int | float | None:
+    rows = _result_rows(value)
+    numbers = [
+        number
+        for row in rows
+        for key in ("连板天数", "连板数", "最高连板", "consecutive_days", "max_consecutive", "height", "board_num", "board")
+        if (number := _to_number(row.get(key))) is not None
+    ]
+    ladder = value.get("ladder") if isinstance(value, dict) else None
+    if isinstance(ladder, dict):
+        for key, items in ladder.items():
+            number = _to_number(key)
+            if number is not None:
+                numbers.append(number)
+            if isinstance(items, list) and items:
+                nested = _max_consecutive_from_payload(items)
+                if nested is not None:
+                    numbers.append(nested)
+    return max(numbers) if numbers else None
 
 
 def _overview_section(records: dict[str, dict[str, Any]], features: list[str]) -> list[dict[str, Any]]:

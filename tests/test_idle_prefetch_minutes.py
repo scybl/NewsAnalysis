@@ -21,7 +21,7 @@ def _scheduler(*, enabled: bool = True):
     scheduler = object.__new__(web.IdleStockPrefetchScheduler)
     scheduler.config = {"minutes_enabled": enabled}
     scheduler.lock = web.threading.Lock()
-    scheduler.app = SimpleNamespace(settings=SimpleNamespace(idle_stock_prefetch_minutes_enabled=True))
+    scheduler.app = SimpleNamespace(settings=SimpleNamespace(idle_stock_prefetch_minutes_enabled=True, idle_stock_prefetch_refresh_existing_days=14))
     scheduler.task_registry = FakeTaskRegistry()
     scheduler._write_config_locked = lambda: None
     return scheduler
@@ -95,3 +95,28 @@ def test_idle_prefetch_records_failed_candidate_for_cooldown(monkeypatch):
     assert task["status"] == "failed"
     assert task["result"]["ts_code"] == "001267.SZ"
     assert scheduler.config["attempts"]["001267.SZ"]["status"] == "failed"
+
+
+def test_idle_prefetch_selects_stale_existing_package(monkeypatch):
+    scheduler = _scheduler()
+    scheduler.config = {"minutes_enabled": True, "refresh_existing_days": 14, "attempts": {}}
+    scheduler.app.index = SimpleNamespace(stocks=lambda refresh=False: [{"ts_code": "000001.SZ", "name": "平安银行"}])
+
+    monkeypatch.setattr(web, "stock_exists", lambda _code: True)
+    monkeypatch.setattr(
+        web,
+        "list_local_stock_summaries",
+        lambda: {
+            "items": [
+                {
+                    "ts_code": "000001.SZ",
+                    "updated_at": "20200101_000000",
+                }
+            ]
+        },
+    )
+
+    candidate = scheduler._next_candidate()
+
+    assert candidate["ts_code"] == "000001.SZ"
+    assert candidate["reason"] == "stale_package"

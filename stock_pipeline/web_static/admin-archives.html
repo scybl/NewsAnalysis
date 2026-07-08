@@ -4,109 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>归档账号 - NewsCrawler</title>
+    <meta http-equiv="refresh" content="0; url=/admin-accounts.html#archives" />
     <script>
-      try {
-        if (localStorage.getItem("stockTheme") === "dark") {
-          document.documentElement.classList.add("theme-dark");
-        }
-      } catch {}
+      window.location.replace("/admin-accounts.html#archives");
     </script>
-    <link rel="stylesheet" href="/styles.css?v=admin-archives-20260618-v1" />
   </head>
   <body>
-    <main class="admin-page admin-shell">
-      <aside class="admin-sidebar">
-        <a class="admin-brand" href="/">
-          <span class="admin-brand-mark">NC</span>
-          <span>
-            <strong>NewsCrawler</strong>
-            <small>Data Console</small>
-          </span>
-        </a>
-        <nav class="admin-nav" aria-label="后台导航">
-          <a href="/admin-accounts.html">
-            <span class="admin-nav-icon">A</span>
-            <span>账户管理</span>
-          </a>
-          <a href="/admin-ops.html">
-            <span class="admin-nav-icon">O</span>
-            <span>运维状态</span>
-          </a>
-          <a class="active" href="/admin-archives.html">
-            <span class="admin-nav-icon">R</span>
-            <span>归档账号</span>
-          </a>
-          <a href="/admin-market.html">
-            <span class="admin-nav-icon">S</span>
-            <span>行情数据</span>
-          </a>
-          <a href="/admin-news.html">
-            <span class="admin-nav-icon">N</span>
-            <span>股票数据</span>
-          </a>
-          <a href="/admin-crawler.html">
-            <span class="admin-nav-icon">C</span>
-            <span>新闻数据</span>
-          </a>
-          <a href="/admin-credentials.html">
-            <span class="admin-nav-icon">K</span>
-            <span>凭据管理</span>
-          </a>
-          <a href="/admin-audit.html">
-            <span class="admin-nav-icon">L</span>
-            <span>审计日志</span>
-          </a>
-          <a class="admin-nav-unavailable" aria-disabled="true" title="数据分发维护中，暂不可用">
-            <span class="admin-nav-icon">D</span>
-            <span>数据分发 · 维护中</span>
-          </a>
-          <a class="admin-nav-unavailable" aria-disabled="true" title="Agent Gateway 调试中，暂不可用">
-            <span class="admin-nav-icon">G</span>
-            <span>Agent Gateway · 调试中</span>
-          </a>
-        </nav>
-        <div class="admin-sidebar-footer">
-          <div class="admin-footer-actions">
-            <button id="themeToggleBtn" type="button">深色模式</button>
-            <button id="logoutBtn" type="button">退出登录</button>
-          </div>
-        </div>
-      </aside>
-
-      <section class="admin-workspace">
-        <header class="admin-page-head">
-          <div>
-            <span class="admin-kicker">ARCHIVE</span>
-            <h1>归档账号</h1>
-            <p>查看已冻结留存的账号。这里不展示密码哈希或 API Key 密文，只展示安全摘要。</p>
-          </div>
-          <div class="admin-actions archive-search">
-            <input id="archiveSearchInput" type="search" placeholder="搜索账号、归档人、原因..." />
-            <button id="archiveSearchBtn" class="primary-action" type="button">搜索</button>
-          </div>
-        </header>
-
-        <div class="admin-panel">
-          <div class="admin-kpis">
-            <div><span>归档总数</span><strong id="archiveTotalCount">-</strong></div>
-            <div><span>注册用户</span><strong id="archiveUserCount">-</strong></div>
-            <div><span>当前筛选</span><strong id="archiveQueryLabel">全部</strong></div>
-          </div>
-          <div id="archiveSummary" class="admin-summary"></div>
-          <div class="admin-grid archive-grid">
-            <section class="admin-card archive-card-wide">
-              <div class="admin-card-head">
-                <h4>归档注册用户</h4>
-                <span>冻结但留存账号、Key 状态和用量快照</span>
-              </div>
-              <div class="admin-table-wrap">
-                <table id="archiveUsersTable"></table>
-              </div>
-            </section>
-          </div>
-        </div>
-      </section>
-    </main>
-    <script src="/admin-archives.js?v=admin-archives-20260618-v1"></script>
+    <p>归档账号已合并到账户管理。正在跳转到 <a href="/admin-accounts.html#archives">账户管理 / 归档账号</a>。</p>
   </body>
 </html>

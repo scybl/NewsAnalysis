@@ -64,6 +64,7 @@ const dailyMarketSkipped = document.querySelector("#dailyMarketSkipped");
 const idlePrefetchStatus = document.querySelector("#idlePrefetchStatus");
 const idlePrefetchEnabled = document.querySelector("#idlePrefetchEnabled");
 const idlePrefetchSeconds = document.querySelector("#idlePrefetchSeconds");
+const idlePrefetchRefreshDays = document.querySelector("#idlePrefetchRefreshDays");
 const saveIdlePrefetchBtn = document.querySelector("#saveIdlePrefetchBtn");
 const runIdlePrefetchNowBtn = document.querySelector("#runIdlePrefetchNowBtn");
 const idlePrefetchRemaining = document.querySelector("#idlePrefetchRemaining");
@@ -338,6 +339,7 @@ saveIdlePrefetchBtn?.addEventListener("click", async () => {
         action: "save",
         enabled: !!idlePrefetchEnabled?.checked,
         idle_seconds: Number(idlePrefetchSeconds?.value || 1800),
+        refresh_existing_days: Number(idlePrefetchRefreshDays?.value || 14),
       }),
     });
     const payload = await readApiPayload(response, "保存空闲预抓失败");
@@ -440,7 +442,7 @@ function renderSystemApiKeys(keys) {
   if (!systemDeepSeekStatus) return;
   const deepseek = keys.deepseek || {};
   systemDeepSeekStatus.textContent = deepseek.configured
-    ? `已锁定${deepseek.updated_at ? ` · ${deepseek.updated_at}` : ""}`
+    ? `已锁定${deepseek.updated_at ? ` · ${formatCompactTimestamp(deepseek.updated_at)}` : ""}`
     : "未配置";
   if (deleteSystemDeepSeekBtn) deleteSystemDeepSeekBtn.disabled = !deepseek.configured;
 }
@@ -453,9 +455,9 @@ function renderAdminAgentTokens(tokens) {
       <td><code>${escapeHtml(token.token_prefix || "")}</code></td>
       <td>${escapeHtml((token.scopes || []).join(","))}</td>
       <td>${escapeHtml(token.status || "")}</td>
-      <td>${escapeHtml(token.expires_at_text || "-")}</td>
+      <td>${escapeHtml(formatCompactTimestamp(token.expires_at_text || "-"))}</td>
       <td>${escapeHtml(String(token.rate_limit_per_min || "-"))}</td>
-      <td>${escapeHtml(token.last_used_at || "-")}</td>
+      <td>${escapeHtml(formatCompactTimestamp(token.last_used_at || "-"))}</td>
       <td>
         <button type="button" data-agent-token-revoke="${escapeHtml(token.id || "")}" ${!AGENT_GATEWAY_AVAILABLE || token.status === "revoked" ? "disabled" : ""}>撤销</button>
       </td>
@@ -474,7 +476,7 @@ function renderAdminAgentAudit(logs) {
   if (!adminAgentAuditTable) return;
   const rows = logs.map((item) => `
     <tr>
-      <td>${escapeHtml(item.time || "")}</td>
+      <td>${escapeHtml(formatCompactTimestamp(item.time || ""))}</td>
       <td><code>${escapeHtml(item.token_prefix || "-")}</code></td>
       <td>${escapeHtml(item.method || "")}</td>
       <td>${escapeHtml(item.route || "")}</td>
@@ -521,7 +523,7 @@ function renderAdminUsers(users) {
         <td>${escapeHtml(user.disabled ? "已禁用" : user.role || "")}</td>
         <td>${escapeHtml(user.disabled_until_text || "-")}</td>
         <td>${escapeHtml(String(user.usage_total || 0))}</td>
-        <td>${escapeHtml(user.last_request_at || "-")}</td>
+        <td>${escapeHtml(formatCompactTimestamp(user.last_request_at || "-"))}</td>
         <td>${escapeHtml(apiKeySummary(user.api_keys || {}))}</td>
         <td>${escapeHtml(user.invite_code || "-")}</td>
         <td>
@@ -548,7 +550,7 @@ function renderAdminInvites(invites) {
     <tr>
       <td><code>${escapeHtml(invite.code || "")}</code></td>
       <td>${inviteStatusLabel(invite.status)}</td>
-      <td>${escapeHtml(invite.expires_at_text || "-")}</td>
+      <td>${escapeHtml(formatCompactTimestamp(invite.expires_at_text || "-"))}</td>
       <td>${escapeHtml(invite.used_by || "-")}</td>
     </tr>
   `).join("");
@@ -643,6 +645,7 @@ function applyDataViewerMode() {
     dailyMarketTime,
     idlePrefetchEnabled,
     idlePrefetchSeconds,
+    idlePrefetchRefreshDays,
     kaipanlaEnabled,
     kaipanlaTime,
   ].forEach((node) => {
@@ -708,6 +711,7 @@ function taskKindLabel(kind) {
     daily_market: "股票数据",
     idle_stock_prefetch: "空闲预抓",
     kaipanla: "行情数据",
+    data_random_audit: "数据抽检",
     spider: "行情数据",
     multi_agent: "多 Agent",
     multi_agent_cache: "分析缓存",
@@ -875,7 +879,7 @@ function renderDailyMarketScheduler(scheduler) {
       : "未启用";
   if (dailyMarketStockCount) dailyMarketStockCount.textContent = String(scheduler.stock_count ?? "-");
   if (dailyStockListCount) dailyStockListCount.textContent = String(scheduler.stock_list_count ?? "-");
-  if (dailyMarketLastDate) dailyMarketLastDate.textContent = scheduler.last_run_date || "-";
+  if (dailyMarketLastDate) dailyMarketLastDate.textContent = formatCompactDate(scheduler.last_run_date || "-");
   if (dailyMarketUpdated) dailyMarketUpdated.textContent = String(last.updated ?? "-");
   if (dailyMarketSkipped) dailyMarketSkipped.textContent = String(last.skipped ?? "-");
   if (runDailyMarketNowBtn) runDailyMarketNowBtn.disabled = running;
@@ -885,11 +889,12 @@ function renderIdlePrefetchScheduler(scheduler) {
   if (!idlePrefetchStatus) return;
   if (idlePrefetchEnabled) idlePrefetchEnabled.checked = !!scheduler.enabled;
   if (idlePrefetchSeconds) idlePrefetchSeconds.value = scheduler.idle_seconds || 1800;
+  if (idlePrefetchRefreshDays) idlePrefetchRefreshDays.value = scheduler.refresh_existing_days ?? 14;
   const running = !!scheduler.running;
   idlePrefetchStatus.textContent = running
     ? "运行中"
     : scheduler.enabled
-      ? `已启用 · 空闲 ${formatDuration(scheduler.idle_seconds || 1800)}`
+      ? `已启用 · 空闲 ${formatDuration(scheduler.idle_seconds || 1800)} · ${scheduler.refresh_existing_days ?? 14} 天刷新已有资料包`
       : "未启用";
   if (idlePrefetchRemaining) idlePrefetchRemaining.textContent = scheduler.remaining_seconds ? formatDuration(scheduler.remaining_seconds) : "可触发";
   if (idlePrefetchLastRequest) {
@@ -899,7 +904,7 @@ function renderIdlePrefetchScheduler(scheduler) {
   const last = scheduler.last_result || {};
   if (idlePrefetchLastResult) {
     idlePrefetchLastResult.textContent = last.ts_code
-      ? `${last.ts_code}${last.name ? ` ${last.name}` : ""} · 全量历史`
+      ? `${last.ts_code}${last.name ? ` ${last.name}` : ""} · ${last.reason === "stale_package" ? "刷新已有资料包" : "全量历史"}`
       : (last.reason === "no_unfetched_stock" ? "没有待预抓股票" : (scheduler.last_error || "-"));
   }
   if (runIdlePrefetchNowBtn) runIdlePrefetchNowBtn.disabled = running;
@@ -927,8 +932,12 @@ function renderKaipanlaDailyOverview(overview) {
   const coverage = overview.coverage || {};
   if (kaipanlaOverviewDate && overview.display_date) kaipanlaOverviewDate.value = overview.display_date;
   if (kaipanlaOverviewMeta) {
-    const saved = overview.latest_saved_at ? ` · 最近保存 ${overview.latest_saved_at}` : "";
-    kaipanlaOverviewMeta.textContent = `${overview.display_date || overview.date || "最近交易日"} · 已采 ${coverage.collected_features || 0}/${coverage.total_features || 0} 个功能${saved}`;
+    const displayDate = formatCompactDate(overview.display_date || overview.date || "");
+    const saved = overview.latest_saved_at ? ` · 最近保存 ${formatCompactTimestamp(overview.latest_saved_at)}` : "";
+    const fallback = overview.fallback && overview.requested_display_date
+      ? ` · ${formatCompactDate(overview.requested_display_date)} 未更新，展示上一交易日`
+      : "";
+    kaipanlaOverviewMeta.textContent = `${displayDate || "最近交易日"} · 已采 ${coverage.collected_features || 0}/${coverage.total_features || 0} 个功能${fallback}${saved}`;
   }
   if (kaipanlaOverviewKpis) {
     const kpis = [
@@ -938,7 +947,7 @@ function renderKaipanlaDailyOverview(overview) {
     kaipanlaOverviewKpis.innerHTML = kpis.map((item) => `
       <article>
         <span>${escapeHtml(item.label || "")}</span>
-        <strong>${escapeHtml(String(item.value ?? "-"))}</strong>
+        <strong>${escapeHtml(formatKaipanlaKpiValue(item))}</strong>
         <small>${escapeHtml(item.hint || "")}</small>
       </article>
     `).join("");
@@ -965,11 +974,18 @@ function renderKaipanlaDailyOverview(overview) {
   }).join("");
 }
 
+function formatKaipanlaKpiValue(item) {
+  if (!item || item.status === "missing" || item.value === "-" || item.value === null || item.value === undefined || item.value === "") {
+    return "暂无";
+  }
+  return String(item.value);
+}
+
 function renderKaipanlaOverviewFeature(item) {
   return `
     <article class="kaipanla-overview-feature">
       <div class="kaipanla-overview-feature-head">
-        <div><strong>${escapeHtml(item.label || item.feature || "")}</strong><small>${escapeHtml(item.category || "")} · ${escapeHtml(item.saved_at || "")}</small></div>
+        <div><strong>${escapeHtml(item.label || item.feature || "")}</strong><small>${escapeHtml(item.category || "")} · ${escapeHtml(formatCompactTimestamp(item.saved_at || ""))}</small></div>
         <span class="${item.ok ? "is-ok" : "is-failed"}">${item.ok ? "成功" : "失败"}</span>
       </div>
       <p>${escapeHtml(item.summary || "无摘要")}</p>
@@ -1036,7 +1052,10 @@ function overviewColumns(rows, feature = "") {
 function formatOverviewCell(value) {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(2);
-  return String(value);
+  const text = String(value);
+  if (/^\d{8}$/.test(text) || /^\d{4}-\d{1,2}-\d{1,2}$/.test(text)) return formatCompactDate(text);
+  if (/^\d{8}[_-]\d{4}/.test(text) || /^\d{4}-\d{1,2}-\d{1,2}[ T]\d{1,2}:\d{2}/.test(text)) return formatCompactTimestamp(text);
+  return text;
 }
 
 async function loadKaipanlaFeatures() {
@@ -1065,7 +1084,7 @@ function renderKaipanlaScheduler(scheduler) {
   if (kaipanlaStateText) kaipanlaStateText.textContent = running ? "运行中" : scheduler.enabled ? "已启用" : "未启用";
   if (kaipanlaTimeText) kaipanlaTimeText.textContent = scheduler.time || "21:45";
   if (kaipanlaFeatureCount) kaipanlaFeatureCount.textContent = String((scheduler.features || []).length);
-  if (kaipanlaLastDate) kaipanlaLastDate.textContent = scheduler.last_run_date || "-";
+  if (kaipanlaLastDate) kaipanlaLastDate.textContent = formatCompactDate(scheduler.last_run_date || "-");
   const last = scheduler.last_result || {};
   if (kaipanlaLastResult) kaipanlaLastResult.textContent = last.total ? `${last.succeeded || 0} / ${last.failed || 0}` : "-";
   if (kaipanlaRunBtn) kaipanlaRunBtn.disabled = running;
@@ -1434,10 +1453,34 @@ function formatDuration(seconds) {
 }
 
 function formatCompactTimestamp(value) {
-  const match = String(value || "").match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
-  if (!match) return value || "-";
-  const [, , month, day, hour, minute] = match;
-  return `${Number(month)}月${Number(day)}日 ${hour}:${minute}`;
+  const text = String(value || "").trim();
+  if (!text || text === "-") return "-";
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})/);
+  if (compact) {
+    const [, , month, day, hour, minute] = compact;
+    return `${Number(month)}月${Number(day)}日${hour}:${minute}`;
+  }
+  const plain = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})/);
+  if (plain) return `${Number(plain[2])}月${Number(plain[3])}日${plain[4].padStart(2, "0")}:${plain[5]}`;
+  const date = new Date(text);
+  if (!Number.isNaN(date.getTime())) {
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    const hour = String(date.getHours()).padStart(2, "0");
+    const minute = String(date.getMinutes()).padStart(2, "0");
+    return `${month}月${day}日${hour}:${minute}`;
+  }
+  return text;
+}
+
+function formatCompactDate(value) {
+  const text = String(value || "").trim();
+  if (!text || text === "-") return "-";
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return `${Number(compact[2])}月${Number(compact[3])}日`;
+  const plain = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (plain) return `${Number(plain[2])}月${Number(plain[3])}日`;
+  return text;
 }
 
 function apiKeySummary(keys) {

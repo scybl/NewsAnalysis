@@ -646,21 +646,33 @@ def archive_changed_minute_buckets(collection: Any, ts_code: str, source: str, r
     try:
         import pymongo
 
-        from .minute_cold_storage import archive_buckets, build_config, ensure_indexes
+        from .minute_cold_storage import archive_buckets, build_config, cleanup_archived_buckets, ensure_indexes
 
         database = collection.database
         day_index = database[MARKET_COLLECTIONS["minute_day_index"]]
         coverage = database[MARKET_COLLECTIONS["minute_coverage"]]
         ensure_indexes(day_index, coverage, pymongo)
         upload = os.getenv("STOCK_MINUTE_COLD_UPLOAD_ON_WRITE", "1").strip().lower() not in {"0", "false", "no", "off"}
-        return archive_buckets(
+        cold_config = build_config()
+        archive_result = archive_buckets(
             collection,
             day_index,
             coverage,
             query={"source": source, "ts_code": normalize_ts_code(ts_code), "trade_date": {"$in": trade_dates}},
-            config=build_config(),
+            config=cold_config,
             upload=upload,
         )
+        if upload and archive_result.get("ok") and int(archive_result.get("uploaded") or 0) > 0:
+            archive_result["hot_cleanup"] = cleanup_archived_buckets(
+                collection,
+                day_index,
+                coverage,
+                source=source,
+                hot_days=cold_config.hot_days,
+                codes=[ts_code],
+                dry_run=False,
+            )
+        return archive_result
     except Exception as exc:  # noqa: BLE001 - cold archive must not break minute ingestion
         return {"ok": False, "status": "failed", "error": str(exc), "trade_dates": trade_dates[:10]}
 

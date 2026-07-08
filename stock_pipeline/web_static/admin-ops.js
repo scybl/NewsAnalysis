@@ -22,6 +22,34 @@ const OPS_STATUS_LABELS = {
   running_unknown_pid: "运行中",
 };
 
+const OPS_STATUS_HINTS = {
+  succeeded: "任务最近一次完整执行成功，当前没有运行中的进程。",
+  failed: "任务最近一次执行失败，或调度记录里保留了错误信息。",
+  failed_or_stopped: "任务曾处于运行状态，但现在找不到进程，也没有成功 summary。",
+  running: "任务正在执行，进程或调度记录仍处于运行状态。",
+  idle: "调度器可用但当前空闲，等待下一次触发。",
+  paused: "调度器被关闭或手动暂停。",
+  warning: "任务可读但存在告警，需要检查最近异常。",
+  unknown: "缺少配置、日志或状态文件，暂时无法判断。",
+  running_unknown_pid: "状态显示运行中，但无法确认具体进程号。",
+};
+
+const OPS_EVENT_LABELS = {
+  summary: "完成摘要",
+  succeeded: "成功",
+  failed: "失败",
+  running: "运行中",
+  idle: "空闲",
+  unknown: "未知",
+  upload_start: "开始上传",
+  upload_done: "上传完成",
+  write_start: "开始写文件",
+  write_done: "写文件完成",
+  local_removed: "本地已清理",
+  index_done: "索引完成",
+  crawler_status_snapshot: "爬虫状态快照",
+};
+
 document.addEventListener("DOMContentLoaded", async () => {
   if (!(await loadOpsSession())) return;
   opsRefreshBtn?.addEventListener("click", loadOpsStatus);
@@ -99,7 +127,7 @@ function renderOpsTasks(tasks) {
     <tr>
       <td>
         <strong>${escapeHtml(task.title || task.id || "-")}</strong>
-        <small>${escapeHtml(task.kind || "")}</small>
+        <small>${escapeHtml(taskKindLabel(task.kind))}</small>
       </td>
       <td>${statusBadge(task.status)}</td>
       <td>${task.running ? "是" : "否"}</td>
@@ -110,6 +138,15 @@ function renderOpsTasks(tasks) {
     </tr>
   `).join("");
   opsTasksTable.innerHTML = `
+    <colgroup>
+      <col class="ops-task-col" />
+      <col class="ops-status-col" />
+      <col class="ops-running-col" />
+      <col class="ops-resource-col" />
+      <col class="ops-progress-col" />
+      <col class="ops-event-col" />
+      <col class="ops-log-col" />
+    </colgroup>
     <thead>
       <tr>
         <th>任务</th>
@@ -123,6 +160,17 @@ function renderOpsTasks(tasks) {
     </thead>
     <tbody>${rows || `<tr><td colspan="7" class="news-empty compact">暂无任务状态。</td></tr>`}</tbody>
   `;
+}
+
+function taskKindLabel(kind) {
+  return ({
+    daily_market: "股票数据",
+    idle_stock_prefetch: "空闲预抓",
+    kaipanla: "行情数据",
+    data_random_audit: "数据抽检",
+    spider: "行情数据",
+    news_crawler: "新闻爬虫",
+  })[kind] || kind || "";
 }
 
 function renderOpsErrors(tasks, warnings) {
@@ -170,11 +218,15 @@ function renderOpsError(error) {
 
 function statusBadge(status) {
   const safeStatus = status || "unknown";
-  return `<span class="ops-status-badge is-${escapeAttr(safeStatus)}">${escapeHtml(statusLabel(safeStatus))}</span>`;
+  return `<span class="ops-status-badge is-${escapeAttr(safeStatus)}" title="${escapeAttr(statusHint(safeStatus))}">${escapeHtml(statusLabel(safeStatus))}</span>`;
 }
 
 function statusLabel(status) {
   return OPS_STATUS_LABELS[status] || status || "未知";
+}
+
+function statusHint(status) {
+  return OPS_STATUS_HINTS[status] || "系统返回的自定义状态。";
 }
 
 function progressText(progress) {
@@ -189,7 +241,7 @@ function progressText(progress) {
 function detailText(task) {
   const details = task.details || {};
   const parts = [
-    task.last_event || "",
+    eventLabel(task.last_event),
     task.last_event_age_seconds || task.last_event_age_seconds === 0 ? `${formatDuration(task.last_event_age_seconds)}前` : "",
     details.ts_code || "",
     details.year || "",
@@ -203,9 +255,16 @@ function logCommand(task) {
   if (!task.log_file) return "-";
   const command = `tail -n 120 ${shellQuote(task.log_file)}`;
   return `
-    <code title="${escapeAttr(task.log_file)}">${escapeHtml(fileName(task.log_file))}</code>
-    <button type="button" data-copy-tail="${escapeAttr(command)}">复制</button>
+    <div class="ops-log-command">
+      <code title="${escapeAttr(task.log_file)}">${escapeHtml(fileName(task.log_file))}</code>
+      <button type="button" data-copy-tail="${escapeAttr(command)}">复制</button>
+    </div>
   `;
+}
+
+function eventLabel(event) {
+  if (!event) return "";
+  return OPS_EVENT_LABELS[event] || event;
 }
 
 async function copyTailCommand(button) {
@@ -238,10 +297,19 @@ function formatDuration(seconds) {
 }
 
 function formatDateTime(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("zh-CN", { hour12: false });
+  const text = String(value || "").trim();
+  if (!text || text === "-") return "-";
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})/);
+  if (compact) return `${Number(compact[2])}月${Number(compact[3])}日${compact[4]}:${compact[5]}`;
+  const plain = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})/);
+  if (plain) return `${Number(plain[2])}月${Number(plain[3])}日${plain[4].padStart(2, "0")}:${plain[5]}`;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text;
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${month}月${day}日${hour}:${minute}`;
 }
 
 function escapeHtml(value) {

@@ -20,10 +20,17 @@ const stockDataStats = document.querySelector("#stockDataStats");
 const stockDataTable = document.querySelector("#stockDataTable");
 const stockDataSearchInput = document.querySelector("#stockDataSearchInput");
 const stockDataSortSelect = document.querySelector("#stockDataSortSelect");
+const stockStorageMeta = document.querySelector("#stockStorageMeta");
+const stockStorageStats = document.querySelector("#stockStorageStats");
+const stockStorageTable = document.querySelector("#stockStorageTable");
+const stockStorageSearchInput = document.querySelector("#stockStorageSearchInput");
+const stockStorageSortSelect = document.querySelector("#stockStorageSortSelect");
 const dataSourceMeta = document.querySelector("#dataSourceMeta");
 const dataSourceStats = document.querySelector("#dataSourceStats");
 const dataSourceProviders = document.querySelector("#dataSourceProviders");
 const standardDataTable = document.querySelector("#standardDataTable");
+const stockTabs = Array.from(document.querySelectorAll("[data-stock-tab]"));
+const stockPanes = Array.from(document.querySelectorAll("[data-stock-pane]"));
 
 const state = {
   page: 1,
@@ -44,6 +51,11 @@ const stockState = {
   totalMinuteRows: 0,
 };
 
+const stockStorageState = {
+  items: [],
+  summary: {},
+};
+
 const dataSourceState = {
   providers: [],
   types: [],
@@ -54,23 +66,31 @@ const STOCK_PROVIDER_KEYS = new Set(["stock_data", "eastmoney", "akshare", "tush
 const STOCK_STANDARD_CATEGORIES = new Set(["个股"]);
 const hasNewsLibrary = Boolean(newsList);
 const hasStockLibrary = Boolean(stockDataTable);
+const hasStockStorage = Boolean(stockStorageTable);
 const newsDataConsolePage = document.body?.dataset.dataConsolePage === "true";
 
 let searchTimer = null;
 let stockSearchTimer = null;
+let stockStorageSearchTimer = null;
 let newsPageAdminReadonly = false;
 
 document.addEventListener("DOMContentLoaded", async () => {
   await loadAdminSession();
   bindEvents();
+  activateStockPane((window.location.hash || "#sources").replace(/^#/, "") || "sources", false);
   if (hasStockLibrary) {
     loadDataSources();
     loadStockData();
+    loadStockStorage();
   }
   if (hasNewsLibrary) {
     loadNews();
   }
   applyNewsAdminReadonlyMode();
+});
+
+window.addEventListener("hashchange", () => {
+  activateStockPane((window.location.hash || "#sources").replace(/^#/, "") || "sources", false);
 });
 
 async function loadAdminSession() {
@@ -111,6 +131,7 @@ function bindEvents() {
     if (hasStockLibrary) {
       loadDataSources();
       loadStockData();
+      loadStockStorage();
     }
     if (hasNewsLibrary) {
       loadNews();
@@ -162,6 +183,27 @@ function bindEvents() {
     stockSearchTimer = window.setTimeout(renderStockData, 160);
   });
   stockDataSortSelect?.addEventListener("change", renderStockData);
+  stockStorageSearchInput?.addEventListener("input", () => {
+    window.clearTimeout(stockStorageSearchTimer);
+    stockStorageSearchTimer = window.setTimeout(renderStockStorage, 160);
+  });
+  stockStorageSortSelect?.addEventListener("change", renderStockStorage);
+  stockTabs.forEach((button) => {
+    button.addEventListener("click", () => activateStockPane(button.dataset.stockTab || "sources", true));
+  });
+}
+
+function activateStockPane(name, updateHash) {
+  const normalized = new Set(["sources", "library", "storage"]).has(name) ? name : "sources";
+  stockTabs.forEach((button) => {
+    button.classList.toggle("active", button.dataset.stockTab === normalized);
+  });
+  stockPanes.forEach((pane) => {
+    pane.classList.toggle("active", pane.dataset.stockPane === normalized);
+  });
+  if (updateHash && window.location.hash !== `#${normalized}`) {
+    history.replaceState(null, "", `#${normalized}`);
+  }
 }
 
 async function loadDataSources() {
@@ -391,6 +433,135 @@ function renderStockRow(item) {
   `;
 }
 
+async function loadStockStorage() {
+  if (!stockStorageMeta || !stockStorageTable) return;
+  stockStorageMeta.textContent = "正在读取存储状态...";
+  try {
+    const response = await fetch("/api/admin/stock-storage-status?limit=1200");
+    const payload = await response.json();
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.error || "读取存储状态失败");
+    }
+    stockStorageState.items = payload.items || [];
+    stockStorageState.summary = payload.summary || {};
+    renderStockStorage();
+    renderStockStorageStats();
+    stockStorageMeta.textContent = `已读取 ${payload.count || 0} / ${payload.total || 0} 只股票`;
+  } catch (error) {
+    stockStorageState.items = [];
+    stockStorageState.summary = {};
+    stockStorageMeta.textContent = `读取失败：${error.message}`;
+    stockStorageTable.innerHTML = `<tbody><tr><td class="news-empty is-error">${escapeHtml(error.message)}</td></tr></tbody>`;
+    renderStockStorageStats();
+  }
+}
+
+function renderStockStorageStats() {
+  if (!stockStorageStats) return;
+  const summary = stockStorageState.summary || {};
+  const health = summary.health || {};
+  const cards = [
+    ["股票", summary.stock_count ?? 0, `当前显示 ${summary.visible_count ?? 0}`],
+    ["热数据行", formatNumber(summary.dataset_rows || 0), "资料包 metadata 汇总"],
+    ["冷备份天数", formatNumber(summary.cold_uploaded_days || 0), formatBytes(summary.cold_uploaded_bytes || 0)],
+    ["异常", formatNumber((health.warning || 0) + (health.danger || 0)), `正常 ${health.ok || 0}`],
+  ];
+  stockStorageStats.innerHTML = cards
+    .map(
+      ([label, value, note]) => `
+        <div>
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(String(value))}</strong>
+          <p>${escapeHtml(note)}</p>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function renderStockStorage() {
+  if (!stockStorageTable) return;
+  const query = (stockStorageSearchInput?.value || "").trim().toLowerCase();
+  const sortKey = stockStorageSortSelect?.value || "health";
+  const items = stockStorageState.items
+    .filter((item) => {
+      if (!query) return true;
+      return [item.ts_code, item.name, item.industry, item.market]
+        .some((value) => String(value || "").toLowerCase().includes(query));
+    })
+    .sort((left, right) => compareStockStorageRows(left, right, sortKey));
+  if (!items.length) {
+    stockStorageTable.innerHTML = `<tbody><tr><td class="news-empty">当前条件下没有股票存储状态。</td></tr></tbody>`;
+    return;
+  }
+  stockStorageTable.innerHTML = `
+    <thead>
+      <tr>
+        <th>股票</th>
+        <th>热数据</th>
+        <th>日K覆盖</th>
+        <th>分时冷备份</th>
+        <th>健康检查</th>
+        <th>结果</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${items.map(renderStockStorageRow).join("")}
+    </tbody>
+  `;
+}
+
+function renderStockStorageRow(item) {
+  const hot = item.hot_storage || {};
+  const cold = item.cold_backup || {};
+  const daily = item.daily_coverage || {};
+  const health = item.health_status || "unknown";
+  return `
+    <tr>
+      <td>
+        <strong>${escapeHtml(item.name || "-")}</strong>
+        <code>${escapeHtml(item.ts_code || "-")}</code>
+      </td>
+      <td>
+        <strong>${escapeHtml(formatNumber(hot.dataset_rows || 0))}</strong>
+        <p>${escapeHtml(String(hot.dataset_count || 0))} 个数据集 · 日K ${escapeHtml(formatNumber(hot.daily_rows || 0))}</p>
+      </td>
+      <td>
+        <strong>${escapeHtml(daily.status || "-")}</strong>
+        <p>${escapeHtml(formatStockDate(daily.last_indexed_date || hot.latest_daily_date || ""))} · 缺口 ${escapeHtml(String(daily.missing_days ?? 0))}</p>
+      </td>
+      <td>
+        <strong>${escapeHtml(formatNumber(cold.uploaded_days || 0))} 天</strong>
+        <p>${escapeHtml(formatStockDate(cold.first_trade_date || ""))} - ${escapeHtml(formatStockDate(cold.last_uploaded_date || cold.last_trade_date || ""))}</p>
+      </td>
+      <td>
+        <strong>${escapeHtml(formatStockTimestamp(item.last_health_check_at || ""))}</strong>
+        <p>${escapeHtml(item.health_message || "-")}</p>
+      </td>
+      <td><span class="stock-health-pill is-${escapeAttr(health)}">${escapeHtml(stockHealthLabel(health))}</span></td>
+    </tr>
+  `;
+}
+
+function compareStockStorageRows(left, right, key) {
+  if (key === "ts_code") return String(left.ts_code || "").localeCompare(String(right.ts_code || ""));
+  if (key === "updated_at") return String(right.updated_at || "").localeCompare(String(left.updated_at || ""));
+  if (key === "cold_uploaded_days") return Number(right.cold_backup?.uploaded_days || 0) - Number(left.cold_backup?.uploaded_days || 0);
+  if (key === "dataset_rows") return Number(right.hot_storage?.dataset_rows || 0) - Number(left.hot_storage?.dataset_rows || 0);
+  const weight = { danger: 0, warning: 1, unknown: 2, ok: 3 };
+  return (weight[left.health_status] ?? 2) - (weight[right.health_status] ?? 2)
+    || String(left.ts_code || "").localeCompare(String(right.ts_code || ""));
+}
+
+function stockHealthLabel(status) {
+  return {
+    ok: "正常",
+    warning: "关注",
+    danger: "异常",
+    unknown: "未知",
+  }[status] || status || "未知";
+}
+
 function formatStockDateRange(dateRange) {
   const start = formatStockDate(dateRange?.start_date);
   const end = formatStockDate(dateRange?.end_date);
@@ -401,16 +572,20 @@ function formatStockDateRange(dateRange) {
 function formatStockDate(value) {
   const text = String(value || "").trim();
   const match = text.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (!match) return text;
-  return `${match[1]}-${match[2]}-${match[3]}`;
+  if (match) return `${Number(match[2])}月${Number(match[3])}日`;
+  const plain = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (plain) return `${Number(plain[2])}月${Number(plain[3])}日`;
+  return text;
 }
 
 function formatStockTimestamp(value) {
   const text = String(value || "").trim();
   const match = text.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
-  if (!match) return text || "-";
-  const [, , month, day, hour, minute] = match;
-  return `${Number(month)}月${Number(day)}日 ${hour}:${minute}`;
+  if (match) {
+    const [, , month, day, hour, minute] = match;
+    return `${Number(month)}月${Number(day)}日${hour}:${minute}`;
+  }
+  return formatNewsDateTime(text);
 }
 
 function compareStockRows(left, right, key) {
@@ -638,17 +813,17 @@ function formatNewsDateTime(value) {
   if (!text) return "-";
   const compact = text.match(/^(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})/);
   if (compact) {
-    return `${Number(compact[2])}月${Number(compact[3])}日 ${compact[4]}:${compact[5]}`;
+    return `${Number(compact[2])}月${Number(compact[3])}日${compact[4]}:${compact[5]}`;
   }
+  const plain = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})/);
+  if (plain) return `${Number(plain[2])}月${Number(plain[3])}日${plain[4].padStart(2, "0")}:${plain[5]}`;
   const date = new Date(text);
   if (Number.isNaN(date.getTime())) return text;
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${month}月${day}日${hour}:${minute}`;
 }
 
 function renderList(items) {
@@ -811,6 +986,18 @@ function csvCell(value) {
 
 function formatNumber(value) {
   return Number(value || 0).toLocaleString("zh-CN");
+}
+
+function formatBytes(value) {
+  let bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let index = 0;
+  while (bytes >= 1024 && index < units.length - 1) {
+    bytes /= 1024;
+    index += 1;
+  }
+  return `${bytes >= 10 || index === 0 ? bytes.toFixed(0) : bytes.toFixed(1)} ${units[index]}`;
 }
 
 function escapeHtml(value) {

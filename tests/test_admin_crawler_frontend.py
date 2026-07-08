@@ -94,13 +94,17 @@ def test_politico_browser_is_paused_while_guardian_worker_stays_focused():
 def test_all_admin_pages_link_to_crawler_console():
     for path in STATIC.glob("admin-*.html"):
         html = path.read_text(encoding="utf-8")
+        if '<nav class="admin-nav"' not in html:
+            continue
         assert "/admin-crawler.html" in html, path.name
-        assert "/admin-audit.html" in html, path.name
+        assert "/admin-ops.html" in html, path.name
 
 
 def test_admin_navigation_keeps_closed_entries_after_crawler_and_kaipanla_inside_data_sources():
     for path in STATIC.glob("admin-*.html"):
         html = path.read_text(encoding="utf-8")
+        if '<nav class="admin-nav"' not in html:
+            continue
         nav = html.split('<nav class="admin-nav"', 1)[1].split("</nav>", 1)[0]
         assert nav.rfind("数据分发") > nav.rfind("/admin-crawler.html"), path.name
         assert nav.rfind("Agent Gateway") > nav.rfind("数据分发"), path.name
@@ -111,21 +115,22 @@ def test_admin_navigation_keeps_closed_entries_after_crawler_and_kaipanla_inside
     assert "新闻资料库" not in stock_data
 
 
-def test_admin_audit_log_is_dedicated_page_not_account_card():
+def test_admin_audit_log_is_inside_system_governance_page_not_account_card():
     accounts = (STATIC / "admin-accounts.html").read_text(encoding="utf-8")
-    audit = (STATIC / "admin-audit.html").read_text(encoding="utf-8")
+    ops = (STATIC / "admin-ops.html").read_text(encoding="utf-8")
+    audit_redirect = (STATIC / "admin-audit.html").read_text(encoding="utf-8")
     script = (STATIC / "admin.js").read_text(encoding="utf-8")
     styles = (STATIC / "styles.css").read_text(encoding="utf-8")
 
     assert "id=\"adminAuditTable\"" not in accounts
     assert "<h4>审计日志</h4>" not in accounts
-    assert "data-admin-audit-page=\"true\"" in audit
-    assert "<title>审计日志 - NewsCrawler</title>" in audit
-    assert "class=\"active\" href=\"/admin-audit.html\"" in audit
-    assert "id=\"adminAuditTable\"" in audit
-    assert "后台操作记录" in audit
+    assert "<title>系统治理 - NewsCrawler</title>" in ops
+    assert "data-governance-tab=\"audit-log\"" in ops
+    assert "id=\"adminAuditTable\"" in ops
+    assert "后台操作记录" in ops
+    assert "/admin-ops.html#audit-log" in audit_redirect
     assert "adminAuditPage" in script
-    assert "id=\"adminSummary\"" not in audit
+    assert "id=\"adminSummary\"" not in ops
     assert "最近 80 条后台权限操作" not in script
     assert ".audit-log-card .audit-table-wrap" in styles
 
@@ -141,6 +146,11 @@ def test_data_console_accounts_excludes_analysis_only_vip_and_demo_tools():
     assert "测试账号" not in accounts
     assert "VIP 兑换码" not in accounts
     assert "生成 VIP 码" not in accounts
+    assert 'data-account-tab="accounts"' in accounts
+    assert 'data-account-tab="archives"' in accounts
+    assert "archiveUsersTable" in accounts
+    assert "/admin-accounts.html#archives" in archives
+    assert "archiveUsersTable" not in archives
     assert "VIP 到期" not in admin_script
     assert "发 VIP" not in admin_script
     assert "撤 VIP" not in admin_script
@@ -150,6 +160,41 @@ def test_data_console_accounts_excludes_analysis_only_vip_and_demo_tools():
     assert "兑换 VIP" not in index
     assert "redeemVipCode" not in app_script
     assert "VIP 使用系统 API" not in app_script
+
+
+def test_archived_accounts_page_keeps_registered_and_demo_archive_path_wired():
+    root = STATIC.parents[1]
+    accounts = (STATIC / "admin-accounts.html").read_text(encoding="utf-8")
+    archive_script = (STATIC / "admin-archives.js").read_text(encoding="utf-8")
+    web = (root / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+
+    assert "archiveDemoCount" in accounts
+    assert "<h4>归档账号</h4>" in accounts
+    assert "/api/admin/archives" in archive_script
+    assert "archiveItems(payload)" in archive_script
+    assert "...(payload.demo_accounts || [])" in archive_script
+    assert "临时账号" in archive_script
+    assert '"items": items' in web
+    assert 'parsed.path == "/api/admin/archives"' in web
+
+
+def test_admin_time_labels_hide_year_and_seconds_in_frontend_formatters():
+    scripts = {
+        "admin.js": (STATIC / "admin.js").read_text(encoding="utf-8"),
+        "admin-archives.js": (STATIC / "admin-archives.js").read_text(encoding="utf-8"),
+        "admin-ops.js": (STATIC / "admin-ops.js").read_text(encoding="utf-8"),
+        "admin-data-audit.js": (STATIC / "admin-data-audit.js").read_text(encoding="utf-8"),
+        "admin-crawler.js": (STATIC / "admin-crawler.js").read_text(encoding="utf-8"),
+        "admin-news.js": (STATIC / "admin-news.js").read_text(encoding="utf-8"),
+        "app.js": (STATIC / "app.js").read_text(encoding="utf-8"),
+    }
+
+    for name, script in scripts.items():
+        assert 'toLocaleString("zh-CN", { hour12: false })' not in script, name
+        assert 'Intl.DateTimeFormat("zh-CN"' not in script, name
+    assert "`${Number(month)}月${Number(day)}日${hour}:${minute}`" in scripts["admin.js"]
+    assert "`${Number(compact[2])}月${Number(compact[3])}日${compact[4]}:${compact[5]}`" in scripts["admin-ops.js"]
+    assert "`${Number(text.slice(4, 6))}月${Number(text.slice(6, 8))}日`" in scripts["app.js"]
 
 
 def test_regular_user_data_console_is_limited_and_read_only():
@@ -245,20 +290,58 @@ def test_market_fetch_uses_shared_stock_search():
 
 
 def test_stock_task_history_drives_task_detail_panel():
-    html = (STATIC / "admin-news.html").read_text(encoding="utf-8")
+    html = (STATIC / "admin-ops.html").read_text(encoding="utf-8")
+    accounts = (STATIC / "admin-accounts.html").read_text(encoding="utf-8")
     script = (STATIC / "admin.js").read_text(encoding="utf-8")
     styles = (STATIC / "styles.css").read_text(encoding="utf-8")
 
+    assert "id=\"adminTasksTable\"" not in accounts
+    assert "<h4>后台任务</h4>" not in accounts
+    assert "后台任务历史" in html
     assert "<h4>任务详情</h4>" in html
     assert "选择右侧任务查看执行事件。" in html
+    assert "id=\"adminTasksTable\"" in html
     assert "adminTaskItems" in script
     assert "selectedAdminTaskId" in script
     assert "data-admin-task-id" in script
     assert "renderSelectedAdminTaskDetail" in script
     assert "formatTaskDetail" in script
     assert 'idle_stock_prefetch: "空闲预抓"' in script
+    assert 'data_random_audit: "数据抽检"' in script
     assert "taskEventStageLabel" in script
     assert ".spider-task-history-card tbody tr.selected td" in styles
+
+
+def test_governance_data_audit_has_idle_scheduler_controls():
+    html = (STATIC / "admin-ops.html").read_text(encoding="utf-8")
+    ops_script = (STATIC / "admin-ops.js").read_text(encoding="utf-8")
+    audit_script = (STATIC / "admin-data-audit.js").read_text(encoding="utf-8")
+
+    assert "空闲自动抽检" in html
+    assert "dataAuditSchedulerEnabled" in html
+    assert "dataAuditSchedulerIdleSeconds" in html
+    assert "dataAuditSchedulerIntervalSeconds" in html
+    assert "/api/admin/data-random-audit/scheduler" in audit_script
+    assert "refreshDataAuditScheduler" in audit_script
+    assert "runDataAuditSchedulerNow" in audit_script
+    assert 'data_random_audit: "数据抽检"' in ops_script
+
+
+def test_governance_ops_layout_keeps_tables_aligned():
+    script = (STATIC / "admin-ops.js").read_text(encoding="utf-8")
+    styles = (STATIC / "styles.css").read_text(encoding="utf-8")
+
+    assert "align-items: start" in styles
+    assert ".ops-grid > .admin-card" in styles
+    assert "table-layout: fixed" in styles
+    assert "align-content: start" in styles
+    assert "<colgroup>" in script
+    assert "OPS_STATUS_HINTS" in script
+    assert "OPS_EVENT_LABELS" in script
+    assert "title=\"${escapeAttr(statusHint(safeStatus))}\"" in script
+    assert "ops-log-command" in script
+    assert ".ops-log-command" in styles
+    assert ".ops-log-cell {\n  display: grid" not in styles
 
 
 def test_market_and_data_source_pages_have_explicit_layout_sections():
@@ -295,6 +378,12 @@ def test_market_and_data_source_pages_have_explicit_layout_sections():
     assert "NEWS LIBRARY" in news_sources
     assert "data-source-overview-grid" in stock_sources
     assert ".data-source-overview-grid" in styles
+    assert 'data-stock-tab="storage"' in stock_sources
+    assert "stockStorageTable" in stock_sources
+    assert "idlePrefetchRefreshDays" in stock_sources
+    assert "/api/admin/stock-storage-status" in (STATIC / "admin-news.js").read_text(encoding="utf-8")
+    assert "stock_storage_status_snapshot" in (STATIC.parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    assert ".stock-health-pill" in styles
 
 
 def test_news_source_distribution_uses_chinese_publisher_label():

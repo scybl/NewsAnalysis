@@ -1469,9 +1469,20 @@ function datasetsHaveDailyRows(datasets, datasetRows = {}) {
 
 function formatUpdateTime(value) {
   if (!value) return "未知";
-  const match = String(value).match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
-  if (!match) return value;
-  return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]}`;
+  const text = String(value).trim();
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})/);
+  if (compact) return `${Number(compact[2])}月${Number(compact[3])}日${compact[4]}:${compact[5]}`;
+  const plain = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})/);
+  if (plain) return `${Number(plain[2])}月${Number(plain[3])}日${plain[4].padStart(2, "0")}:${plain[5]}`;
+  const date = new Date(text);
+  if (!Number.isNaN(date.getTime())) {
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    const hour = String(date.getHours()).padStart(2, "0");
+    const minute = String(date.getMinutes()).padStart(2, "0");
+    return `${month}月${day}日${hour}:${minute}`;
+  }
+  return text;
 }
 
 function formatDurationText(seconds) {
@@ -2611,7 +2622,9 @@ function cellText(value) {
 
 function formatDateLabel(value) {
   const text = String(value || "");
-  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  if (/^\d{8}$/.test(text)) return `${Number(text.slice(4, 6))}月${Number(text.slice(6, 8))}日`;
+  const plain = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (plain) return `${Number(plain[2])}月${Number(plain[3])}日`;
   return text;
 }
 

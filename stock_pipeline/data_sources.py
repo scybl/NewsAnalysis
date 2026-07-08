@@ -37,7 +37,7 @@ class StandardDataType:
 DEFAULT_PROVIDERS: dict[str, DataSourceProvider] = {
     "stock_data": DataSourceProvider(
         "stock_data",
-        "个股数据",
+        "股票资料包",
         "active",
         "个股维度主存储，读取 stock_data 数据库中的股票资料包、日 K、财务、估值和分析资料包。",
         ["stock_profile", "stock_daily_quote", "finance_summary", "valuation", "analysis_dossier"],

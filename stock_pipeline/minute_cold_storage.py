@@ -20,6 +20,8 @@ DEFAULT_CACHE_ROOT = PROJECT_ROOT / "local_data" / "cache" / "stock_minute" / "v
 HOT_DAYS = 15
 CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024
 EXPECTED_DAY_ROWS = 240
+LEGACY_REMOTE_DIRS = ("objects", "objects_month", "objects_stock")
+LEGACY_STORAGE_OBJECTS = ("day_jsonl", "month_jsonl", "stock_jsonl")
 
 
 @dataclass(frozen=True)
@@ -264,14 +266,18 @@ def archive_month_shards(
     limit: int | None = None,
     upload: bool = False,
     workers: int = 1,
+    complete_months_only: bool = False,
+    closed_months_only: bool = False,
     runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
 ) -> dict[str, Any]:
     cfg = config or build_config()
     cursor = bucket_collection.find(query, {"_id": 0}).sort([("source", 1), ("ts_code", 1), ("trade_date", 1)])
     worker_count = max(1, int(workers or 1))
+    current_month = today_yyyymmdd()[:6]
     exported_days = 0
     skipped_days = 0
     uploaded_files = 0
+    skipped_months = 0
     failed: list[dict[str, str]] = []
     touched: set[tuple[str, str]] = set()
     current_key: tuple[str, str, str] | None = None
@@ -280,6 +286,30 @@ def archive_month_shards(
     def process_month(key: tuple[str, str, str], buckets: list[dict[str, Any]]) -> dict[str, Any]:
         source, ts_code, month = key
         try:
+            if closed_months_only and month >= current_month:
+                return {
+                    "ok": True,
+                    "skipped_days": len(buckets),
+                    "skipped_months": 1,
+                    "exported_days": 0,
+                    "uploaded_files": 0,
+                    "touched": (source, ts_code),
+                    "skip_reason": "open_month",
+                }
+            if complete_months_only:
+                completeness = _month_completeness(ts_code, month, buckets)
+                if not completeness["complete"]:
+                    return {
+                        "ok": True,
+                        "skipped_days": len(buckets),
+                        "skipped_months": 1,
+                        "exported_days": 0,
+                        "uploaded_files": 0,
+                        "touched": (source, ts_code),
+                        "skip_reason": completeness["reason"],
+                        "missing_days": completeness["missing_days"],
+                        "partial_days": completeness["partial_days"],
+                    }
             expected_relative_path = month_object_relative_path(ts_code, month).as_posix()
             trade_dates = [normalize_trade_date(str(bucket.get("trade_date") or "")) for bucket in buckets]
             already_uploaded = day_index.count_documents(
@@ -312,13 +342,14 @@ def archive_month_shards(
             return {"ok": False, "failed": {"source": source, "ts_code": ts_code, "trade_month": month, "error": str(exc)}}
 
     def collect_result(result: dict[str, Any]) -> None:
-        nonlocal exported_days, skipped_days, uploaded_files
+        nonlocal exported_days, skipped_days, uploaded_files, skipped_months
         if not result.get("ok"):
             failed.append(result.get("failed") or {"error": "unknown"})
             return
         exported_days += int(result.get("exported_days") or 0)
         skipped_days += int(result.get("skipped_days") or 0)
         uploaded_files += int(result.get("uploaded_files") or 0)
+        skipped_months += int(result.get("skipped_months") or 0)
         touched_item = result.get("touched")
         if isinstance(touched_item, tuple) and len(touched_item) == 2:
             touched.add(touched_item)
@@ -380,10 +411,13 @@ def archive_month_shards(
         "ok": not failed,
         "exported_days": exported_days,
         "skipped_days": skipped_days,
+        "skipped_months": skipped_months,
         "uploaded_files": uploaded_files,
         "failed": failed[:20],
         "coverage_updated": len(coverage_rows),
         "storage_object": "month_jsonl",
+        "complete_months_only": complete_months_only,
+        "closed_months_only": closed_months_only,
     }
 
 
@@ -652,6 +686,155 @@ def archive_stock_year_shards(
     }
 
 
+def archive_complete_months_as_stock_year_shards(
+    bucket_collection: Any,
+    day_index: Any,
+    coverage: Any,
+    *,
+    query: dict[str, Any],
+    config: MinuteColdConfig | None = None,
+    limit: int | None = None,
+    upload: bool = True,
+    remove_local_after_upload: bool = True,
+    progress: bool = False,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    """Upload cold data on a monthly cadence while keeping the yearly object layout."""
+    cfg = config or build_config()
+    current_month = today_yyyymmdd()[:6]
+    stock_keys = _stock_keys_for_query(bucket_collection, query)
+    exported_days = 0
+    skipped_days = 0
+    skipped_months = 0
+    uploaded_files = 0
+    failed: list[dict[str, str]] = []
+    touched: set[tuple[str, str]] = set()
+
+    def log(event: str, **fields: Any) -> None:
+        if not progress:
+            return
+        payload = " ".join(f"{name}={value}" for name, value in fields.items() if value is not None)
+        print(f"[minute-cold][{_utc_now_text()}] {event} {payload}".rstrip(), flush=True)
+
+    for source, ts_code in stock_keys:
+        if limit and exported_days >= int(limit):
+            break
+        try:
+            stock_query = {**query, "source": source, "ts_code": ts_code}
+            buckets = list(bucket_collection.find(stock_query, {"_id": 0}).sort([("trade_date", 1)]))
+            if not buckets:
+                continue
+            buckets_by_month: dict[str, list[dict[str, Any]]] = {}
+            for bucket in buckets:
+                trade_date = normalize_trade_date(str(bucket.get("trade_date") or ""))
+                month = trade_date[:6]
+                buckets_by_month.setdefault(month, []).append(bucket)
+            included_by_year: dict[str, list[dict[str, Any]]] = {}
+            for month, month_buckets in sorted(buckets_by_month.items()):
+                if month >= current_month:
+                    skipped_days += len(month_buckets)
+                    skipped_months += 1
+                    log("skip_month", source=source, ts_code=ts_code, month=month, reason="open_month", days=len(month_buckets))
+                    continue
+                completeness = _month_completeness(ts_code, month, month_buckets)
+                if not completeness["complete"]:
+                    skipped_days += len(month_buckets)
+                    skipped_months += 1
+                    log(
+                        "skip_month",
+                        source=source,
+                        ts_code=ts_code,
+                        month=month,
+                        reason=completeness["reason"],
+                        days=len(month_buckets),
+                    )
+                    continue
+                included_by_year.setdefault(month[:4], []).extend(month_buckets)
+            for year, year_buckets in sorted(included_by_year.items()):
+                expected_relative_path = stock_year_object_relative_path(source, ts_code, year).as_posix()
+                trade_dates = [normalize_trade_date(str(bucket.get("trade_date") or "")) for bucket in year_buckets]
+                already_uploaded = day_index.count_documents(
+                    {
+                        "source": source,
+                        "ts_code": ts_code,
+                        "trade_date": {"$in": trade_dates},
+                        "relative_path": expected_relative_path,
+                        "storage_object": "stock_year_jsonl",
+                        "upload_status": "uploaded",
+                    }
+                )
+                if already_uploaded == len(year_buckets):
+                    skipped_days += len(year_buckets)
+                    log("skip_year", source=source, ts_code=ts_code, year=year, days=len(year_buckets), reason="already_uploaded")
+                    continue
+                object_info = write_stock_year_object(year_buckets, cfg, source=source, ts_code=ts_code, trade_year=year)
+                status = "local"
+                if upload:
+                    upload_one(object_info["local_path"], object_info["remote_path"], cfg, runner=runner)
+                    status = "uploaded"
+                    uploaded_files += 1
+                    if remove_local_after_upload:
+                        Path(object_info["local_path"]).unlink(missing_ok=True)
+                for bucket in year_buckets:
+                    upsert_day_index(day_index, bucket, object_info, upload_status=status)
+                exported_days += len(year_buckets)
+                touched.add((source, ts_code))
+                log("index_done", source=source, ts_code=ts_code, year=year, days=len(year_buckets), status=status)
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"source": source, "ts_code": ts_code, "error": str(exc)})
+            log("failed", source=source, ts_code=ts_code, error=str(exc))
+    coverage_rows = [refresh_coverage(day_index, coverage, source=source, ts_code=ts_code) for source, ts_code in sorted(touched)]
+    return {
+        "ok": not failed,
+        "exported_days": exported_days,
+        "skipped_days": skipped_days,
+        "skipped_months": skipped_months,
+        "uploaded_files": uploaded_files,
+        "failed": failed[:20],
+        "coverage_updated": len(coverage_rows),
+        "storage_object": "stock_year_jsonl",
+        "complete_months_only": True,
+        "closed_months_only": True,
+    }
+
+
+def cleanup_legacy_remote_objects(
+    day_index: Any,
+    *,
+    source: str,
+    config: MinuteColdConfig | None = None,
+    dry_run: bool = True,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> dict[str, Any]:
+    cfg = config or build_config()
+    legacy_index_days = day_index.count_documents({"source": source, "storage_object": {"$in": list(LEGACY_STORAGE_OBJECTS)}})
+    stock_year_uploaded_days = day_index.count_documents(
+        {"source": source, "storage_object": "stock_year_jsonl", "upload_status": "uploaded"}
+    )
+    remote_paths = [f"{cfg.remote_root}/{name}" for name in LEGACY_REMOTE_DIRS]
+    if legacy_index_days and not dry_run:
+        raise RuntimeError(f"仍有 {legacy_index_days} 个旧结构索引日，拒绝删除百度网盘旧目录。请先完成按年结构补传。")
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+    if not dry_run:
+        for remote_path in remote_paths:
+            try:
+                delete_remote_path(remote_path, cfg, runner=runner)
+                deleted.append(remote_path)
+            except Exception as exc:  # noqa: BLE001 - keep cleanup report complete
+                failed.append({"remote_path": remote_path, "error": str(exc)})
+    return {
+        "ok": not failed,
+        "dry_run": dry_run,
+        "source": source,
+        "legacy_index_days": legacy_index_days,
+        "stock_year_uploaded_days": stock_year_uploaded_days,
+        "planned_remote_paths": remote_paths,
+        "deleted_remote_paths": deleted,
+        "failed": failed,
+    }
+
+
 def _stock_keys_for_query(bucket_collection: Any, query: dict[str, Any]) -> list[tuple[str, str]]:
     pipeline = [
         {"$match": query},
@@ -721,6 +904,28 @@ def _minute_gap_candidate_codes(coverage: Any, source: str) -> list[str]:
     return sorted(dict.fromkeys(code for code in codes if code))
 
 
+def _month_completeness(ts_code: str, month: str, buckets: list[dict[str, Any]]) -> dict[str, Any]:
+    reference_dates = [date for date in _local_reference_trade_dates(ts_code) if date.startswith(month)]
+    if not reference_dates:
+        return {"complete": False, "reason": "no_reference_dates", "missing_days": [], "partial_days": []}
+    bucket_by_date = {
+        normalize_trade_date(str(bucket.get("trade_date") or "")): bucket
+        for bucket in buckets
+        if bucket.get("trade_date")
+    }
+    missing_days = [date for date in reference_dates if date not in bucket_by_date]
+    partial_days = [
+        date
+        for date in reference_dates
+        if date in bucket_by_date and int(bucket_by_date[date].get("row_count") or 0) < EXPECTED_DAY_ROWS
+    ]
+    if missing_days:
+        return {"complete": False, "reason": "missing_days", "missing_days": missing_days[:20], "partial_days": partial_days[:20]}
+    if partial_days:
+        return {"complete": False, "reason": "partial_days", "missing_days": [], "partial_days": partial_days[:20]}
+    return {"complete": True, "reason": "", "missing_days": [], "partial_days": []}
+
+
 def _local_reference_trade_dates(ts_code: str) -> list[str]:
     try:
         from .local_data_mongo import read_mongo_full_data
@@ -754,7 +959,7 @@ def cleanup_archived_buckets(
     codes: list[str] | None = None,
     dry_run: bool = True,
 ) -> dict[str, Any]:
-    archived_objects = ["stock_jsonl", "stock_year_jsonl"]
+    archived_objects = ["day_jsonl", "stock_jsonl", "stock_year_jsonl"]
     query: dict[str, Any] = {"source": source, "storage_object": {"$in": archived_objects}, "upload_status": "uploaded"}
     if codes:
         query["ts_code"] = {"$in": [normalize_ts_code(code) for code in codes]}
@@ -1145,6 +1350,21 @@ def download_one(
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(f"bdpan download failed for {remote_path}: {detail}")
+
+
+def delete_remote_path(
+    remote_path: str,
+    config: MinuteColdConfig | None = None,
+    *,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> None:
+    cfg = config or build_config()
+    command = [cfg.bdpan_bin, "--no-check-update", "rm", "-f", remote_path]
+    run = runner or (lambda args: subprocess.run(args, check=False, text=True, capture_output=True))
+    result = run(command)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"bdpan rm failed for {remote_path}: {detail}")
 
 
 def read_jsonl_rows(path: Path) -> list[dict[str, Any]]:

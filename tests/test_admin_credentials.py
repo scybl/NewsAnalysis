@@ -34,6 +34,13 @@ def test_credentials_page_does_not_render_secret_values():
     assert "BAIDU_TRANSLATE_SECRET_KEY" in web
     assert "baidu_translate_app_id.txt" in web
     assert "baidu_translate_secret_key.txt" in web
+    assert '"source": "Baidu Netdisk"' in web
+    assert "BAIDU_PAN_APP_KEY" in web
+    assert "BAIDU_PAN_SECRET_KEY" in web
+    assert "BAIDU_PAN_SIGN_KEY" in web
+    assert "BAIDU_PAN_ACCESS_TOKEN" in web
+    assert "BAIDU_PAN_REFRESH_TOKEN" in web
+    assert "BAIDU_PAN_SECRET_DIR" in web
     assert '"source": "Bloomberg"' in web
     assert '"source": "Politico"' in web
     assert '"status_note": "暂停维护"' in web
@@ -56,11 +63,15 @@ def test_credentials_page_does_not_render_secret_values():
 def test_audit_log_follows_credentials_in_admin_nav():
     for path in STATIC.glob("admin-*.html"):
         html = path.read_text(encoding="utf-8")
+        if '<nav class="admin-nav"' not in html:
+            continue
         nav = html.split('<nav class="admin-nav"', 1)[1].split("</nav>", 1)[0]
         assert "/admin-credentials.html" in nav, path.name
         assert nav.rfind("/admin-credentials.html") > nav.rfind("/admin-crawler.html"), path.name
-        assert nav.rfind("/admin-audit.html") > nav.rfind("/admin-credentials.html"), path.name
-        assert nav.rfind("数据分发") > nav.rfind("/admin-audit.html"), path.name
+        assert "/admin-archives.html" not in nav, path.name
+        assert "/admin-audit.html" not in nav, path.name
+        assert "/admin-data-audit.html" not in nav, path.name
+        assert nav.rfind("数据分发") > nav.rfind("/admin-credentials.html"), path.name
 
 
 def test_compose_uses_page_managed_crawler_secret_files():

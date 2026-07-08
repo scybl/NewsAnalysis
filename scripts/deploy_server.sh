@@ -30,6 +30,12 @@ DEPLOY_BACKUP_ROOT="${DEPLOY_BACKUP_ROOT:-${DEPLOY_PATH%/}.backups}"
 DEPLOY_SSH_CONNECT_TIMEOUT="${DEPLOY_SSH_CONNECT_TIMEOUT:-10}"
 DEPLOY_SSH_ALIVE_INTERVAL="${DEPLOY_SSH_ALIVE_INTERVAL:-15}"
 DEPLOY_SSH_ALIVE_COUNT_MAX="${DEPLOY_SSH_ALIVE_COUNT_MAX:-3}"
+DEPLOY_PROTECT_RUNNING_JOBS="${DEPLOY_PROTECT_RUNNING_JOBS:-1}"
+DEPLOY_FORCE_RESTART="${DEPLOY_FORCE_RESTART:-0}"
+DEPLOY_SKIP_RESTART="${DEPLOY_SKIP_RESTART:-0}"
+DEPLOY_BUILD_WHEN_PROTECTED="${DEPLOY_BUILD_WHEN_PROTECTED:-1}"
+DEPLOY_PROTECTED_PROCESS_REGEX="${DEPLOY_PROTECTED_PROCESS_REGEX:-python .*stock_pipeline market minute-cold|stock_pipeline market minute-cold|bdpan .* upload|minute-cold-stock-year-upload}"
+DEPLOY_PROTECTED_TASK_STATUSES="${DEPLOY_PROTECTED_TASK_STATUSES:-queued running stopping}"
 SSH_TARGET="${DEPLOY_USER}@${DEPLOY_HOST}"
 SSH_OPTS=(
   -p "${DEPLOY_PORT}"
@@ -159,8 +165,147 @@ if [[ "${DEPLOY_USE_SUDO}" == "1" ]]; then
   ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "sudo -n chown '${DEPLOY_USER}' '${DEPLOY_PATH}/.env' && sudo -n chmod 600 '${DEPLOY_PATH}/.env'"
 fi
 echo "[5/8] Remote .env is ready."
-echo "[6/8] Rebuilding and starting Docker services..."
-ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && RELEASE_VERSION='${RELEASE_VERSION}' RELEASE_TIME='${RELEASE_TIME}' docker compose -f docker-compose.prod.yml up -d --build"
+
+if [[ "${DEPLOY_SKIP_RESTART}" == "1" ]]; then
+  echo "[6/8] Building Docker images without restarting running containers..."
+  ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && RELEASE_VERSION='${RELEASE_VERSION}' RELEASE_TIME='${RELEASE_TIME}' docker compose -f docker-compose.prod.yml build"
+  echo "[7/8] Reading Docker service status..."
+  ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && docker compose -f docker-compose.prod.yml ps"
+  echo "[8/8] Restart skipped by DEPLOY_SKIP_RESTART=1."
+  echo "Uploaded and built ${RELEASE_VERSION}, but did not activate it because restart was explicitly disabled."
+  echo "To activate the new image later, run: qiangzhitongbu"
+  exit 0
+fi
+
+if [[ "${DEPLOY_PROTECT_RUNNING_JOBS}" == "1" && "${DEPLOY_FORCE_RESTART}" != "1" ]]; then
+  echo "[6/8] Checking protected long-running jobs before container restart..."
+  set +e
+  PROTECTED_JOBS="$(
+    ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && PROTECTED_REGEX='${DEPLOY_PROTECTED_PROCESS_REGEX}' PROTECTED_TASK_STATUSES='${DEPLOY_PROTECTED_TASK_STATUSES}' python3 - <<'PY'
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+protected_statuses = {item.strip() for item in os.environ.get(\"PROTECTED_TASK_STATUSES\", \"queued running stopping\").split() if item.strip()}
+admin_tasks_path = Path(\"local_data/admin_tasks.json\")
+if admin_tasks_path.exists():
+    try:
+        payload = json.loads(admin_tasks_path.read_text(encoding=\"utf-8\"))
+        tasks = payload.get(\"tasks\", []) if isinstance(payload, dict) else payload
+        active = [
+            item for item in tasks
+            if isinstance(item, dict) and str(item.get(\"status\") or \"\") in protected_statuses
+        ]
+        if active:
+            print(\"[admin tasks]\")
+            for item in active[-20:]:
+                print(
+                    f\"{item.get('task_id', '')} status={item.get('status', '')} \"
+                    f\"kind={item.get('kind', '')} title={item.get('title', '')} updated={item.get('updated_at', '')}\"
+                )
+    except Exception as exc:
+        print(f\"[admin tasks read failed] {exc}\")
+
+protected_regex = os.environ.get(\"PROTECTED_REGEX\", \"\")
+if protected_regex:
+    host_matches = subprocess.run([\"pgrep\", \"-af\", protected_regex], text=True, capture_output=True, check=False).stdout.strip()
+    if host_matches:
+        print(\"[host]\")
+        print(host_matches)
+
+    protected_services = [\"web\", \"minute-cold-worker\"]
+    for service in protected_services:
+        service_ps = subprocess.run(
+            [\"docker\", \"compose\", \"-f\", \"docker-compose.prod.yml\", \"ps\", \"-q\", service],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if not service_ps.stdout.strip():
+            continue
+        ps_output = subprocess.run(
+            [\"docker\", \"compose\", \"-f\", \"docker-compose.prod.yml\", \"exec\", \"-T\", service, \"sh\", \"-lc\", \"ps -eo pid,args 2>/dev/null || ps aux\"],
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+        web_matches = \"\\n\".join(line for line in ps_output.splitlines() if re.search(protected_regex, line))
+        if web_matches:
+            print(f\"[{service} container]\")
+            print(web_matches)
+
+    news_services = [\"news-crawler\", \"news-crawler-guardian\"]
+    for service in news_services:
+        service_ps = subprocess.run(
+            [\"docker\", \"compose\", \"-f\", \"docker-compose.prod.yml\", \"ps\", \"-q\", service],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if not service_ps.stdout.strip():
+            continue
+        runs_query = subprocess.run(
+            [\"docker\", \"compose\", \"-f\", \"docker-compose.prod.yml\", \"exec\", \"-T\", service, \"news-crawler\", \"runs\", \"--limit\", \"20\"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if runs_query.returncode != 0:
+            continue
+        try:
+            rows = json.loads(runs_query.stdout or \"[]\")
+        except Exception:
+            rows = []
+        active_runs = [
+            row for row in rows
+            if isinstance(row, dict) and str(row.get(\"status\") or \"\") in protected_statuses
+        ]
+        if active_runs:
+            print(f\"[{service} active crawl_runs]\")
+            for row in active_runs[:10]:
+                print(
+                    f\"{row.get('run_id', '')} status={row.get('status', '')} \"
+                    f\"source={row.get('source_name', '')} started={row.get('started_at', '')}\"
+                )
+PY"
+  )"
+  PROTECTED_CHECK_STATUS=$?
+  set -e
+  if [[ "${PROTECTED_CHECK_STATUS}" != "0" ]]; then
+    echo "[6/8] Protected job check failed; aborting before restart." >&2
+    exit "${PROTECTED_CHECK_STATUS}"
+  fi
+  if [[ -n "${PROTECTED_JOBS}" ]]; then
+    echo "[6/8] Protected long-running job detected. Docker containers will NOT be restarted."
+    echo "${PROTECTED_JOBS}"
+    if [[ "${DEPLOY_BUILD_WHEN_PROTECTED}" == "1" ]]; then
+      echo "[6/8] Building images only; the running containers keep using the previous image until the next restart."
+      ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && RELEASE_VERSION='${RELEASE_VERSION}' RELEASE_TIME='${RELEASE_TIME}' docker compose -f docker-compose.prod.yml build"
+      echo "[7/8] Reading Docker service status..."
+      ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && docker compose -f docker-compose.prod.yml ps"
+      echo "[8/8] Restart skipped to protect running jobs."
+      echo "Uploaded and built ${RELEASE_VERSION}, but did not activate it because protected jobs are running."
+      echo "After the task finishes, run: qiangzhitongbu"
+      exit 0
+    fi
+    echo "Deployment stopped before restart. Set DEPLOY_FORCE_RESTART=1 to override." >&2
+    exit 42
+  fi
+fi
+
+COMPOSE_UP_FLAGS="-d --build"
+if [[ "${DEPLOY_FORCE_RESTART}" == "1" ]]; then
+  COMPOSE_UP_FLAGS="${COMPOSE_UP_FLAGS} --force-recreate"
+fi
+
+if [[ "${DEPLOY_FORCE_RESTART}" == "1" ]]; then
+  echo "[6/8] Rebuilding and force-recreating Docker services..."
+else
+  echo "[6/8] Rebuilding and starting Docker services..."
+fi
+ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && RELEASE_VERSION='${RELEASE_VERSION}' RELEASE_TIME='${RELEASE_TIME}' docker compose -f docker-compose.prod.yml up ${COMPOSE_UP_FLAGS}"
 echo "[6/8] Docker compose up finished."
 echo "[7/8] Reading Docker service status..."
 ssh "${SSH_OPTS[@]}" "${SSH_TARGET}" "cd '${DEPLOY_PATH}' && docker compose -f docker-compose.prod.yml ps"

@@ -48,6 +48,7 @@ class Settings:
     idle_stock_prefetch_enabled: bool = True
     idle_stock_prefetch_seconds: int = 1800
     idle_stock_prefetch_minutes_enabled: bool = True
+    idle_stock_prefetch_refresh_existing_days: int = 14
     stock_agent_engine: str = "legacy"
     stock_agent_template: str = "native"
     stock_analysis_execution_enabled: bool = False
@@ -89,6 +90,7 @@ def get_settings(require_deepseek: bool = False) -> Settings:
         idle_stock_prefetch_enabled=os.getenv("IDLE_STOCK_PREFETCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"},
         idle_stock_prefetch_seconds=int(os.getenv("IDLE_STOCK_PREFETCH_SECONDS", "1800")),
         idle_stock_prefetch_minutes_enabled=os.getenv("IDLE_STOCK_PREFETCH_MINUTES_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"},
+        idle_stock_prefetch_refresh_existing_days=int(os.getenv("IDLE_STOCK_PREFETCH_REFRESH_EXISTING_DAYS", "14")),
         stock_agent_engine=os.getenv("STOCK_AGENT_ENGINE", "legacy").strip().lower() or "legacy",
         stock_agent_template=os.getenv("STOCK_AGENT_TEMPLATE", "native").strip().lower() or "native",
         stock_analysis_execution_enabled=os.getenv("STOCK_ANALYSIS_EXECUTION_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"},

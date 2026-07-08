@@ -11,6 +11,8 @@ from .akshare_client import AkshareClient
 from .composite_client import FallbackStockClient
 from .collector import StockDataCollector
 from .config import PROJECT_ROOT, get_settings
+from .daily_k_coverage import ensure_indexes as ensure_daily_k_coverage_indexes
+from .daily_k_coverage import inspect_daily_k_coverage_gaps, refresh_daily_k_coverage
 from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
 from .kaipanla import (
@@ -22,13 +24,12 @@ from .kaipanla import (
     run_kaipanla_feature,
     validate_kaipanla_integration,
 )
-from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE
-from .minute_cold_storage import archive_buckets as archive_minute_buckets
-from .minute_cold_storage import archive_month_shards as archive_minute_month_shards
-from .minute_cold_storage import archive_stock_shards as archive_minute_stock_shards
+from .market_dimensions import MARKET_COLLECTIONS, MARKET_DATABASE, STOCK_COLLECTIONS, STOCK_DATABASE
+from .minute_cold_storage import archive_complete_months_as_stock_year_shards
 from .minute_cold_storage import archive_stock_year_shards as archive_minute_stock_year_shards
 from .minute_cold_storage import build_config as build_minute_cold_config
 from .minute_cold_storage import cleanup_archived_buckets as cleanup_minute_archived_buckets
+from .minute_cold_storage import cleanup_legacy_remote_objects
 from .minute_cold_storage import ensure_indexes as ensure_minute_cold_indexes
 from .minute_cold_storage import inspect_minute_coverage_gaps
 from .minute_cold_storage import prune_cache as prune_minute_cache
@@ -114,6 +115,14 @@ def main() -> None:
     tushare_kline_parser.add_argument("--limit", type=int, default=None, help="最多抓取多少只股票，适合先小批量验证")
     tushare_kline_parser.add_argument("--workers", type=int, default=1, help="并发抓取股票数，建议 2-4，过高可能触发 Tushare 限流")
     tushare_kline_parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "local_data" / "tushare_kline"), help="输出目录")
+    daily_k_coverage_parser = market_subparsers.add_parser("daily-k-coverage", help="审计和记录股票日K覆盖缺口")
+    daily_k_coverage_parser.add_argument("action", choices=["inspect-gaps", "refresh"], help="inspect-gaps 只读输出缺口；refresh 写入 stock_daily_coverage")
+    daily_k_coverage_parser.add_argument("--codes", default="", help="股票代码，逗号分隔；不传则处理全部")
+    daily_k_coverage_parser.add_argument("--start-date", default="", help="检查开始日期 YYYYMMDD；默认按股票上市日期/现有日K范围")
+    daily_k_coverage_parser.add_argument("--end-date", default="", help="检查结束日期 YYYYMMDD；默认今天")
+    daily_k_coverage_parser.add_argument("--limit", type=int, default=None, help="最多检查多少只股票，适合先小批量验证")
+    daily_k_coverage_parser.add_argument("--max-samples", type=int, default=20, help="每类缺口最多输出多少个样例日期")
+    daily_k_coverage_parser.add_argument("--mongo-db", default=None, help="MongoDB 数据库名，默认 stock_data")
     ths_minute_parser = market_subparsers.add_parser("ths-minute", help="抓取指定股票分钟行情到 MongoDB；默认使用通达信/mootdx")
     ths_minute_parser.add_argument("--codes", required=True, help="股票代码，逗号分隔，例如 000001,300033 或 000001.SZ,300033.SZ")
     ths_minute_parser.add_argument("--source", choices=["tdx", "pytdx_history", "ths", "auto"], default="pytdx_history", help="分钟行情源：pytdx_history 为历史分时价量构造分钟 K；tdx 为近期真实分钟 K；ths 为同花顺最新日分时")
@@ -127,17 +136,15 @@ def main() -> None:
     minute_cold_parser.add_argument(
         "action",
         choices=[
-            "export",
-            "export-upload",
-            "export-month-upload",
-            "export-stock-upload",
+            "export-complete-month-upload",
             "export-stock-year-upload",
             "cleanup-archived",
+            "cleanup-legacy-remote",
             "inspect-gaps",
             "retrieve",
             "prune-cache",
         ],
-        help="export 只写本地对象和索引；export-stock-year-upload 按股票年份分片同步；inspect-gaps 检查分时覆盖缺口；retrieve 单日取回缓存",
+        help="export-stock-year-upload 按股票年份同步；export-complete-month-upload 按完整闭合月份触发并写入按年对象；inspect-gaps 检查分时覆盖缺口；retrieve 单日取回缓存",
     )
     minute_cold_parser.add_argument("--codes", default="", help="股票代码，逗号分隔；不传则处理全部")
     minute_cold_parser.add_argument("--source", default="pytdx_history", help="数据源，默认 pytdx_history")
@@ -146,8 +153,8 @@ def main() -> None:
     minute_cold_parser.add_argument("--end-date", default="", help="inspect-gaps 检查结束日期 YYYYMMDD；默认今天")
     minute_cold_parser.add_argument("--limit", type=int, default=None, help="最多处理多少个股票日 bucket，适合先小批量验证")
     minute_cold_parser.add_argument("--max-samples", type=int, default=20, help="inspect-gaps 每类缺口最多输出多少个样例日期")
-    minute_cold_parser.add_argument("--workers", type=int, default=1, help="export-month-upload 并发上传月分片数，建议 2-4")
-    minute_cold_parser.add_argument("--execute", action="store_true", help="cleanup-archived 默认只 dry-run；传入该参数才真正删除")
+    minute_cold_parser.add_argument("--workers", type=int, default=1, help="保留参数，当前按年冷备份上传不使用并发月分片")
+    minute_cold_parser.add_argument("--execute", action="store_true", help="清理命令默认只 dry-run；传入该参数才真正删除")
     minute_cold_parser.add_argument("--mongo-db", default=None, help="MongoDB 数据库名，默认 market_data")
     minute_cold_parser.add_argument("--collection", default=None, help="分钟 bucket 集合名，默认 minute_day_buckets")
 
@@ -395,6 +402,43 @@ def run_market(args: argparse.Namespace) -> None:
     if args.market_command == "minute-cold":
         run_minute_cold(args)
         return
+    if args.market_command == "daily-k-coverage":
+        run_daily_k_coverage(args)
+        return
+
+
+def run_daily_k_coverage(args: argparse.Namespace) -> None:
+    try:
+        import pymongo
+    except ImportError as exc:
+        raise RuntimeError("缺少 pymongo，无法连接 MongoDB。") from exc
+
+    database = args.mongo_db or STOCK_DATABASE
+    mongo_config = build_ths_minute_config(database=database, collection=STOCK_COLLECTIONS["rows"])
+    client = pymongo.MongoClient(mongo_config.mongo_uri, serverSelectionTimeoutMS=8000)
+    try:
+        db = client[database]
+        rows = db[STOCK_COLLECTIONS["rows"]]
+        metadata = db[STOCK_COLLECTIONS["metadata"]]
+        coverage = db[STOCK_COLLECTIONS["daily_coverage"]]
+        ensure_daily_k_coverage_indexes(coverage, pymongo)
+        codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
+        common_kwargs = {
+            "codes": codes,
+            "start_date": args.start_date,
+            "end_date": args.end_date,
+            "limit": args.limit,
+            "max_samples": args.max_samples,
+        }
+        if args.action == "inspect-gaps":
+            result = inspect_daily_k_coverage_gaps(rows, metadata, coverage, **common_kwargs)
+        elif args.action == "refresh":
+            result = refresh_daily_k_coverage(rows, metadata, coverage, **common_kwargs)
+        else:
+            raise ValueError(f"不支持的日K覆盖动作：{args.action}")
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    finally:
+        client.close()
 
 
 def run_minute_cold(args) -> None:
@@ -414,25 +458,7 @@ def run_minute_cold(args) -> None:
         day_index = db[MARKET_COLLECTIONS["minute_day_index"]]
         coverage = db[MARKET_COLLECTIONS["minute_coverage"]]
         ensure_minute_cold_indexes(day_index, coverage, pymongo)
-        if args.action in {"export", "export-upload"}:
-            query: dict[str, Any] = {"source": args.source}
-            codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
-            if codes:
-                query["ts_code"] = {"$in": codes}
-            if args.trade_date:
-                query["trade_date"] = args.trade_date.replace("-", "")
-            result = archive_minute_buckets(
-                buckets,
-                day_index,
-                coverage,
-                query=query,
-                config=config,
-                limit=args.limit,
-                upload=args.action == "export-upload",
-            )
-            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-            return
-        if args.action == "export-month-upload":
+        if args.action == "export-complete-month-upload":
             query = {"source": args.source}
             codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
             if codes:
@@ -440,7 +466,7 @@ def run_minute_cold(args) -> None:
             if args.trade_date:
                 trade_date = args.trade_date.replace("-", "")
                 query["trade_date"] = {"$regex": f"^{trade_date[:6]}"}
-            result = archive_minute_month_shards(
+            result = archive_complete_months_as_stock_year_shards(
                 buckets,
                 day_index,
                 coverage,
@@ -448,23 +474,7 @@ def run_minute_cold(args) -> None:
                 config=config,
                 limit=args.limit,
                 upload=True,
-                workers=args.workers,
-            )
-            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-            return
-        if args.action == "export-stock-upload":
-            query = {"source": args.source}
-            codes = [normalize_ts_code(item.strip()) for item in args.codes.split(",") if item.strip()]
-            if codes:
-                query["ts_code"] = {"$in": codes}
-            result = archive_minute_stock_shards(
-                buckets,
-                day_index,
-                coverage,
-                query=query,
-                config=config,
-                limit=args.limit,
-                upload=True,
+                progress=True,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
             return
@@ -496,6 +506,15 @@ def run_minute_cold(args) -> None:
                 source=args.source,
                 hot_days=config.hot_days,
                 codes=codes,
+                dry_run=not args.execute,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+            return
+        if args.action == "cleanup-legacy-remote":
+            result = cleanup_legacy_remote_objects(
+                day_index,
+                source=args.source,
+                config=config,
                 dry_run=not args.execute,
             )
             print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

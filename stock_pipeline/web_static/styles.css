@@ -7694,6 +7694,44 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
   gap: 0;
 }
 
+.governance-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 0 18px 18px;
+  border-bottom: 1px solid #eef1f5;
+  padding-top: 2px;
+}
+
+.governance-tabs button {
+  min-height: 40px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  padding: 0 14px;
+  background: transparent;
+  color: #667085;
+  font-weight: 900;
+}
+
+.governance-tabs button:hover {
+  color: #175cd3;
+}
+
+.governance-tabs button.active {
+  border-bottom-color: #2f80ed;
+  color: #175cd3;
+}
+
+.governance-pane,
+.account-pane {
+  display: none;
+}
+
+.governance-pane.active,
+.account-pane.active {
+  display: block;
+}
+
 .ops-summary-kpis .is-ok strong {
   color: #11845b;
 }
@@ -7709,9 +7747,15 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 .ops-grid {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(280px, 0.9fr);
+  align-items: start;
   gap: 18px;
   padding: 18px;
   border-bottom: 1px solid #eef1f5;
+}
+
+.ops-grid > .admin-card {
+  min-width: 0;
+  align-self: start;
 }
 
 .ops-data-card {
@@ -7724,6 +7768,29 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 
 .ops-table-wrap table {
   min-width: 920px;
+  table-layout: fixed;
+}
+
+.ops-task-col {
+  width: 24%;
+}
+
+.ops-status-col,
+.ops-running-col {
+  width: 10%;
+}
+
+.ops-resource-col,
+.ops-progress-col {
+  width: 12%;
+}
+
+.ops-event-col {
+  width: 20%;
+}
+
+.ops-log-col {
+  width: 12%;
 }
 
 .ops-table-wrap th,
@@ -7745,18 +7812,18 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 
 .ops-detail-cell,
 .ops-log-cell {
-  max-width: 260px;
+  max-width: 220px;
   overflow-wrap: anywhere;
 }
 
-.ops-log-cell {
+.ops-log-command {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
 }
 
-.ops-log-cell code {
+.ops-log-command code {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -7766,7 +7833,7 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
   white-space: nowrap;
 }
 
-.ops-log-cell button {
+.ops-log-command button {
   min-width: 54px;
   height: 30px;
   border: 1px solid #d0d7e2;
@@ -7824,7 +7891,59 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 
 .ops-error-list {
   display: grid;
+  align-content: start;
   gap: 10px;
+}
+
+.stock-storage-card .stock-data-table-wrap table {
+  min-width: 1080px;
+  table-layout: fixed;
+}
+
+.stock-storage-card td p {
+  margin: 4px 0 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.stock-health-pill {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  border: 1px solid #d0d7e2;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #f8fafc;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.stock-health-pill.is-ok {
+  border-color: #b7e4ce;
+  background: #ecfdf3;
+  color: #067647;
+}
+
+.stock-health-pill.is-warning {
+  border-color: #fedf89;
+  background: #fffaeb;
+  color: #b54708;
+}
+
+.stock-health-pill.is-danger {
+  border-color: #fecdca;
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.stock-health-pill.is-unknown {
+  border-color: #d0d7e2;
+  background: #f8fafc;
+  color: #667085;
 }
 
 .ops-error-item {
@@ -7896,12 +8015,25 @@ html.theme-dark .ops-data-grid article {
   border-color: rgba(148, 163, 184, 0.22);
 }
 
+html.theme-dark .governance-tabs {
+  border-bottom-color: rgba(148, 163, 184, 0.22);
+}
+
+html.theme-dark .governance-tabs button {
+  color: #a8b3c7;
+}
+
+html.theme-dark .governance-tabs button:hover,
+html.theme-dark .governance-tabs button.active {
+  color: #93c5fd;
+}
+
 html.theme-dark .ops-error-item,
 html.theme-dark .ops-data-grid article {
   background: rgba(255, 255, 255, 0.035);
 }
 
-html.theme-dark .ops-log-cell code,
+html.theme-dark .ops-log-command code,
 html.theme-dark .ops-error-item strong,
 html.theme-dark .ops-data-grid strong {
   color: #e5e7eb;
@@ -7913,10 +8045,205 @@ html.theme-dark .ops-table-wrap small {
   color: #a8b3c7;
 }
 
-html.theme-dark .ops-log-cell button {
+html.theme-dark .ops-log-command button {
   border-color: rgba(148, 163, 184, 0.28);
   background: rgba(255, 255, 255, 0.04);
   color: #e5e7eb;
+}
+
+.data-audit-console {
+  display: grid;
+  gap: 18px;
+}
+
+.data-audit-config-card,
+.data-audit-console > .admin-card {
+  margin: 0 18px;
+}
+
+.data-audit-controls {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(180px, 1fr) minmax(220px, 1.2fr);
+  gap: 14px;
+  align-items: end;
+}
+
+.data-audit-controls label {
+  display: grid;
+  gap: 8px;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.data-audit-controls input[type="number"],
+.data-audit-controls input[inputmode="numeric"] {
+  min-height: 42px;
+}
+
+.data-audit-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.data-audit-check,
+.data-audit-anomaly,
+.data-audit-detail-group {
+  border: 1px solid #eef1f5;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfcfd;
+}
+
+.data-audit-check.is-warning,
+.data-audit-anomaly.is-warning {
+  border-color: #fedf89;
+  background: #fffbf0;
+}
+
+.data-audit-check.is-danger,
+.data-audit-anomaly.is-danger {
+  border-color: #fecdca;
+  background: #fff8f7;
+}
+
+.data-audit-check-head {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.data-audit-check-head strong {
+  display: block;
+  color: #17202a;
+  font-size: 14px;
+}
+
+.data-audit-check-head p {
+  margin: 5px 0 0;
+  color: #667085;
+  line-height: 1.45;
+}
+
+.data-audit-check dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 14px 0 0;
+}
+
+.data-audit-check dl > div {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.data-audit-check dt {
+  color: #667085;
+  font-size: 12px;
+}
+
+.data-audit-check dd {
+  margin: 4px 0 0;
+  color: #17202a;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.data-audit-anomaly-list,
+.data-audit-detail-list {
+  display: grid;
+  gap: 12px;
+}
+
+.data-audit-anomaly > div {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.data-audit-anomaly strong {
+  color: #17202a;
+}
+
+.data-audit-anomaly p,
+.data-audit-detail-group h4 {
+  margin: 6px 0 10px;
+  color: #667085;
+}
+
+.data-audit-anomaly pre,
+.data-audit-detail-group pre {
+  max-height: 240px;
+  margin: 8px 0 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.data-audit-detail-group > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+html.theme-dark .data-audit-check,
+html.theme-dark .data-audit-anomaly,
+html.theme-dark .data-audit-detail-group {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+html.theme-dark .data-audit-check.is-warning,
+html.theme-dark .data-audit-anomaly.is-warning {
+  border-color: rgba(251, 191, 36, 0.38);
+  background: rgba(251, 191, 36, 0.07);
+}
+
+html.theme-dark .data-audit-check.is-danger,
+html.theme-dark .data-audit-anomaly.is-danger {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(248, 113, 113, 0.07);
+}
+
+html.theme-dark .data-audit-check-head strong,
+html.theme-dark .data-audit-check dd,
+html.theme-dark .data-audit-anomaly strong {
+  color: #e5e7eb;
+}
+
+html.theme-dark .data-audit-check-head p,
+html.theme-dark .data-audit-check dt,
+html.theme-dark .data-audit-controls label,
+html.theme-dark .data-audit-anomaly p,
+html.theme-dark .data-audit-detail-group h4,
+html.theme-dark .data-audit-anomaly pre,
+html.theme-dark .data-audit-detail-group pre {
+  color: #a8b3c7;
+}
+
+html.theme-dark .data-audit-check dl > div,
+html.theme-dark .data-audit-anomaly pre,
+html.theme-dark .data-audit-detail-group pre {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+@media (max-width: 760px) {
+  .data-audit-controls,
+  .data-audit-check-grid,
+  .data-audit-detail-group > div {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 980px) {

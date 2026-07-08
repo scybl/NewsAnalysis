@@ -101,3 +101,79 @@ def test_list_local_stock_summaries_does_not_query_row_ranges(monkeypatch, tmp_p
 
     assert summary["count"] == 1
     assert summary["items"][0]["daily_date_range"] == {"start_date": "19900101", "end_date": "20260701"}
+
+
+def test_stock_storage_status_snapshot_combines_hot_and_cold_indexes(monkeypatch):
+    monkeypatch.setattr(
+        stock_storage,
+        "list_local_stock_summaries",
+        lambda: {
+            "count": 1,
+            "total_dataset_rows": 260,
+            "total_minute_rows": 0,
+            "items": [
+                {
+                    "ts_code": "000001.SZ",
+                    "name": "平安银行",
+                    "industry": "银行",
+                    "market": "主板",
+                    "updated_at": "20260707_210000",
+                    "dataset_count": 3,
+                    "dataset_rows": {"daily": 240, "income": 20},
+                    "daily_date_range": {"start_date": "20250101", "end_date": "20260707"},
+                    "latest_daily_date": "20260707",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        stock_storage,
+        "_daily_coverage_by_code",
+        lambda: {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "status": "ok",
+                "last_indexed_date": "20260707",
+                "missing_days": 0,
+                "partial_days": 0,
+                "updated_at": "2026-07-07T21:10:00Z",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        stock_storage,
+        "_minute_coverage_by_code",
+        lambda: {
+            "000001.SZ": {
+                "ts_code": "000001.SZ",
+                "has_minute_data": True,
+                "first_trade_date": "20250102",
+                "last_trade_date": "20260707",
+                "archived_days": 300,
+                "archived_rows": 72000,
+                "partial_days": 0,
+                "updated_at": "2026-07-07T22:00:00Z",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        stock_storage,
+        "_minute_upload_by_code",
+        lambda: {
+            "000001.SZ": {
+                "indexed_days": 300,
+                "uploaded_days": 300,
+                "uploaded_rows": 72000,
+                "uploaded_bytes": 1024,
+                "last_uploaded_date": "20260707",
+            }
+        },
+    )
+
+    snapshot = stock_storage.stock_storage_status_snapshot()
+
+    item = snapshot["items"][0]
+    assert item["health_status"] == "ok"
+    assert item["hot_storage"]["dataset_rows"] == 260
+    assert item["cold_backup"]["uploaded_days"] == 300
+    assert snapshot["summary"]["cold_uploaded_days"] == 300

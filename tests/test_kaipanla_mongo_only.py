@@ -314,6 +314,75 @@ def test_kaipanla_daily_overview_groups_latest_records_by_trade_date(monkeypatch
     assert "longhubang_stock_detail" not in {item["feature"] for item in latest_overview["sections"]["capital"]}
 
 
+def test_kaipanla_daily_overview_falls_back_to_previous_trade_date(monkeypatch):
+    collection = FakeKaipanlaCollection(
+        [
+            {
+                "record_id": "daily:20260707",
+                "feature": "daily_data",
+                "label": "交易日完整数据",
+                "category": "核心数据",
+                "saved_at": "20260707_214500",
+                "run_id": "run",
+                "path": "mongodb://market/kaipanla_results/daily_data/20260707",
+                "ok": True,
+                "trade_date": "20260707",
+                "params": {"date": "2026-07-07"},
+                "payload": {"result": {"涨停": 36, "跌停": 1}},
+            }
+        ]
+    )
+    monkeypatch.setattr(kaipanla, "_kaipanla_collection", lambda database=kaipanla.DEFAULT_DB: FakeContext(collection))
+
+    overview = kaipanla.kaipanla_daily_overview("2026-07-08")
+
+    assert overview["date"] == "20260707"
+    assert overview["display_date"] == "2026-07-07"
+    assert overview["requested_date"] == "20260708"
+    assert overview["fallback"] is True
+    assert {item["label"]: item["value"] for item in overview["kpis"]}["涨停"] == 36
+
+
+def test_kaipanla_daily_overview_ignores_incomplete_current_packet(monkeypatch):
+    collection = FakeKaipanlaCollection(
+        [
+            {
+                "record_id": "daily:20260707",
+                "feature": "daily_data",
+                "label": "交易日完整数据",
+                "category": "核心数据",
+                "saved_at": "20260707_214500",
+                "run_id": "run",
+                "path": "mongodb://market/kaipanla_results/daily_data/20260707",
+                "ok": True,
+                "trade_date": "20260707",
+                "params": {"date": "2026-07-07"},
+                "payload": {"result": {"涨停": 36, "跌停": 1}},
+            },
+            {
+                "record_id": "mood:20260708",
+                "feature": "realtime_market_mood",
+                "label": "实时市场情绪",
+                "category": "实时监控",
+                "saved_at": "20260708_100000",
+                "run_id": "run",
+                "path": "mongodb://market/kaipanla_results/realtime_market_mood/20260708",
+                "ok": True,
+                "trade_date": "20260708",
+                "params": {},
+                "payload": {"result": {"score": 50}},
+            },
+        ]
+    )
+    monkeypatch.setattr(kaipanla, "_kaipanla_collection", lambda database=kaipanla.DEFAULT_DB: FakeContext(collection))
+
+    overview = kaipanla.kaipanla_daily_overview("")
+
+    assert overview["date"] == "20260707"
+    assert overview["fallback"] is False
+    assert {item["label"]: item["value"] for item in overview["kpis"]}["涨停"] == 36
+
+
 def test_kaipanla_daily_overview_extracts_temperature_kpis(monkeypatch):
     collection = FakeKaipanlaCollection(
         [
@@ -425,6 +494,60 @@ def test_kaipanla_daily_overview_counts_broken_limit_up_rows(monkeypatch):
     kpis = {item["label"]: item["value"] for item in overview["kpis"]}
 
     assert kpis["炸板"] == 24
+
+
+def test_kaipanla_daily_overview_keeps_explicit_zero_limit_height(monkeypatch):
+    collection = FakeKaipanlaCollection(
+        [
+            {
+                "record_id": "limit:zero",
+                "feature": "consecutive_limit_up",
+                "label": "连板梯队详细",
+                "category": "连板梯队",
+                "saved_at": "20260707_214515",
+                "run_id": "run",
+                "path": "mongodb://market/kaipanla_results/consecutive_limit_up/zero",
+                "ok": True,
+                "params": {"date": "2026-07-07"},
+                "payload": {"result": {"date": "2026-07-07", "max_consecutive": 0, "ladder": {}}},
+            }
+        ]
+    )
+    monkeypatch.setattr(kaipanla, "_kaipanla_collection", lambda database=kaipanla.DEFAULT_DB: FakeContext(collection))
+
+    overview = kaipanla.kaipanla_daily_overview("2026-07-07")
+    highest = next(item for item in overview["kpis"] if item["label"] == "最高连板")
+
+    assert highest["value"] == 0
+    assert highest["status"] == "available"
+    assert "接口" in highest["hint"]
+
+
+def test_kaipanla_daily_overview_marks_unprovided_limit_height_missing(monkeypatch):
+    collection = FakeKaipanlaCollection(
+        [
+            {
+                "record_id": "limit:empty",
+                "feature": "limit_up_ladder",
+                "label": "连板梯队",
+                "category": "传统接口",
+                "saved_at": "20260707_214512",
+                "run_id": "run",
+                "path": "mongodb://market/kaipanla_results/limit_up_ladder/empty",
+                "ok": True,
+                "params": {"date": "2026-07-07"},
+                "payload": {"result": {"type": "dataframe", "columns": [], "rows": [], "row_count": 0}},
+            }
+        ]
+    )
+    monkeypatch.setattr(kaipanla, "_kaipanla_collection", lambda database=kaipanla.DEFAULT_DB: FakeContext(collection))
+
+    overview = kaipanla.kaipanla_daily_overview("2026-07-07")
+    highest = next(item for item in overview["kpis"] if item["label"] == "最高连板")
+
+    assert highest["value"] == "-"
+    assert highest["status"] == "missing"
+    assert "待数据齐全" in highest["hint"]
 
 
 def test_repair_kaipanla_overview_history_saves_valid_live_records_and_archives_old(monkeypatch):

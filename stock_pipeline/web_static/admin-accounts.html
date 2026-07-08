@@ -30,11 +30,7 @@
           </a>
           <a href="/admin-ops.html">
             <span class="admin-nav-icon">O</span>
-            <span>运维状态</span>
-          </a>
-          <a href="/admin-archives.html">
-            <span class="admin-nav-icon">R</span>
-            <span>归档账号</span>
+            <span>系统治理</span>
           </a>
           <a href="/admin-market.html">
             <span class="admin-nav-icon">S</span>
@@ -51,10 +47,6 @@
           <a href="/admin-credentials.html">
             <span class="admin-nav-icon">K</span>
             <span>凭据管理</span>
-          </a>
-          <a href="/admin-audit.html">
-            <span class="admin-nav-icon">L</span>
-            <span>审计日志</span>
           </a>
           <a class="admin-nav-unavailable" aria-disabled="true" title="数据分发维护中，暂不可用">
             <span class="admin-nav-icon">D</span>
@@ -78,18 +70,23 @@
           <div>
             <span class="admin-kicker">ACCESS</span>
             <h1>账户管理</h1>
-            <p>查看用户用量，生成 3 天有效的一次性邀请码。</p>
+            <p>管理注册账号、邀请码和已归档账号。</p>
           </div>
           <div class="admin-actions">
             <button id="createInviteBtn" class="primary-action" type="button">生成邀请码</button>
           </div>
         </header>
 
+        <nav class="account-tabs governance-tabs" aria-label="账户管理视图">
+          <button class="active" type="button" data-account-tab="accounts">用户与邀请码</button>
+          <button type="button" data-account-tab="archives">归档账号</button>
+        </nav>
+
+        <div class="account-pane active" data-account-pane="accounts">
         <div class="admin-panel">
           <div class="admin-kpis">
             <div><span>注册用户</span><strong id="adminUserCount">-</strong></div>
             <div><span>可用邀请码</span><strong id="adminInviteCount">-</strong></div>
-            <div><span>后台任务</span><strong id="adminTaskCount">-</strong></div>
             <div><span>权限模式</span><strong>数据端</strong></div>
           </div>
           <div id="adminSummary" class="admin-summary"></div>
@@ -105,15 +102,6 @@
             </section>
             <section class="admin-card">
               <div class="admin-card-head">
-                <h4>后台任务</h4>
-                <span>定时、爬虫与多 Agent，服务重启后保留</span>
-              </div>
-              <div class="admin-table-wrap">
-                <table id="adminTasksTable"></table>
-              </div>
-            </section>
-            <section class="admin-card">
-              <div class="admin-card-head">
                 <h4>邀请码</h4>
                 <span>一次性，3 天内有效</span>
               </div>
@@ -123,8 +111,45 @@
             </section>
           </div>
         </div>
+        </div>
+
+        <div class="account-pane" data-account-pane="archives">
+        <div class="admin-panel">
+          <div class="admin-page-head account-archive-head">
+            <div>
+              <span class="admin-kicker">ARCHIVE</span>
+              <h2>归档账号</h2>
+              <p>查看已冻结留存的账号。这里不展示密码哈希或 API Key 密文，只展示安全摘要。</p>
+            </div>
+            <div class="admin-actions archive-search">
+              <input id="archiveSearchInput" type="search" placeholder="搜索账号、归档人、原因..." />
+              <button id="archiveSearchBtn" class="primary-action" type="button">搜索</button>
+            </div>
+          </div>
+          <div class="admin-kpis">
+            <div><span>归档总数</span><strong id="archiveTotalCount">-</strong></div>
+            <div><span>注册用户</span><strong id="archiveUserCount">-</strong></div>
+            <div><span>临时账号</span><strong id="archiveDemoCount">-</strong></div>
+            <div><span>当前筛选</span><strong id="archiveQueryLabel">全部</strong></div>
+          </div>
+          <div id="archiveSummary" class="admin-summary"></div>
+          <div class="admin-grid archive-grid">
+            <section class="admin-card archive-card-wide">
+              <div class="admin-card-head">
+                <h4>归档账号</h4>
+                <span>冻结但留存账号、Key 状态和用量快照</span>
+              </div>
+              <div class="admin-table-wrap">
+                <table id="archiveUsersTable"></table>
+              </div>
+            </section>
+          </div>
+        </div>
+        </div>
       </section>
     </main>
-    <script src="/admin.js?v=task-history-20260619"></script>
+    <script src="/admin.js?v=time-archive-20260708-v1"></script>
+    <script src="/admin-archives.js?v=time-archive-20260708-v1"></script>
+    <script src="/admin-account-tabs.js?v=account-tabs-20260708-v1"></script>
   </body>
 </html>

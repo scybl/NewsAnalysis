@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>运维状态 - NewsCrawler</title>
+    <title>系统治理 - NewsCrawler</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -30,11 +30,7 @@
           </a>
           <a class="active" href="/admin-ops.html">
             <span class="admin-nav-icon">O</span>
-            <span>运维状态</span>
-          </a>
-          <a href="/admin-archives.html">
-            <span class="admin-nav-icon">R</span>
-            <span>归档账号</span>
+            <span>系统治理</span>
           </a>
           <a href="/admin-market.html">
             <span class="admin-nav-icon">S</span>
@@ -51,10 +47,6 @@
           <a href="/admin-credentials.html">
             <span class="admin-nav-icon">K</span>
             <span>凭据管理</span>
-          </a>
-          <a href="/admin-audit.html">
-            <span class="admin-nav-icon">L</span>
-            <span>审计日志</span>
           </a>
           <a class="admin-nav-unavailable" aria-disabled="true" title="数据分发维护中，暂不可用">
             <span class="admin-nav-icon">D</span>
@@ -76,15 +68,22 @@
       <section class="admin-workspace">
         <header class="admin-page-head ops-page-head">
           <div>
-            <span class="admin-kicker">OPS STATUS</span>
-            <h1>运维状态</h1>
-            <p id="opsMeta">正在读取状态...</p>
+            <span class="admin-kicker">SYSTEM GOVERNANCE</span>
+            <h1>系统治理</h1>
+            <p id="opsMeta">统一查看运维状态、数据抽检和审计日志。</p>
           </div>
           <div class="admin-actions">
             <button id="opsRefreshBtn" class="primary-action" type="button">刷新</button>
           </div>
         </header>
 
+        <nav class="governance-tabs" aria-label="系统治理视图">
+          <button class="active" type="button" data-governance-tab="ops">运维状态</button>
+          <button type="button" data-governance-tab="data-audit">数据抽检</button>
+          <button type="button" data-governance-tab="audit-log">审计日志</button>
+        </nav>
+
+        <div class="governance-pane active" data-governance-pane="ops">
         <section class="admin-panel ops-console">
           <div id="opsSummary" class="admin-kpis ops-summary-kpis"></div>
 
@@ -121,11 +120,154 @@
             </div>
             <div id="opsData" class="ops-data-grid"></div>
           </section>
+
+          <section class="admin-section-block ops-task-history-section">
+            <div class="admin-section-heading">
+              <div><span>TASK HISTORY</span><h2>后台任务历史</h2></div>
+              <p>追溯定时、手动、爬虫、抽检和多 Agent 后台任务的执行事件。</p>
+            </div>
+            <div class="market-observability-grid">
+              <section class="admin-card spider-log-card">
+                <div class="admin-card-head">
+                  <h4>任务详情</h4>
+                  <span id="spiderLogFile">选择任务查看事件</span>
+                </div>
+                <pre id="spiderLogs" class="spider-logs">选择右侧任务查看执行事件。</pre>
+              </section>
+              <section class="admin-card spider-task-history-card">
+                <div class="admin-card-head">
+                  <h4>运行记录</h4>
+                  <span>定时与手动任务，服务重启后保留</span>
+                </div>
+                <div class="admin-table-wrap">
+                  <table id="adminTasksTable"></table>
+                </div>
+              </section>
+            </div>
+          </section>
         </section>
+        </div>
+
+        <div class="governance-pane" data-governance-pane="data-audit">
+          <section class="admin-panel data-audit-console">
+            <section class="admin-card data-audit-scheduler-card">
+              <div class="admin-card-head">
+                <div>
+                  <h4>空闲自动抽检</h4>
+                  <p id="dataAuditSchedulerMeta">服务器空闲时自动运行轻量随机抽检。</p>
+                </div>
+                <div class="admin-actions">
+                  <button id="dataAuditSchedulerRunBtn" type="button">立即后台抽检</button>
+                  <button id="dataAuditSchedulerSaveBtn" class="primary-action" type="button">保存定时</button>
+                </div>
+              </div>
+              <div class="data-audit-controls">
+                <label class="check-row">
+                  <input id="dataAuditSchedulerEnabled" type="checkbox" />
+                  <span>启用空闲自动抽检</span>
+                </label>
+                <label>
+                  <span>空闲触发</span>
+                  <input id="dataAuditSchedulerIdleSeconds" type="number" min="300" step="60" value="1800" />
+                </label>
+                <label>
+                  <span>最小间隔</span>
+                  <input id="dataAuditSchedulerIntervalSeconds" type="number" min="1800" step="300" value="21600" />
+                </label>
+                <label>
+                  <span>每类抽样</span>
+                  <input id="dataAuditSchedulerSampleSize" type="number" min="1" max="200" value="20" />
+                </label>
+                <label>
+                  <span>冷备份取回</span>
+                  <input id="dataAuditSchedulerColdReadSamples" type="number" min="0" max="10" value="0" />
+                </label>
+              </div>
+              <div class="spider-state-grid data-audit-scheduler-state-grid">
+                <div><span>距空闲触发</span><strong id="dataAuditSchedulerIdleRemaining">-</strong></div>
+                <div><span>距间隔触发</span><strong id="dataAuditSchedulerIntervalRemaining">-</strong></div>
+                <div><span>上次运行</span><strong id="dataAuditSchedulerLastRun">-</strong></div>
+                <div><span>上次结果</span><strong id="dataAuditSchedulerLastResult">-</strong></div>
+              </div>
+            </section>
+
+            <section class="admin-card data-audit-config-card">
+              <div class="admin-card-head">
+                <div>
+                  <h4>抽检参数</h4>
+                  <p id="dataAuditMeta">随机检查服务器热数据、冷备份索引、数据缺口和样本可读性。</p>
+                </div>
+                <button id="dataAuditRunBtn" class="primary-action" type="button">开始抽检</button>
+              </div>
+              <div class="data-audit-controls">
+                <label>
+                  <span>每类抽样</span>
+                  <input id="dataAuditSampleSize" type="number" min="1" max="200" value="20" />
+                </label>
+                <label>
+                  <span>随机种子</span>
+                  <input id="dataAuditSeed" inputmode="numeric" placeholder="留空则随机" />
+                </label>
+                <label class="check-row">
+                  <input id="dataAuditColdRead" type="checkbox" />
+                  <span>取回 2 个分时冷备份样本</span>
+                </label>
+              </div>
+            </section>
+
+            <div id="dataAuditSummary" class="admin-kpis data-audit-summary"></div>
+
+            <section class="admin-card">
+              <div class="admin-card-head">
+                <div>
+                  <h4>检查项</h4>
+                  <p id="dataAuditChecksMeta">尚未运行</p>
+                </div>
+              </div>
+              <div id="dataAuditChecks" class="data-audit-check-grid"></div>
+            </section>
+
+            <section class="admin-card">
+              <div class="admin-card-head">
+                <div>
+                  <h4>异常明细</h4>
+                  <p id="dataAuditAnomalyMeta">尚未运行</p>
+                </div>
+              </div>
+              <div id="dataAuditAnomalies" class="data-audit-anomaly-list"></div>
+            </section>
+
+            <section class="admin-card">
+              <div class="admin-card-head">
+                <div>
+                  <h4>抽样明细</h4>
+                  <p id="dataAuditDetailsMeta">展示每个检查项抽到了什么。</p>
+                </div>
+              </div>
+              <div id="dataAuditDetails" class="data-audit-detail-list"></div>
+            </section>
+          </section>
+        </div>
+
+        <div class="governance-pane" data-governance-pane="audit-log">
+          <div class="admin-panel">
+            <section class="admin-card audit-log-card">
+              <div class="admin-card-head">
+                <h4>后台操作记录</h4>
+                <span>最近 80 条</span>
+              </div>
+              <div class="admin-table-wrap audit-table-wrap">
+                <table id="adminAuditTable"></table>
+              </div>
+            </section>
+          </div>
+        </div>
       </section>
     </main>
 
-    <script src="/admin.js?v=admin-unified-20260616-v1"></script>
-    <script src="/admin-ops.js?v=admin-ops-20260703-v1"></script>
+    <script src="/admin.js?v=time-archive-20260708-v1"></script>
+    <script src="/admin-ops.js?v=time-ops-20260708-v1"></script>
+    <script src="/admin-data-audit.js?v=time-ops-20260708-v1"></script>
+    <script src="/admin-governance.js?v=governance-20260707-v1"></script>
   </body>
 </html>
