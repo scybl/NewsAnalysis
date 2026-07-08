@@ -20,17 +20,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Validate deployment secrets
+      - name: Check deployment secrets
+        id: deployment_secrets
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
-          test -n "$DEPLOY_HOST" || { echo "DEPLOY_HOST is not configured" >&2; exit 1; }
-          test -n "$DEPLOY_SSH_KEY" || { echo "DEPLOY_SSH_KEY is not configured" >&2; exit 1; }
-          test -n "$DEPLOY_KNOWN_HOSTS" || { echo "DEPLOY_KNOWN_HOSTS is not configured" >&2; exit 1; }
+          missing=()
+          test -n "$DEPLOY_HOST" || missing+=("DEPLOY_HOST")
+          test -n "$DEPLOY_SSH_KEY" || missing+=("DEPLOY_SSH_KEY")
+          test -n "$DEPLOY_KNOWN_HOSTS" || missing+=("DEPLOY_KNOWN_HOSTS")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            printf 'Production deployment skipped because these secrets are not configured: %s\n' "${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+            printf '::notice::Production deployment skipped because these secrets are not configured: %s\n' "${missing[*]}"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
       - name: Configure SSH
+        if: steps.deployment_secrets.outputs.enabled == 'true'
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
@@ -42,6 +52,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Sync and restart service
+        if: steps.deployment_secrets.outputs.enabled == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}

@@ -60,3 +60,15 @@ def test_local_sync_shortcuts_have_safe_and_force_modes():
     assert "--profile cold-worker up -d" in worker
     assert "minute-cold-worker" in worker
     assert "export-stock-year-upload" in worker
+
+
+def test_deploy_workflow_skips_when_production_secrets_are_missing():
+    workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+
+    assert "Check deployment secrets" in workflow
+    assert "id: deployment_secrets" in workflow
+    assert "enabled=false" in workflow
+    assert "::notice::Production deployment skipped" in workflow
+    assert "GITHUB_STEP_SUMMARY" in workflow
+    assert "if: steps.deployment_secrets.outputs.enabled == 'true'" in workflow
+    assert "Validate deployment secrets" not in workflow
