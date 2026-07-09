@@ -1,18 +1,20 @@
-# ValueScope / NewsAnalysis
+# ValueScope DataHub
 
-一个面向 A 股研究和个人金融数据治理场景的多源数据中台。项目把股票资料包、日 K / 分钟行情、财经新闻采集、冷热分层存储、数据质量检查、后台任务调度、权限隔离和 LLM 投研分析组合成一个可部署、可运维的 Web 工程。
+一个面向 ValueScope 分析的数据采集、治理和展示平台。项目把股票资料包、日 K / 分钟行情、财经新闻采集、冷热分层存储、数据质量检查、后台任务调度、权限隔离和数据展示组合成一个可部署、可运维的 Web 工程；采集和整理后的数据用于下游 ValueScope 分析。
 
-当前版本：`1.4.0`
+> 历史工程名为 `NewsAnalysis`。当前对外产品名统一为 `ValueScope DataHub`；`ValueScope` 分析是下游消费方。代码包名、服务器路径、MCP 包名和部分冷备份路径暂时保留历史命名，避免影响部署和兼容性。
+
+当前版本：`2.0.0`
 
 ## 核心能力
 
 - 股票数据：维护股票基础信息、资料包、日 K 与指标、分时覆盖索引，以及每只股票的存储健康状态。
 - 冷热分层：日 K 和股票资料包作为服务器热数据；历史分时按股票和年份归档到百度网盘，按需下载到本地缓存后读取。
-- 新闻采集：`NewsCrawler/` 是独立采集服务，写入标准化 `news.v1` 文档；NewsAnalysis 只读消费新闻库和采集健康状态。
+- 新闻采集：`NewsCrawler/` 是独立采集服务，写入标准化 `news.v1` 文档；DataHub 只读展示新闻库和采集健康状态，并把新闻数据供给 ValueScope 分析。
 - 行情数据：集成开盘啦功能、全市场股票列表刷新、市场纵览和交易日维度行情记录。
 - 系统治理：后台集中展示任务状态、数据抽检、审计日志、重 IO 保护、冷备份进度和数据资产统计。
 - 访问安全：支持注册用户、只读账号、归档账号、邀请码、管理员 TOTP、Fernet 加密密钥库和系统凭据管理。
-- 投研分析：保留 DeepSeek / 多 Agent 分析、历史结论复盘和报告生成入口。
+- 分析供给：保留 DeepSeek / 多 Agent 兼容入口、历史报告读取和数据导出能力，但本仓库的主职责是收集、治理和展示数据。
 
 ## 技术栈
 
@@ -103,7 +105,7 @@ scripts/mongo_ping.sh
 
 ## NewsCrawler
 
-新闻采集服务位于 `NewsCrawler/`，它独立写入 `news.raw_articles`、`news.crawl_runs`、`news.source_health` 等集合。NewsAnalysis 不直接请求新闻网站。
+新闻采集服务位于 `NewsCrawler/`，它独立写入 `news.raw_articles`、`news.crawl_runs`、`news.source_health` 等集合。DataHub 只读展示新闻库和采集健康状态；下游 ValueScope 分析只消费 DataHub 沉淀的数据，不直接请求新闻网站。
 
 ```bash
 cd NewsCrawler
@@ -128,7 +130,7 @@ node --check stock_pipeline/web_static/admin-news.js
 GitHub Actions 的 CI 已拆分为：
 
 - `CI / hygiene`：敏感文件、Python 和 Shell 语法。
-- `CI / tests`：NewsAnalysis 与 NewsCrawler 测试。
+- `CI / tests`：ValueScope DataHub 与 NewsCrawler 测试。
 - `CI / frontend-contract`：前端构建契约。
 - `CI / compose`：生产 Compose 配置。
 - `CI / docker-build`：生产镜像构建。
@@ -155,19 +157,20 @@ alias qiangzhitongbu="cd /Users/libingze/Desktop/sandbox/NewsAnalysis && scripts
 
 ## 数据与运维文档
 
+- [docs/PROJECT_MASTER_PLAN_CN.md](docs/PROJECT_MASTER_PLAN_CN.md)：中文项目总规划、已完成能力、待建设路线图和技术路线。
 - [docs/DATA_AND_OPERATIONS.md](docs/DATA_AND_OPERATIONS.md)：数据分层、冷备份、审计、自查、开盘啦和 NewsCrawler 运维说明。
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)：生产部署、安全同步、CI、GitHub Actions 和常用运维命令。
 - [docs/PROJECT_BRIEF.md](docs/PROJECT_BRIEF.md)：项目简介。
-- [docs/news_crawler_boundary.md](docs/news_crawler_boundary.md)：NewsCrawler / NewsAnalysis 边界说明。
-- [CHANGELOG.md](CHANGELOG.md)：版本记录。
+- [docs/RELEASE_2_0.md](docs/RELEASE_2_0.md)：2.0 更名与发布说明。
+- [docs/news_crawler_boundary.md](docs/news_crawler_boundary.md)：NewsCrawler / ValueScope DataHub 边界说明。
 
 ## 输出
 
 默认输出到 `reports/{股票代码}_{时间戳}/`：
 
 - `raw/*.json`：资料包构建过程中的原始结构化结果。
-- `dossier.json`：压缩后的股票研究资料包。
-- `analysis.md`：DeepSeek / Agent 分析报告。
+- `dossier.json`：压缩后的股票数据资料包，可供前端阅读和下游 ValueScope 分析使用。
+- `analysis.md`：历史兼容的 DeepSeek / Agent 分析报告；新方向下主要保留为旧报告读取和数据供给验证入口。
 
 持续对话保存在 `sessions/{股票代码}.json`。
 

@@ -308,6 +308,7 @@ def test_stock_task_history_drives_task_detail_panel():
     assert "formatTaskDetail" in script
     assert 'idle_stock_prefetch: "空闲预抓"' in script
     assert 'data_random_audit: "数据抽检"' in script
+    assert 'stock_storage_health: "存储健康"' in script
     assert "taskEventStageLabel" in script
     assert ".spider-task-history-card tbody tr.selected td" in styles
 
@@ -377,19 +378,42 @@ def test_market_and_data_source_pages_have_explicit_layout_sections():
     assert "新闻资料库" in news_sources
     assert "NEWS LIBRARY" in news_sources
     assert "data-source-overview-grid" in stock_sources
+    stock_script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
+    assert "股票来源" in stock_sources
+    assert "东方财富、AkShare" in stock_sources
+    assert "股票来源与存储" not in stock_sources
+    assert "本地热数据存储" not in stock_sources
+    assert "股票数据源" not in stock_sources
+    assert 'STOCK_PROVIDER_KEYS = new Set(["eastmoney", "akshare", "tushare"])' in stock_script
+    assert "来源/存储节点" not in stock_script
+    assert "活跃节点" not in stock_script
+    assert "活跃来源" in stock_script
     assert ".data-source-overview-grid" in styles
     assert 'data-stock-tab="storage"' in stock_sources
     assert "stockStorageTable" in stock_sources
     assert "stockStorageFilterSelect" in stock_sources
+    assert '<option value="health_attention" selected>需要关注</option>' in stock_sources
+    assert "stockStoragePager" in stock_sources
+    assert "stockStoragePrevBtn" in stock_sources
+    assert "stockStorageNextBtn" in stock_sources
     for option in ("daily_missing", "minute_missing", "cold_pending", "health_attention"):
         assert f'value="{option}"' in stock_sources
     assert "idlePrefetchRefreshDays" in stock_sources
-    stock_script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
     assert "/api/admin/stock-storage-status" in stock_script
+    assert "page_size" in stock_script
+    assert "filter: stockStorageFilterSelect?.value || \"health_attention\"" in stock_script
+    assert "renderStockStoragePager" in stock_script
     assert "stockStorageMatchesFilter" in stock_script
-    assert "stockStorageFilterSelect?.addEventListener" in stock_script
+    assert "stockStorageFilterSelect?.addEventListener(\"change\", () => loadStockStorage(1))" in stock_script
+    assert "data-stock-storage-repair" in stock_script
+    assert "/api/admin/stock-storage-repair" in stock_script
+    assert "补齐/上报" in stock_script
     assert "stock_storage_status_snapshot" in (STATIC.parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    assert "_handle_admin_stock_storage_repair" in (STATIC.parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    assert "/api/admin/stock-storage-report" in (STATIC.parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
     assert ".stock-health-pill" in styles
+    assert ".stock-storage-pager" in styles
+    assert "min-width: 1180px" in styles
 
 
 def test_news_source_distribution_uses_chinese_publisher_label():

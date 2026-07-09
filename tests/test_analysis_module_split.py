@@ -38,9 +38,10 @@ def test_frontend_marks_analysis_entry_as_archived():
     script = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert "A 股多源数据资产平台" in html
+    assert "ValueScope DataHub" in html
     assert "分析模块已封存" in html
     assert "analysisModuleAvailable = false" in script
-    assert "分析模块已拆分为外部项目" in script
+    assert "下游分析已拆分为外部 ValueScope" in script
 
 
 def test_analysis_implementation_lives_in_separate_project():

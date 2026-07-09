@@ -51,9 +51,9 @@ def _post(path: str, payload: dict[str, Any], headers: dict[str, str] | None = N
 
 
 mcp = FastMCP(
-    "newsanalysis",
+    "valuescope",
     instructions=(
-        "Tools for the self-hosted NewsAnalysis A-share research platform. "
+        "Tools for the self-hosted ValueScope DataHub A-share data platform. "
         "The configured agent token remains subject to server-side R/B scopes. "
         "Tools never expose user credentials or admin mutation. "
         "Analysis jobs consume the server DeepSeek quota; submit them only when explicitly requested."

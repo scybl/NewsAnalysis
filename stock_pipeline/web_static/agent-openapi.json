@@ -1,9 +1,9 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "NewsAnalysis Agent Gateway",
-    "version": "1.0.0",
-    "description": "Scoped machine API for local A-share research and multi-agent analysis jobs."
+    "title": "ValueScope DataHub Agent Gateway",
+    "version": "2.0.0",
+    "description": "Scoped machine API for local A-share data access and historical analysis jobs."
   },
   "servers": [
     {"url": "/api/agent/v1"}

@@ -26,6 +26,10 @@ const stockStorageTable = document.querySelector("#stockStorageTable");
 const stockStorageSearchInput = document.querySelector("#stockStorageSearchInput");
 const stockStorageFilterSelect = document.querySelector("#stockStorageFilterSelect");
 const stockStorageSortSelect = document.querySelector("#stockStorageSortSelect");
+const stockStoragePager = document.querySelector("#stockStoragePager");
+const stockStoragePrevBtn = document.querySelector("#stockStoragePrevBtn");
+const stockStorageNextBtn = document.querySelector("#stockStorageNextBtn");
+const stockStoragePageInfo = document.querySelector("#stockStoragePageInfo");
 const dataSourceMeta = document.querySelector("#dataSourceMeta");
 const dataSourceStats = document.querySelector("#dataSourceStats");
 const dataSourceProviders = document.querySelector("#dataSourceProviders");
@@ -55,6 +59,11 @@ const stockState = {
 const stockStorageState = {
   items: [],
   summary: {},
+  page: 1,
+  pageSize: 40,
+  pageCount: 1,
+  filteredTotal: 0,
+  total: 0,
 };
 
 const dataSourceState = {
@@ -63,7 +72,7 @@ const dataSourceState = {
   coverage: {},
   summary: {},
 };
-const STOCK_PROVIDER_KEYS = new Set(["stock_data", "eastmoney", "akshare", "tushare", "tencent_fallback"]);
+const STOCK_PROVIDER_KEYS = new Set(["eastmoney", "akshare", "tushare"]);
 const STOCK_STANDARD_CATEGORIES = new Set(["个股"]);
 const hasNewsLibrary = Boolean(newsList);
 const hasStockLibrary = Boolean(stockDataTable);
@@ -186,10 +195,21 @@ function bindEvents() {
   stockDataSortSelect?.addEventListener("change", renderStockData);
   stockStorageSearchInput?.addEventListener("input", () => {
     window.clearTimeout(stockStorageSearchTimer);
-    stockStorageSearchTimer = window.setTimeout(renderStockStorage, 160);
+    stockStorageSearchTimer = window.setTimeout(() => loadStockStorage(1), 220);
   });
-  stockStorageFilterSelect?.addEventListener("change", renderStockStorage);
-  stockStorageSortSelect?.addEventListener("change", renderStockStorage);
+  stockStorageFilterSelect?.addEventListener("change", () => loadStockStorage(1));
+  stockStorageSortSelect?.addEventListener("change", () => loadStockStorage(1));
+  stockStoragePrevBtn?.addEventListener("click", () => {
+    if (stockStorageState.page > 1) loadStockStorage(stockStorageState.page - 1);
+  });
+  stockStorageNextBtn?.addEventListener("click", () => {
+    if (stockStorageState.page < stockStorageState.pageCount) loadStockStorage(stockStorageState.page + 1);
+  });
+  stockStorageTable?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-stock-storage-repair]");
+    if (!button) return;
+    repairStockStorageItem(button.dataset.stockStorageRepair || "", button);
+  });
   stockTabs.forEach((button) => {
     button.addEventListener("click", () => activateStockPane(button.dataset.stockTab || "sources", true));
   });
@@ -435,26 +455,42 @@ function renderStockRow(item) {
   `;
 }
 
-async function loadStockStorage() {
+async function loadStockStorage(page = stockStorageState.page || 1) {
   if (!stockStorageMeta || !stockStorageTable) return;
   stockStorageMeta.textContent = "正在读取存储状态...";
   try {
-    const response = await fetch("/api/admin/stock-storage-status?limit=1200");
+    const params = new URLSearchParams({
+      page: String(Math.max(1, Number(page || 1))),
+      page_size: String(stockStorageState.pageSize || 40),
+      filter: stockStorageFilterSelect?.value || "health_attention",
+      sort: stockStorageSortSelect?.value || "health",
+    });
+    const query = (stockStorageSearchInput?.value || "").trim();
+    if (query) params.set("q", query);
+    const response = await fetch(`/api/admin/stock-storage-status?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok || payload.ok === false) {
       throw new Error(payload.error || "读取存储状态失败");
     }
     stockStorageState.items = payload.items || [];
     stockStorageState.summary = payload.summary || {};
+    stockStorageState.page = payload.page || 1;
+    stockStorageState.pageSize = payload.page_size || stockStorageState.pageSize || 40;
+    stockStorageState.pageCount = payload.page_count || 1;
+    stockStorageState.filteredTotal = payload.filtered_total || 0;
+    stockStorageState.total = payload.total || 0;
     renderStockStorage();
     renderStockStorageStats();
-    stockStorageMeta.textContent = `已读取 ${payload.count || 0} / ${payload.total || 0} 只股票`;
+    renderStockStoragePager();
+    stockStorageMeta.textContent = `已读取第 ${stockStorageState.page} 页 ${payload.count || 0} 条，符合条件 ${stockStorageState.filteredTotal || 0} / 全部 ${stockStorageState.total || 0} 只股票`;
   } catch (error) {
     stockStorageState.items = [];
     stockStorageState.summary = {};
+    stockStorageState.filteredTotal = 0;
     stockStorageMeta.textContent = `读取失败：${error.message}`;
     stockStorageTable.innerHTML = `<tbody><tr><td class="news-empty is-error">${escapeHtml(error.message)}</td></tr></tbody>`;
     renderStockStorageStats();
+    renderStockStoragePager();
   }
 }
 
@@ -483,13 +519,7 @@ function renderStockStorageStats() {
 
 function renderStockStorage() {
   if (!stockStorageTable) return;
-  const query = (stockStorageSearchInput?.value || "").trim().toLowerCase();
-  const filterKey = stockStorageFilterSelect?.value || "all";
-  const sortKey = stockStorageSortSelect?.value || "health";
-  const items = stockStorageState.items
-    .filter((item) => stockStorageMatchesQuery(item, query))
-    .filter((item) => stockStorageMatchesFilter(item, filterKey))
-    .sort((left, right) => compareStockStorageRows(left, right, sortKey));
+  const items = stockStorageState.items || [];
   if (!items.length) {
     stockStorageTable.innerHTML = `<tbody><tr><td class="news-empty">当前条件下没有股票存储状态。</td></tr></tbody>`;
     return;
@@ -503,12 +533,24 @@ function renderStockStorage() {
         <th>分时冷备份</th>
         <th>健康检查</th>
         <th>结果</th>
+        <th>操作</th>
       </tr>
     </thead>
     <tbody>
       ${items.map(renderStockStorageRow).join("")}
     </tbody>
   `;
+}
+
+function renderStockStoragePager() {
+  if (!stockStoragePager) return;
+  const page = stockStorageState.page || 1;
+  const pageCount = stockStorageState.pageCount || 1;
+  if (stockStoragePageInfo) {
+    stockStoragePageInfo.textContent = `第 ${page} / ${pageCount} 页 · ${formatNumber(stockStorageState.filteredTotal || 0)} 条`;
+  }
+  if (stockStoragePrevBtn) stockStoragePrevBtn.disabled = page <= 1;
+  if (stockStorageNextBtn) stockStorageNextBtn.disabled = page >= pageCount;
 }
 
 function stockStorageMatchesQuery(item, query) {
@@ -547,6 +589,9 @@ function renderStockStorageRow(item) {
   const cold = item.cold_backup || {};
   const daily = item.daily_coverage || {};
   const health = item.health_status || "unknown";
+  const repairAction = health === "ok"
+    ? "-"
+    : `<button type="button" data-stock-storage-repair="${escapeAttr(item.ts_code || "")}" ${newsPageAdminReadonly ? "disabled" : ""}>补齐/上报</button>`;
   return `
     <tr>
       <td>
@@ -570,8 +615,39 @@ function renderStockStorageRow(item) {
         <p>${escapeHtml(item.health_message || "-")}</p>
       </td>
       <td><span class="stock-health-pill is-${escapeAttr(health)}">${escapeHtml(stockHealthLabel(health))}</span></td>
+      <td>${repairAction}</td>
     </tr>
   `;
+}
+
+async function repairStockStorageItem(tsCode, button) {
+  if (!tsCode || newsPageAdminReadonly) return;
+  if (!approveDataFetch(`尝试补齐 ${tsCode} 的异常存储数据；无法自动补齐的部分会写入待上报记录`)) return;
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "处理中";
+  try {
+    const response = await fetch("/api/admin/stock-storage-repair", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ts_code: tsCode, max_daily_days: 5, approved: true }),
+    });
+    const payload = await readApiPayload(response, "补齐股票存储数据失败");
+    const repaired = payload.daily_repairs?.length || 0;
+    const reportId = payload.report?.report_id || "";
+    const statusText = payload.resolved
+      ? "已补齐，当前状态正常。"
+      : reportId
+        ? `仍有未自动补齐项，已生成上报记录 ${reportId}。`
+        : "已完成检查，但仍有未自动补齐项。";
+    window.alert(`${tsCode}：${statusText}\n本次尝试日K日期：${repaired}`);
+    await loadStockStorage();
+  } catch (error) {
+    window.alert(error.message || "补齐股票存储数据失败");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
 }
 
 function compareStockStorageRows(left, right, key) {

@@ -91,4 +91,4 @@ def test_ci_workflow_is_split_but_keeps_validate_gate():
         assert f"needs.{dependency}.result" in workflow
     assert "python -m pytest -q tests NewsCrawler/tests" in workflow
     assert "docker compose -f docker-compose.prod.yml config --quiet" in workflow
-    assert "docker build --tag newsanalysis:ci ." in workflow
+    assert "docker build --tag valuescope:ci ." in workflow

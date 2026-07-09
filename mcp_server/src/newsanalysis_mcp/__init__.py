@@ -1,3 +1,3 @@
-"""NewsAnalysis MCP integration."""
+"""ValueScope DataHub MCP integration with historical NewsAnalysis package naming."""
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"

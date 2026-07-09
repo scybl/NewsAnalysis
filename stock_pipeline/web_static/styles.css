@@ -7939,8 +7939,12 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 }
 
 .stock-storage-card .stock-data-table-wrap table {
-  min-width: 1080px;
+  min-width: 1180px;
   table-layout: fixed;
+}
+
+.stock-storage-pager {
+  margin-top: 12px;
 }
 
 .stock-storage-card td p {

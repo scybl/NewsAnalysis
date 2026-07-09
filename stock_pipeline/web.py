@@ -8,6 +8,7 @@ import hashlib
 import base64
 import threading
 import uuid
+import random
 import os
 import signal
 import subprocess
@@ -61,6 +62,7 @@ from .stock_storage import (
     sync_daily_market_for_existing_stocks,
     sync_stock_data,
 )
+from .stock_storage_repair import repair_stock_storage_issue, report_stock_storage_issue, run_stock_storage_health_check
 from .ths_minute import build_config as build_ths_minute_config
 from .ths_minute import fetch_and_store_minutes
 from .tushare_client import TushareClient, TushareError
@@ -115,6 +117,7 @@ DATA_FETCH_ACTIONS = {
     "/api/multi-agent-analyze": "多 Agent 分析前的数据同步与模型调用",
     "/api/admin/market-fetch/start": "启动分钟行情补采",
     "/api/admin/daily-market-scheduler:run_now": "立即执行每日股票数据更新",
+    "/api/admin/stock-storage-repair": "补齐异常股票存储数据",
     "/api/admin/kaipanla/scheduler:run_now": "立即执行开盘啦数据抓取",
     "/api/admin/news-library/refetch": "重新抓取新闻并补充到新闻库",
     "/api/admin/news-library/translate": "调用百度翻译生成 Guardian 中文译文",
@@ -674,6 +677,11 @@ class StockWebApp:
         self.data_random_audit_scheduler = DataRandomAuditScheduler(
             self,
             PROJECT_ROOT / "local_data" / "data_random_audit_scheduler.json",
+            self.task_registry,
+        )
+        self.stock_storage_health_scheduler = StockStorageHealthScheduler(
+            self,
+            PROJECT_ROOT / "local_data" / "stock_storage_health_scheduler.json",
             self.task_registry,
         )
         self.market_fetch_controller = MarketFetchController(PROJECT_ROOT, self.task_registry)
@@ -1345,8 +1353,21 @@ class StockWebApp:
                     if not self._require_data_console():
                         return
                     query = parse_qs(parsed.query)
-                    limit = max(1, min(2000, int(query.get("limit", ["500"])[0] or 500)))
-                    self._json({"ok": True, **stock_storage_status_snapshot(limit=limit, query=query.get("q", [""])[0])})
+                    page = max(1, int(query.get("page", ["1"])[0] or 1))
+                    page_size = max(1, min(200, int(query.get("page_size", query.get("limit", ["40"]))[0] or 40)))
+                    self._json(
+                        {
+                            "ok": True,
+                            **stock_storage_status_snapshot(
+                                limit=page_size,
+                                query=query.get("q", [""])[0],
+                                page=page,
+                                page_size=page_size,
+                                filter_key=query.get("filter", ["health_attention"])[0],
+                                sort_key=query.get("sort", ["health"])[0],
+                            ),
+                        }
+                    )
                     return
                 if parsed.path == "/api/admin/data-distribution/status":
                     if not self._require_admin():
@@ -1491,6 +1512,16 @@ class StockWebApp:
                     if not self._require_admin():
                         return
                     self._handle_admin_data_random_audit_scheduler()
+                    return
+                if parsed.path == "/api/admin/stock-storage-repair":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_stock_storage_repair()
+                    return
+                if parsed.path == "/api/admin/stock-storage-report":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_stock_storage_report()
                     return
                 if parsed.path == "/api/admin/kaipanla/run":
                     if not self._require_admin():
@@ -2029,6 +2060,27 @@ class StockWebApp:
                     self._json({"ok": False, "error": "未知数据抽检调度操作。"}, status=400)
                 except (ValueError, RuntimeError) as exc:
                     self._json({"ok": False, "error": str(exc)}, status=400)
+
+            def _handle_admin_stock_storage_repair(self) -> None:
+                try:
+                    payload = self._read_json()
+                    if not self._require_data_fetch_approval("/api/admin/stock-storage-repair", payload):
+                        return
+                    ts_code = normalize_ts_code(str(payload.get("ts_code") or payload.get("code") or ""))
+                    max_daily_days = max(1, min(30, int(payload.get("max_daily_days") or 5)))
+                    client = app.tushare if provider_available("tushare") and app.settings.tushare_token else _public_stock_client(app.settings)
+                    self._json(repair_stock_storage_issue(client, ts_code, max_daily_days=max_daily_days))
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+                except Exception as exc:  # noqa: BLE001 - repair failures should be visible in the admin page.
+                    self._json({"ok": False, "error": str(exc)}, status=500)
+
+            def _handle_admin_stock_storage_report(self) -> None:
+                try:
+                    payload = self._read_json()
+                    self._json({"ok": True, "report": report_stock_storage_issue({"source": "manual_api", "payload": payload})})
+                except Exception as exc:  # noqa: BLE001 - keep the future report hook readable.
+                    self._json({"ok": False, "error": str(exc)}, status=500)
 
             def _handle_admin_kaipanla_run(self) -> None:
                 try:
@@ -3408,6 +3460,200 @@ class DataRandomAuditScheduler:
             "last_result": {},
             "last_error": "",
         }
+
+    def _write_config_locked(self) -> None:
+        write_json(self.config_path, self.config)
+
+
+def _stock_storage_cold_compare_sample_count(value: Any) -> int:
+    raw = 1 if value in (None, "") else value
+    return max(0, min(10, int(raw)))
+
+
+class StockStorageHealthScheduler:
+    def __init__(self, app: StockWebApp, config_path: Path, task_registry: TaskRegistry):
+        self.app = app
+        self.config_path = config_path
+        self.task_registry = task_registry
+        self.lock = threading.Lock()
+        self.worker: threading.Thread | None = None
+        self.stop_event = threading.Event()
+        self.config = self._load_config()
+        self.thread = threading.Thread(target=self._loop, name="stock-storage-health-scheduler", daemon=True)
+        self.thread.start()
+
+    def status(self) -> dict:
+        with self.lock:
+            config = dict(self.config)
+            running = bool(self.worker and self.worker.is_alive())
+        now = time.time()
+        next_run_epoch = float(config.get("next_run_epoch") or 0)
+        return {
+            "scheduler": {
+                "enabled": bool(config.get("enabled")),
+                "idle_seconds": int(config.get("idle_seconds") or 900),
+                "min_interval_seconds": int(config.get("min_interval_seconds") or 1800),
+                "max_interval_seconds": int(config.get("max_interval_seconds") or 7200),
+                "sample_size": max(1, min(200, int(config.get("sample_size") or 30))),
+                "cold_compare_samples": _stock_storage_cold_compare_sample_count(config.get("cold_compare_samples")),
+                "running": running,
+                "next_run_at": config.get("next_run_at") or "",
+                "remaining_next_run_seconds": max(0, int(next_run_epoch - now)) if next_run_epoch else 0,
+                "last_run_at": config.get("last_run_at") or "",
+                "last_task_id": config.get("last_task_id") or "",
+                "last_result": config.get("last_result") or {},
+                "last_error": config.get("last_error") or "",
+            }
+        }
+
+    def _loop(self) -> None:
+        while not self.stop_event.wait(60):
+            try:
+                with self.lock:
+                    enabled = bool(self.config.get("enabled"))
+                    running = bool(self.worker and self.worker.is_alive())
+                    idle_seconds = int(self.config.get("idle_seconds") or 900)
+                    next_run_epoch = float(self.config.get("next_run_epoch") or 0)
+                    if enabled and not next_run_epoch:
+                        self._schedule_next_locked()
+                        next_run_epoch = float(self.config.get("next_run_epoch") or 0)
+                if not enabled or running:
+                    continue
+                if int(self.app.stock_request_state().get("idle_seconds") or 0) < idle_seconds:
+                    continue
+                if next_run_epoch and time.time() < next_run_epoch:
+                    continue
+                if self._heavy_io_blockers("stock_storage_health_idle"):
+                    with self.lock:
+                        self._schedule_next_locked(short=True)
+                    continue
+                self._start_run(trigger="idle")
+            except Exception as exc:  # noqa: BLE001 - background scheduler must keep ticking
+                with self.lock:
+                    self.config["last_error"] = str(exc)
+                    self._schedule_next_locked(short=True)
+                    self._write_config_locked()
+
+    def _start_run(self, trigger: str) -> dict:
+        with self.lock:
+            if self.worker and self.worker.is_alive():
+                raise RuntimeError("股票存储健康检查正在运行。")
+            sample_size = max(1, min(200, int(self.config.get("sample_size") or 30)))
+            cold_compare_samples = _stock_storage_cold_compare_sample_count(self.config.get("cold_compare_samples"))
+            task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
+            self.config["last_task_id"] = task_id
+            self._write_config_locked()
+        self.task_registry.create_task(
+            task_id,
+            "stock_storage_health",
+            "股票存储健康检查",
+            metadata={"trigger": trigger, "sample_size": sample_size, "cold_compare_samples": cold_compare_samples},
+        )
+        self.task_registry.update_task(task_id, status="running")
+        self.task_registry.add_event(
+            task_id,
+            "running",
+            "开始随机检查股票存储健康。",
+            {"trigger": trigger, "sample_size": sample_size, "cold_compare_samples": cold_compare_samples},
+        )
+        self.worker = threading.Thread(
+            target=self._run_task,
+            args=(task_id, trigger, sample_size, cold_compare_samples),
+            name=f"stock-storage-health-{task_id}",
+            daemon=True,
+        )
+        self.worker.start()
+        return self.status()
+
+    def _run_task(self, task_id: str, trigger: str, sample_size: int, cold_compare_samples: int) -> None:
+        try:
+            if trigger != "manual" and self._heavy_io_blockers(task_id):
+                result = {"ok": True, "status": "skipped", "reason": "heavy_io_running", "trigger": trigger}
+                self.task_registry.update_task(task_id, status="succeeded", result=result)
+                self.task_registry.add_event(task_id, "succeeded", "检测到重 IO 任务，本轮股票存储健康检查已跳过。", result)
+                self._remember_result(result)
+                return
+            result = run_stock_storage_health_check(sample_size=sample_size, cold_compare_samples=cold_compare_samples)
+            status = "succeeded" if result.get("ok") else "failed"
+            self.task_registry.update_task(task_id, status=status, error="" if result.get("ok") else str(result.get("error") or ""), result=result)
+            self.task_registry.add_event(
+                task_id,
+                status,
+                f"股票存储健康检查完成：抽样 {result.get('checked_count', 0)} 只，异常 {result.get('abnormal_count', 0)} 只。",
+                result,
+            )
+            self._remember_result(result)
+        except Exception as exc:  # noqa: BLE001 - keep task readable
+            result = {"ok": False, "status": "failed", "trigger": trigger, "error": str(exc)}
+            self.task_registry.update_task(task_id, status="failed", error=str(exc), result=result)
+            self.task_registry.add_event(task_id, "failed", "股票存储健康检查失败。", result)
+            self._remember_result(result)
+
+    def _heavy_io_blockers(self, requested_task_id: str) -> list[dict]:
+        return _public_heavy_io_blockers(
+            active_heavy_io_tasks(build_ops_snapshot(PROJECT_ROOT, crawler_snapshot_fn=None)),
+            requested_task_id=requested_task_id,
+        )
+
+    def _remember_result(self, result: dict) -> None:
+        with self.lock:
+            self.config["last_run_at"] = timestamp()
+            self.config["last_run_epoch"] = time.time()
+            self.config["last_result"] = result
+            self.config["last_error"] = "" if result.get("ok") else str(result.get("error") or "股票存储健康检查失败")
+            self._schedule_next_locked()
+            self._write_config_locked()
+
+    def _load_config(self) -> dict:
+        if self.config_path.exists():
+            try:
+                data = read_json(self.config_path)
+                if isinstance(data, dict):
+                    data["enabled"] = data.get("enabled", True) is True
+                    data["idle_seconds"] = max(300, int(data.get("idle_seconds") or 900))
+                    data["min_interval_seconds"] = max(900, int(data.get("min_interval_seconds") or 1800))
+                    data["max_interval_seconds"] = max(data["min_interval_seconds"], int(data.get("max_interval_seconds") or 7200))
+                    data["sample_size"] = max(1, min(200, int(data.get("sample_size") or 30)))
+                    data["cold_compare_samples"] = _stock_storage_cold_compare_sample_count(data.get("cold_compare_samples"))
+                    data.setdefault("last_result", {})
+                    if data["enabled"] and not data.get("next_run_epoch"):
+                        self.config = data
+                        self._schedule_next_locked()
+                        self._write_config_locked()
+                        data = self.config
+                    return data
+            except Exception:
+                pass
+        config = {
+            "enabled": True,
+            "idle_seconds": 900,
+            "min_interval_seconds": 1800,
+            "max_interval_seconds": 7200,
+            "sample_size": 30,
+            "cold_compare_samples": 1,
+            "last_run_at": "",
+            "last_run_epoch": 0,
+            "next_run_at": "",
+            "next_run_epoch": 0,
+            "last_task_id": "",
+            "last_result": {},
+            "last_error": "",
+        }
+        self.config = config
+        self._schedule_next_locked()
+        self._write_config_locked()
+        return config
+
+    def _schedule_next_locked(self, short: bool = False) -> None:
+        if short:
+            delay = random.randint(300, 900)
+        else:
+            minimum = max(900, int(self.config.get("min_interval_seconds") or 1800))
+            maximum = max(minimum, int(self.config.get("max_interval_seconds") or 7200))
+            delay = random.randint(minimum, maximum)
+        next_epoch = time.time() + delay
+        self.config["next_run_epoch"] = next_epoch
+        self.config["next_run_at"] = datetime.fromtimestamp(next_epoch).strftime("%Y%m%d_%H%M%S")
 
     def _write_config_locked(self) -> None:
         write_json(self.config_path, self.config)

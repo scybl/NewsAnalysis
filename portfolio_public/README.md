@@ -1,12 +1,12 @@
-# ValueScope / NewsAnalysis Portfolio
+# ValueScope DataHub Portfolio
 
-This repository is a public portfolio package for **ValueScope / NewsAnalysis**, a personal financial data platform for A-share research, market/news data governance, cold storage, and operations monitoring.
+This repository is a public portfolio package for **ValueScope DataHub**, a personal data collection, governance, and display platform for A-share market/news datasets. The collected and curated data is designed to support downstream **ValueScope** analysis.
 
 The production source code is intentionally not included here. This package is designed for interview and portfolio review only: it explains the architecture, product decisions, data governance model, and user-visible workflows without exposing crawler implementations, storage internals, deployment scripts, credentials, or proprietary automation logic.
 
 ## What This Project Demonstrates
 
-- A full-stack financial data platform for stock, market, and news workflows.
+- A full-stack data collection and display platform for stock, market, and news workflows.
 - MongoDB-backed hot storage with Baidu Netdisk cold backup for low-frequency minute data.
 - Data quality checks, random audits, gap tracking, and operational reporting.
 - Admin console for access/security, system governance, stock storage status, market data, news data, and task health.
@@ -46,7 +46,7 @@ The following parts remain private by design:
 | Storage | MongoDB, JSON/JSONL, local cache, cold backup |
 | Market data | Eastmoney, Kaipanla, Tonghuashun, pytdx/mootdx/tdxpy, AkShare candidates |
 | News data | Independent NewsCrawler service, requests/Selenium/lxml/BeautifulSoup |
-| AI analysis | DeepSeek, optional LangGraph-style multi-agent workflow |
+| Downstream analysis supply | Data manifests, historical report compatibility, optional DeepSeek/multi-agent integration surface |
 | Frontend | Native HTML, CSS, JavaScript |
 | Ops | Docker Compose, GitHub Actions, audit reports, task snapshots |
 | Security | TOTP, signed cookies, encrypted secret store, role-based access |

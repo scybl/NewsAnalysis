@@ -11,7 +11,7 @@ from .utils import ensure_dir, read_json, timestamp, write_json
 
 DATA_SOURCE_CONFIG_PATH = PROJECT_ROOT / "local_data" / "data_sources.json"
 HIDDEN_PROVIDER_KEYS: set[str] = set()
-STANDARD_TABLE_HIDDEN_PROVIDER_KEYS = {"tushare"}
+STANDARD_TABLE_HIDDEN_PROVIDER_KEYS = {"stock_data", "tencent_fallback", "tushare"}
 
 
 @dataclass(frozen=True)
@@ -37,9 +37,9 @@ class StandardDataType:
 DEFAULT_PROVIDERS: dict[str, DataSourceProvider] = {
     "stock_data": DataSourceProvider(
         "stock_data",
-        "股票资料包",
+        "本地资料包",
         "active",
-        "个股维度主存储，读取 stock_data 数据库中的股票资料包、日 K、财务、估值和分析资料包。",
+        "服务器 MongoDB 热数据产物，不是外部数据源；读取 stock_data 数据库中的资料包、日 K、财务、估值和分析资料包。",
         ["stock_profile", "stock_daily_quote", "finance_summary", "valuation", "analysis_dossier"],
     ),
     "market_data": DataSourceProvider(

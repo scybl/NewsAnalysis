@@ -168,6 +168,7 @@ function taskKindLabel(kind) {
     idle_stock_prefetch: "空闲预抓",
     kaipanla: "行情数据",
     data_random_audit: "数据抽检",
+    stock_storage_health: "存储健康",
     spider: "行情数据",
     news_crawler: "新闻爬虫",
   })[kind] || kind || "";

@@ -1,6 +1,6 @@
 # 数据与运维
 
-本文记录 NewsAnalysis 当前的数据分层、冷备份、后台治理和数据自查策略。
+本文记录 ValueScope DataHub 当前的数据分层、冷备份、后台治理和数据自查策略。历史工程名为 `NewsAnalysis`，部分服务器路径和冷备份 remote root 暂时沿用该名称。
 
 ## 数据分层
 
@@ -14,7 +14,7 @@
 | 新闻运行记录 | 热数据 | `news.crawl_runs`、`news.source_health` |
 | 开盘啦结果 | 热数据 | `market_data.kaipanla_results` |
 
-日 K 与股票资料包用于前端快速阅读和分析，保留在服务器 MongoDB。历史分时体积大，按股票和年份写入 JSONL 对象上传到百度网盘；服务器保留覆盖索引、上传状态、缺口状态和最近访问缓存。
+日 K 与股票资料包用于前端快速阅读、数据展示和下游 ValueScope 分析，保留在服务器 MongoDB。历史分时体积大，按股票和年份写入 JSONL 对象上传到百度网盘；服务器保留覆盖索引、上传状态、缺口状态和最近访问缓存。
 
 ## 分时冷备份结构
 
@@ -27,6 +27,8 @@ NewsAnalysis/cold/stock_minute/v1/
       {ts_code}/
         {year}.jsonl
 ```
+
+这里的 `NewsAnalysis/cold/...` 是已存在冷备份路径的兼容命名，不代表对外产品名。
 
 示例：
 
@@ -120,7 +122,7 @@ python -m stock_pipeline kaipanla run daily_data --params '{"end_date":"2026-01-
 
 ## NewsCrawler 边界
 
-NewsCrawler 独立负责新闻采集，NewsAnalysis 只读消费新闻库。NewsAnalysis 不直接抓新闻站点，也不从后台页面启动新闻爬虫。
+NewsCrawler 独立负责新闻采集，ValueScope DataHub 只读展示新闻库并向下游 ValueScope 分析供给数据。DataHub 不直接抓新闻站点，也不从后台页面启动新闻爬虫。
 
 本地验证新闻源：
 

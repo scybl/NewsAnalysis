@@ -1,6 +1,6 @@
 # 部署与同步
 
-本文记录 NewsAnalysis 的生产部署、同步策略和 CI 门禁。生产密钥和运行数据只保留在服务器，不进入 Git 仓库。
+本文记录 ValueScope DataHub 的生产部署、同步策略和 CI 门禁。历史工程名为 `NewsAnalysis`，因此部分本地路径、服务器目录和脚本名仍沿用旧名称。生产密钥和运行数据只保留在服务器，不进入 Git 仓库。
 
 ## 本地准备
 
@@ -104,7 +104,7 @@ clean deploy 会保留 `.env`、`cache/`、`local_data/`、`logs/`、`reports/`�
 `.github/workflows/ci.yml` 在 PR 和 `main` 更新时运行拆分后的 CI：
 
 - `CI / hygiene`：敏感文件、Python/Shell 语法。
-- `CI / tests`：NewsAnalysis 与 NewsCrawler 测试。
+- `CI / tests`：ValueScope DataHub 与 NewsCrawler 测试。
 - `CI / frontend-contract`：前端构建契约。
 - `CI / compose`：生产 Compose 配置。
 - `CI / docker-build`：生产镜像构建。

@@ -84,7 +84,7 @@ def _build_message(
     message = MIMEMultipart()
     message["From"] = config.sender
     message["To"] = ", ".join(config.recipients)
-    message["Subject"] = Header(subject or "NewsAnalysis 数据分发", "utf-8")
+    message["Subject"] = Header(subject or "ValueScope DataHub 数据分发", "utf-8")
     message.attach(MIMEText(body or "数据分发任务已完成。", "plain", "utf-8"))
 
     for path in attachments:

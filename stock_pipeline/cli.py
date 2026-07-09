@@ -93,7 +93,7 @@ def main() -> None:
     secrets_subparsers.add_parser("migrate-env", help="把当前 .env/环境变量中的敏感项迁入加密密钥库")
     setup_totp_parser = secrets_subparsers.add_parser("setup-admin-totp", help="生成并保存管理员 Authenticator 一次性验证码密钥")
     setup_totp_parser.add_argument("--account", default=None, help="Authenticator 中显示的账号名，默认读取管理员账号")
-    setup_totp_parser.add_argument("--issuer", default="NewsAnalysis", help="Authenticator 中显示的发行方")
+    setup_totp_parser.add_argument("--issuer", default="ValueScope DataHub", help="Authenticator 中显示的发行方")
     setup_totp_parser.add_argument("--secret", default=None, help="使用已有 Base32 密钥；不传则自动生成")
 
     news_parser = subparsers.add_parser("news", help="检索由独立 NewsCrawler 写入的新闻")

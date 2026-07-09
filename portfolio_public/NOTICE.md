@@ -1,6 +1,6 @@
 # Notice
 
-ValueScope / NewsAnalysis is a personal financial data platform created by Libingze Li.
+ValueScope DataHub is a personal data collection, governance, and display platform created by Libingze Li. It supplies curated datasets for downstream ValueScope analysis.
 
 This public portfolio package is intentionally incomplete. It exists to demonstrate product thinking, architecture, system design, data governance, and engineering maturity without exposing private implementation details.
 
@@ -15,7 +15,7 @@ This public portfolio package is intentionally incomplete. It exists to demonstr
 
 If you reference this project in an interview, review, article, or internal hiring note, please attribute it as:
 
-`ValueScope / NewsAnalysis by Libingze Li`
+`ValueScope DataHub by Libingze Li`
 
 ## Contact
 

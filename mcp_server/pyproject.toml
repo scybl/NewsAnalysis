@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "newsanalysis-mcp"
-version = "0.1.0"
-description = "Thin MCP wrapper for the NewsAnalysis Agent Gateway"
+version = "2.0.0"
+description = "Thin MCP wrapper for the ValueScope DataHub gateway"
 requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.25.0",

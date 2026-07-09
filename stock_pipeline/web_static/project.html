@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>项目介绍 - ValueScope</title>
+    <title>项目介绍 - ValueScope DataHub</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -23,16 +23,16 @@
       <section class="project-hero-page">
         <div class="project-hero-meta">
           <span class="product-kicker">PROJECT OVERVIEW</span>
-          <span>A 股多源数据 · NewsCrawler · Multi-Agent Research Workspace</span>
+          <span>A 股多源数据 · NewsCrawler · Data Governance Console</span>
         </div>
-        <h1>ValueScope</h1>
+        <h1>ValueScope DataHub</h1>
         <p>
-          基于多 Agent 的 A 股金融投研分析平台。项目将股票行情、财务指标、新闻数据、本地资料库和分析审计链路整合为一个可复用的研究工作台。
+          面向 ValueScope 分析的数据采集、治理和展示平台。项目将股票行情、财务指标、新闻数据、本地资料库、冷备份和数据质量审计整合为一个可复用的数据工作台。
         </p>
         <div class="product-badges">
           <span>Python</span>
-          <span>LLM Application</span>
-          <span>Multi-Agent</span>
+          <span>Data Platform</span>
+          <span>Data Governance</span>
           <span>MongoDB</span>
           <span>Docker Compose</span>
           <span>NewsCrawler</span>
@@ -50,14 +50,14 @@
           <span class="project-section-index">01</span>
           <h2>主要目标</h2>
           <p>
-            面向 A 股投研场景构建统一入口：支持股票检索、资料包生成、历史分析复用，并把行情、财务、公告和新闻数据沉淀为可重复读取的本地资产。
+            面向 A 股数据资产构建统一入口：支持股票检索、资料包生成、历史数据读取，并把行情、财务、公告和新闻数据沉淀为可重复读取、可检查、可供分析消费的本地资产。
           </p>
         </article>
         <article>
           <span class="project-section-index">02</span>
-          <h2>Agent 设计</h2>
+          <h2>数据供给</h2>
           <p>
-            根据不同分析任务动态编排市场、新闻、基本面、风险审计等角色，实现多轮分析、反方审计、结论修正与最终汇总。
+            通过统一资料包、新闻库、日 K、分时索引和冷备份状态，为下游 ValueScope 分析提供稳定、可追溯的数据输入。
           </p>
         </article>
         <article>
@@ -72,11 +72,11 @@
       <section class="project-showcase-grid">
         <article class="project-wide-card">
           <span class="product-kicker">SYSTEM HIGHLIGHT</span>
-          <h2>从数据源到投研结论的完整闭环</h2>
+          <h2>从数据源到可用数据资产的完整链路</h2>
           <ul>
-            <li>整合股票行情、财务指标、分钟行情、公告、资金与新闻数据，统一存入本地资料包。</li>
+            <li>整合股票行情、财务指标、分钟行情、公告、资金与新闻数据，统一存入本地资料包和 MongoDB 热数据。</li>
             <li>拆分独立 NewsCrawler 服务，通过 MongoDB 与标准化 news.v1 文档契约解耦主系统。</li>
-            <li>只读 Admin 视图可查看股票数据、行情数据、新闻数据和权限隔离，便于观察系统运行边界。</li>
+            <li>后台视图可查看股票数据、行情数据、新闻数据、冷备份和权限隔离，便于确认数据是否可供 ValueScope 分析使用。</li>
           </ul>
         </article>
 
@@ -89,8 +89,8 @@
               <span>多源行情、公告、新闻和资金数据适配，按统一字段沉淀到本地资料包。</span>
             </div>
             <div>
-              <strong>分析层</strong>
-              <span>多 Agent 根据任务类型拆分观点、审计风险并生成可追踪的分析结论。</span>
+              <strong>供给层</strong>
+              <span>资料包、新闻证据、日 K 和分时索引按统一契约供下游 ValueScope 分析读取。</span>
             </div>
             <div>
               <strong>运维层</strong>
@@ -107,8 +107,8 @@
         </div>
         <div class="project-skill-cloud">
           <span>Python</span>
-          <span>LLM Application</span>
-          <span>Multi-Agent</span>
+          <span>Data Platform</span>
+          <span>Data Governance</span>
           <span>MongoDB</span>
           <span>Docker Compose</span>
           <span>NewsCrawler</span>
@@ -124,10 +124,10 @@
         <div>
           <span class="product-kicker">WORKFLOW</span>
           <h2>核心流程</h2>
-          <p>从股票检索开始，读取或补采本地资料包，再进入多 Agent 分析；后台用于观察数据源、采集任务和新闻库状态。</p>
+          <p>从股票检索开始，读取或补采本地资料包，确认数据覆盖和健康状态；后台用于观察数据源、采集任务、冷备份和新闻库状态。</p>
         </div>
         <div class="project-contact-list">
-          <a href="/">股票检索与分析</a>
+          <a href="/">股票检索与数据</a>
           <a href="/admin-crawler.html">新闻数据</a>
           <a href="/admin-market.html">行情采补</a>
           <a href="/admin-crawler.html">采集任务</a>

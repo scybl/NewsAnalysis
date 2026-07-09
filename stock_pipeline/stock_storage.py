@@ -169,14 +169,26 @@ def list_local_stock_summaries() -> dict[str, Any]:
     }
 
 
-def stock_storage_status_snapshot(limit: int = 500, query: str = "") -> dict[str, Any]:
+def stock_storage_status_snapshot(
+    limit: int = 500,
+    query: str = "",
+    *,
+    page: int = 1,
+    page_size: int | None = None,
+    filter_key: str = "all",
+    sort_key: str = "health",
+    codes: list[str] | None = None,
+) -> dict[str, Any]:
     summary = list_local_stock_summaries()
     search = str(query or "").strip().lower()
+    code_filter = {normalize_ts_code(code) for code in (codes or []) if str(code or "").strip()} if codes else set()
     items = [
         item for item in summary.get("items", [])
         if not search
         or any(str(item.get(key) or "").lower().find(search) >= 0 for key in ("ts_code", "name", "industry", "market"))
-    ][: max(1, min(2000, int(limit or 500)))]
+    ]
+    if code_filter:
+        items = [item for item in items if str(item.get("ts_code") or "") in code_filter]
     daily_coverage = _daily_coverage_by_code()
     minute_coverage = _minute_coverage_by_code()
     minute_upload = _minute_upload_by_code()
@@ -185,17 +197,32 @@ def stock_storage_status_snapshot(limit: int = 500, query: str = "") -> dict[str
         _stock_storage_status_item(item, daily_coverage.get(str(item.get("ts_code") or "")) or {}, minute_coverage.get(str(item.get("ts_code") or "")) or {}, minute_upload.get(str(item.get("ts_code") or "")) or {})
         for item in items
     ]
+    enriched = [item for item in enriched if _stock_storage_matches_filter(item, filter_key)]
+    enriched.sort(key=lambda item: _stock_storage_sort_key(item, sort_key))
+    selected_page = max(1, int(page or 1))
+    selected_page_size = max(1, min(200, int(page_size if page_size is not None else limit or 500)))
+    filtered_total = len(enriched)
+    page_count = max(1, (filtered_total + selected_page_size - 1) // selected_page_size)
+    selected_page = min(selected_page, page_count)
+    start = (selected_page - 1) * selected_page_size
+    page_items = enriched[start : start + selected_page_size]
     status_counts: dict[str, int] = {}
     for item in enriched:
         status = str(item.get("health_status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
     return {
-        "items": enriched,
-        "count": len(enriched),
+        "items": page_items,
+        "count": len(page_items),
         "total": summary.get("count", 0),
+        "filtered_total": filtered_total,
+        "page": selected_page,
+        "page_size": selected_page_size,
+        "page_count": page_count,
+        "filter": filter_key,
+        "sort": sort_key,
         "summary": {
             "stock_count": summary.get("count", 0),
-            "visible_count": len(enriched),
+            "visible_count": filtered_total,
             "dataset_rows": summary.get("total_dataset_rows", 0),
             "minute_rows": summary.get("total_minute_rows", 0),
             "cold_uploaded_days": sum(int((item.get("cold_backup") or {}).get("uploaded_days") or 0) for item in enriched),
@@ -203,6 +230,45 @@ def stock_storage_status_snapshot(limit: int = 500, query: str = "") -> dict[str
             "health": status_counts,
         },
     }
+
+
+def _stock_storage_matches_filter(item: dict[str, Any], filter_key: str) -> bool:
+    if not filter_key or filter_key == "all":
+        return True
+    hot = item.get("hot_storage") if isinstance(item.get("hot_storage"), dict) else {}
+    cold = item.get("cold_backup") if isinstance(item.get("cold_backup"), dict) else {}
+    daily = item.get("daily_coverage") if isinstance(item.get("daily_coverage"), dict) else {}
+    minute = item.get("minute_coverage") if isinstance(item.get("minute_coverage"), dict) else {}
+    daily_missing = int(daily.get("missing_days") or 0) + int(daily.get("partial_days") or 0)
+    minute_missing = (int(minute.get("missing_days") or 0) if minute.get("missing_days") is not None else 0) + int(minute.get("partial_days") or 0)
+    cold_indexed_days = int(cold.get("indexed_days") or 0)
+    cold_uploaded_days = int(cold.get("uploaded_days") or 0)
+    if filter_key == "daily_missing":
+        return daily_missing > 0 or int(hot.get("daily_rows") or 0) == 0
+    if filter_key == "minute_missing":
+        return minute_missing > 0
+    if filter_key == "cold_pending":
+        return cold_indexed_days > 0 and cold_uploaded_days < cold_indexed_days
+    if filter_key == "health_attention":
+        return str(item.get("health_status") or "") != "ok"
+    return True
+
+
+def _stock_storage_sort_key(item: dict[str, Any], sort_key: str) -> tuple[Any, ...]:
+    if sort_key == "ts_code":
+        return (str(item.get("ts_code") or ""),)
+    if sort_key == "updated_at":
+        return (_invert_text(str(item.get("updated_at") or "")), str(item.get("ts_code") or ""))
+    if sort_key == "cold_uploaded_days":
+        return (-int((item.get("cold_backup") or {}).get("uploaded_days") or 0), str(item.get("ts_code") or ""))
+    if sort_key == "dataset_rows":
+        return (-int((item.get("hot_storage") or {}).get("dataset_rows") or 0), str(item.get("ts_code") or ""))
+    weight = {"danger": 0, "warning": 1, "unknown": 2, "ok": 3}
+    return (weight.get(str(item.get("health_status") or "unknown"), 2), str(item.get("ts_code") or ""))
+
+
+def _invert_text(value: str) -> str:
+    return "".join(chr(0x10FFFF - ord(char)) for char in value)
 
 
 def stock_status(code: str) -> dict[str, Any]:
@@ -343,7 +409,7 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
     datasets = full_data.setdefault("datasets", {})
     current_daily = datasets.get("daily", [])
     latest_daily_date = _latest_trade_date(current_daily)
-    if latest_daily_date and latest_daily_date >= date:
+    if _has_trade_date(current_daily, date):
         return {
             "ok": True,
             "ts_code": ts_code,
@@ -545,6 +611,10 @@ def _daily_date_range(full_data: dict[str, Any]) -> dict[str, str]:
 def _latest_trade_date(records: list[dict[str, Any]]) -> str:
     dates = [str(row.get("trade_date") or "") for row in records if row.get("trade_date")]
     return max(dates) if dates else ""
+
+
+def _has_trade_date(records: list[dict[str, Any]], trade_date: str) -> bool:
+    return any(str(row.get("trade_date") or "") == trade_date for row in records if isinstance(row, dict))
 
 
 def _first_record(records: Any) -> dict[str, Any]:
@@ -834,6 +904,9 @@ def _daily_coverage_by_code() -> dict[str, dict[str, Any]]:
                     "missing_days": 1,
                     "tail_missing_days": 1,
                     "internal_missing_days": 1,
+                    "missing_samples": 1,
+                    "tail_missing_samples": 1,
+                    "internal_missing_samples": 1,
                     "partial_days": 1,
                 },
             )

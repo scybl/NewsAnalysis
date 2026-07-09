@@ -86,12 +86,12 @@
           <section class="admin-section-block" data-admin-operation-section>
             <div class="admin-section-heading">
               <div><span>SOURCE MAP</span><h2>股票来源与标准</h2></div>
-              <p>先看股票数据来源，再看统一消费的标准数据类型。</p>
+              <p>先看东方财富、AkShare 等股票上游来源，再看统一消费的标准数据类型。</p>
             </div>
             <div class="data-source-overview-grid">
           <section class="admin-card data-source-card">
             <div class="admin-card-head">
-              <h4>股票数据源</h4>
+              <h4>股票来源</h4>
               <span id="dataSourceMeta">正在读取数据源...</span>
             </div>
             <div id="dataSourceStats" class="admin-kpis news-kpis"></div>
@@ -297,11 +297,11 @@
                 <label>
                   <span>过滤</span>
                   <select id="stockStorageFilterSelect">
-                    <option value="all" selected>全部股票</option>
+                    <option value="health_attention" selected>需要关注</option>
+                    <option value="all">全部股票</option>
                     <option value="daily_missing">日K异常</option>
                     <option value="minute_missing">分时异常</option>
                     <option value="cold_pending">冷备份未完成</option>
-                    <option value="health_attention">需要关注</option>
                   </select>
                 </label>
                 <label>
@@ -318,6 +318,11 @@
               <div class="admin-table-wrap stock-data-table-wrap">
                 <table id="stockStorageTable"></table>
               </div>
+              <div id="stockStoragePager" class="news-pager stock-storage-pager">
+                <button id="stockStoragePrevBtn" type="button">上一页</button>
+                <span id="stockStoragePageInfo">第 1 / 1 页</span>
+                <button id="stockStorageNextBtn" type="button">下一页</button>
+              </div>
             </section>
           </section>
           </div>
@@ -326,6 +331,6 @@
     </main>
 
     <script src="/admin.js?v=time-archive-20260708-v1"></script>
-    <script src="/admin-news.js?v=time-news-20260708-v1"></script>
+    <script src="/admin-news.js?v=stock-health-paging-20260709-v1"></script>
   </body>
 </html>

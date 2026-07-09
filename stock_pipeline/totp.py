@@ -40,7 +40,7 @@ def verify_totp(secret: str, code: str, *, interval: int = 30, digits: int = 6, 
     return False
 
 
-def otpauth_uri(secret: str, *, account: str, issuer: str = "NewsAnalysis") -> str:
+def otpauth_uri(secret: str, *, account: str, issuer: str = "ValueScope DataHub") -> str:
     label = f"{issuer}:{account}"
     params = urllib.parse.urlencode(
         {

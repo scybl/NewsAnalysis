@@ -419,7 +419,7 @@ async function loadAdminOverview() {
     renderAdminAgentAudit(payload.agent_audit_logs || []);
     const invites = payload.invites || [];
     if (adminSummary) {
-      adminSummary.textContent = adminAuditPage ? "" : "用户与邀请码仅保留数据端账号；分析端额度能力已迁出。";
+      adminSummary.textContent = adminAuditPage ? "" : "用户与邀请码仅保留 DataHub 数据端账号；下游分析额度能力已迁出。";
     }
     renderAdminUsers(payload.users || []);
     renderAdminInvites(invites);
@@ -712,6 +712,7 @@ function taskKindLabel(kind) {
     idle_stock_prefetch: "空闲预抓",
     kaipanla: "行情数据",
     data_random_audit: "数据抽检",
+    stock_storage_health: "存储健康",
     spider: "行情数据",
     multi_agent: "多 Agent",
     multi_agent_cache: "分析缓存",

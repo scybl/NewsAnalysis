@@ -1,18 +1,20 @@
-# NewsCrawler 与 NewsAnalysis 边界说明
+# NewsCrawler 与 ValueScope DataHub 边界说明
+
+> `NewsAnalysis` 是 ValueScope DataHub 的历史工程名。本文在描述代码边界、旧接口和迁移步骤时仍保留该名称，以免混淆已有模块、测试和部署路径。当前产品定位是数据采集、治理和展示；下游 `ValueScope` 分析只消费 DataHub 沉淀的数据。
 
 ## 1. 当前决策
 
 现有工程拆分为两个职责独立、可以分别安装和部署的项目：
 
 ```text
-NewsCrawler                         NewsAnalysis
-可靠地带回新闻                     理解和使用新闻
+NewsCrawler                         ValueScope DataHub
+可靠地带回新闻                     治理、展示和供给新闻数据
 
 来源发现与正文抓取                 新闻检索与清洗
 重试、限速与反爬处理               实体、股票和行业关联
-标准化与保守去重                   聚类、摘要、情感与影响分析
-采集任务与来源健康状态             Agent、报告、搜索与展示
-写入 raw_articles                  读取 raw_articles，写入分析结果
+标准化与保守去重                   质量检查、覆盖记录和证据整理
+采集任务与来源健康状态             新闻库、运行状态和数据展示
+写入 raw_articles                  读取 raw_articles，供给下游 ValueScope 分析
 ```
 
 项目之间不共享 Python 包，不互相导入内部代码，也不直接启动对方脚本。双方只通过版本化新闻文档契约和 MongoDB collection 通信。
@@ -35,15 +37,15 @@ NewsCrawler                         NewsAnalysis
 - `HealthProjector` 会根据运行记录更新 `news.source_health`。
 - 提供常驻 `schedule` 命令以及 `runs`、`health`、`cancel` 运维命令。
 - 提供 `migrate-legacy` 命令，将旧 `news.articles` 一次性迁移到 `raw_articles`。
-- NewsAnalysis 已增加只读 `MongoRawNewsRepository`，新闻库、股票新闻证据和 Agent 上下文通过该边界读取。
-- NewsAnalysis 已删除内部新闻采集 CLI、旧 MySQL 新闻链路和已被替代的爬虫源码。
-- NewsAnalysis Web 不再启动同花顺或 Guardian 新闻爬虫；原进程控制目前只保留非新闻的分钟行情补采。
-- NewsAnalysis 管理端提供 NewsCrawler 只读采集状态面板，展示 `source_health` 与近期 `crawl_runs`，但不反向启动或控制爬虫。
-- NewsAnalysis 管理端将“新闻数据”作为独立只读运维页面，不与股票资料、行情数据或其他控制面混排；页面明确展示数据所有权、运行事实、来源健康和错误详情。
+- ValueScope DataHub 已增加只读 `MongoRawNewsRepository`，新闻库、股票新闻证据和历史分析兼容入口通过该边界读取。
+- ValueScope DataHub 已删除内部新闻采集 CLI、旧 MySQL 新闻链路和已被替代的爬虫源码。
+- ValueScope DataHub Web 不再启动同花顺或 Guardian 新闻爬虫；原进程控制目前只保留非新闻的分钟行情补采。
+- ValueScope DataHub 管理端提供 NewsCrawler 只读采集状态面板，展示 `source_health` 与近期 `crawl_runs`，但不反向启动或控制爬虫。
+- ValueScope DataHub 管理端将“新闻数据”作为独立只读运维页面，不与股票资料、行情数据或其他控制面混排；页面明确展示数据所有权、运行事实、来源健康和错误详情。
 - 原 `/api/admin/spider/*` 已改为明确的 `/api/admin/market-fetch/*`。
 - 两份 `news.v1` JSON Schema 完全一致，并有契约测试。
-- NewsAnalysis 已实现 `latest`、`get_by_article_id`、`list_unprocessed` 和独立消费状态记录。
-- 根 Compose 已编排 MongoDB、NewsCrawler 和 NewsAnalysis Web 三个服务。
+- ValueScope DataHub 已实现 `latest`、`get_by_article_id`、`list_unprocessed` 和独立消费状态记录。
+- 根 Compose 已编排 MongoDB、NewsCrawler 和 ValueScope DataHub Web 三个服务。
 - CI 会运行两个项目的测试并构建两个镜像，部署流程会检查两个服务健康。
 - 三个来源均有固定离线 fixture；完整测试、独立目录测试、Compose 校验、镜像构建和临时 MongoDB 集成测试均已通过。
 - 原 `spider/` 目录、旧日志、缓存、重复依赖和 legacy Bloomberg 脚本已清理。
@@ -70,29 +72,29 @@ NewsCrawler 负责：
 NewsCrawler 不负责：
 
 - 股票行情和财务数据
-- 新闻摘要、情感分析、事件聚类和投资判断
-- Agent 与分析报告
-- NewsAnalysis 用户、权限和页面
-- 直接修改 NewsAnalysis 数据
+- 新闻展示、数据治理和下游分析供给
+- ValueScope DataHub 用户、权限和页面
+- 直接修改 ValueScope DataHub 数据
 
-### 2.2 NewsAnalysis
+### 2.2 ValueScope DataHub
 
-NewsAnalysis 负责：
+ValueScope DataHub 负责：
 
 - 从 `raw_articles` 查询新闻
-- 对新闻进行清洗、丰富和分析
+- 对新闻进行清洗、基础丰富和可展示化整理
 - 关联公司、股票、行业和宏观主题
-- 生成摘要、事件、情感、影响判断和证据上下文
-- 分析结果、Agent、报告、搜索和展示
-- 记录自身消费状态与分析产物
+- 生成可供下游 ValueScope 分析使用的证据上下文
+- 新闻库搜索、前端展示、来源健康和数据质量检查
+- 记录自身消费状态、数据版本和历史分析兼容产物
 
-NewsAnalysis 不负责：
+ValueScope DataHub 不负责：
 
 - 新闻网站请求和 HTML 解析
 - Selenium、浏览器 Cookie 和代理
 - 新闻源翻页、重试、限速和反爬
 - 启动或停止 NewsCrawler 内部脚本
 - 判断某个新闻源如何抓取
+- 承担最终投资判断或主要分析引擎职责
 
 ---
 
@@ -107,19 +109,19 @@ news.raw_articles
 news.crawl_runs
 news.source_health
 
-NewsAnalysis
+ValueScope DataHub
     ↓ reads
 news.raw_articles
-    ↓ owns / writes
+    ↓ owns / writes compatibility and supply records
 news.analysis_documents
 news.analysis_jobs
 ```
 
 所有权规则：
 
-- `raw_articles` 由 NewsCrawler 写入，NewsAnalysis 只读。
+- `raw_articles` 由 NewsCrawler 写入，ValueScope DataHub 只读。
 - `crawl_runs` 和 `source_health` 仅属于 NewsCrawler。
-- `analysis_documents` 和 `analysis_jobs` 仅属于 NewsAnalysis。
+- `analysis_documents` 和 `analysis_jobs` 是历史分析兼容和下游供给记录，不能反向修改新闻原文。
 - 不允许两个项目共同修改同一业务文档。
 
 当前不引入 Kafka、RabbitMQ、Redis Queue 或微服务框架。只有在共享 MongoDB 的轮询或查询成为可测量瓶颈后，才评估消息队列。
@@ -162,7 +164,7 @@ news.analysis_jobs
 - 时间保存为 UTC ISO 8601；读取端兼容迁移期旧字符串时间。
 - 正文保存为纯文本，来源原始字段放入 `raw_metadata`。
 - 新增可选字段不提升主版本；删除字段或改变语义时发布新 schema。
-- NewsAnalysis 遇到不支持的主版本时必须明确报错，不能静默误读。
+- ValueScope DataHub 遇到不支持的主版本时必须明确报错，不能静默误读。
 
 契约在两个项目中各保存一份 JSON Schema，并通过契约测试保证一致；不建立共享运行时代码包。
 
@@ -282,9 +284,9 @@ Repository 隔离 MongoDB API，但不决定业务去重规则。当前只实现
 
 ---
 
-## 6. NewsAnalysis 输入边界
+## 6. ValueScope DataHub 输入边界
 
-NewsAnalysis 保留独立的读取层：
+ValueScope DataHub 保留独立的读取层：
 
 ```python
 class RawNewsRepository:
@@ -294,9 +296,9 @@ class RawNewsRepository:
     def list_unprocessed(...): ...
 ```
 
-其 MongoDB 实现只读取 `raw_articles`。分析代码、Agent 和 Web 页面不直接出现 `pymongo.collection` 查询细节。
+其 MongoDB 实现只读取 `raw_articles`。新闻展示、历史分析兼容入口和下游数据供给代码不直接出现 `pymongo.collection` 查询细节。
 
-分析消费状态不得写回 `raw_articles`。需要记录处理进度时，使用 NewsAnalysis 自己拥有的 collection：
+数据消费状态不得写回 `raw_articles`。需要记录处理进度、数据版本或历史分析兼容产物时，使用 DataHub 自己拥有的 collection：
 
 ```text
 analysis_documents
@@ -322,14 +324,14 @@ analysis_ingestion_state
 ### 阶段 1：建立独立 NewsCrawler 项目
 
 - 创建独立 `pyproject.toml`、配置、CLI、测试和 Dockerfile。
-- 配置只读取自身环境变量或 secret file，不导入 NewsAnalysis 的密钥库。
+- 配置只读取自身环境变量或 secret file，不导入 ValueScope 的密钥库。
 - 建立 `news.v1` JSON Schema。
 - 实现模型、DedupeService、Repository 和公共 Pipeline。
 
 完成标准：
 
 - NewsCrawler 可以独立安装。
-- NewsCrawler 的测试不需要把 NewsAnalysis 加入 `PYTHONPATH`。
+- NewsCrawler 的测试不需要把 ValueScope DataHub 加入 `PYTHONPATH`。
 - FakeProvider 可以跑通发现、抓取、去重和写入。
 
 ### 阶段 2：迁移同花顺
@@ -352,7 +354,7 @@ analysis_ingestion_state
 
 完成标准：
 
-- Guardian 代码不依赖 NewsAnalysis。
+- Guardian 代码不依赖 ValueScope DataHub。
 - 运行统计进入 `crawl_runs`。
 
 ### 阶段 4：迁移 Bloomberg
@@ -366,26 +368,26 @@ analysis_ingestion_state
 - 用户只启动一次 Bloomberg 采集任务。
 - 中断后能够恢复未完成 URL。
 
-### 阶段 5：切换 NewsAnalysis
+### 阶段 5：切换 ValueScope DataHub
 
 - 增加 `RawNewsRepository`。
-- 将新闻搜索、Agent 新闻证据和新闻库页面切换到 `raw_articles`。
-- NewsAnalysis 删除新闻爬虫 CLI。
-- NewsAnalysis Web 删除新闻爬虫进程控制 API 和页面入口。
+- 将新闻搜索、新闻证据、新闻库页面和历史分析兼容入口切换到 `raw_articles`。
+- ValueScope DataHub 删除新闻爬虫 CLI。
+- ValueScope DataHub Web 删除新闻爬虫进程控制 API 和页面入口。
 - 分钟行情等非新闻能力不得随新闻爬虫一起误删。
 
 完成标准：
 
-- NewsAnalysis 启动和测试不要求 NewsCrawler 源码存在。
-- NewsAnalysis 不导入任何 NewsCrawler 模块。
-- 删除 NewsCrawler 目录后，NewsAnalysis 仍可读取已采集新闻。
+- ValueScope DataHub 启动和测试不要求 NewsCrawler 源码存在。
+- ValueScope DataHub 不导入任何 NewsCrawler 模块。
+- 删除 NewsCrawler 目录后，DataHub 仍可读取已采集新闻。
 
 ### 阶段 6：物理清理
 
-- 从 NewsAnalysis 删除 `spider/`。
+- 从 ValueScope DataHub 删除 `spider/`。
 - 删除旧 MySQL 新闻采集链路。
 - 删除爬虫专用脚本、依赖、日志配置和文档。
-- 更新 Compose，使 NewsCrawler 和 NewsAnalysis 成为两个容器。
+- 更新 Compose，使 NewsCrawler 和 ValueScope DataHub 成为两个容器。
 - 可选：将 NewsCrawler 目录迁移到独立 Git 仓库。
 
 完成标准：
@@ -411,7 +413,7 @@ docker compose
 - 两个应用使用不同镜像和依赖。
 - MongoDB 凭据可以来自同一部署 secret，但权限应逐步收紧。
 - NewsCrawler 只需要写 raw/crawl collections。
-- NewsAnalysis 只读 raw collection，并读写 analysis collections。
+- ValueScope DataHub 只读 raw collection，并读写历史分析兼容或下游供给 collections。
 - 两个应用分别拥有健康检查和日志。
 
 ---
@@ -429,13 +431,13 @@ NewsCrawler 必须覆盖：
 - checkpoint 恢复
 - CrawlRunRecord 与 HealthProjector
 
-NewsAnalysis 必须覆盖：
+ValueScope DataHub 必须覆盖：
 
 - `news.v1` 兼容读取
 - 不支持 schema 主版本时明确失败
 - 新闻搜索和时间范围
-- Agent 新闻证据构建
-- 分析消费状态不修改 raw 文档
+- 新闻证据构建
+- 数据消费状态不修改 raw 文档
 
 实时网站抓取只作为手动集成测试，不能成为 CI 成功的前提。
 
@@ -447,13 +449,13 @@ NewsAnalysis 必须覆盖：
 
 - 两个项目拥有独立依赖、配置、CLI、测试和 Dockerfile。
 - 任一项目均不导入另一项目的源码。
-- NewsAnalysis 不启动 NewsCrawler 进程。
-- NewsCrawler 不读取 NewsAnalysis 的密钥库或本地数据目录。
+- ValueScope DataHub 不启动 NewsCrawler 进程。
+- NewsCrawler 不读取 ValueScope DataHub 的密钥库或本地数据目录。
 
 ### 数据边界
 
 - `raw_articles` 只有 NewsCrawler 写入。
-- `analysis_documents` 只有 NewsAnalysis 写入。
+- `analysis_documents` 只有 DataHub 的历史兼容或下游供给链路写入。
 - 双方通过 `news.v1` 契约通信。
 - 数据契约具备自动化测试。
 
@@ -461,14 +463,14 @@ NewsAnalysis 必须覆盖：
 
 - 新增新闻源只需要实现 Provider 和样本测试。
 - Provider 不包含数据库和调度代码。
-- MongoDB API 不泄漏到 Pipeline 和分析业务代码。
+- MongoDB API 不泄漏到 Pipeline、展示业务或下游供给代码。
 - 旧入口、重复 requirements 和独立调度脚本被删除。
 
 ### 运行
 
 - 单个来源失败不影响其他来源。
 - 采集任务可查询、取消和追溯。
-- NewsAnalysis 在 NewsCrawler 停止时仍可分析已有新闻。
+- ValueScope DataHub 在 NewsCrawler 停止时仍可展示和供给已有新闻。
 - 两个容器可以分别重启和升级。
 
 ### 前端适配
@@ -478,7 +480,7 @@ NewsAnalysis 必须覆盖：
 - 开盘啦作为行情数据在“行情数据”页统一配置、调度和查看记录，不占用独立后台一级模块。
 - 行情补采复用股票搜索索引，支持股票代码、名称、全拼和首字母缩写检索，并在启动任务前解析为标准 `ts_code`。
 - 新闻数据页只读取 `crawl_runs`、`source_health` 和 collection 名称，不提供启动、停止、取消或修改 NewsCrawler 的操作。
-- 页面明确表达 `NewsCrawler → raw_articles → NewsAnalysis` 的单向所有权边界。
+- 页面明确表达 `NewsCrawler → raw_articles → ValueScope DataHub → ValueScope 分析` 的单向所有权边界。
 - 来源健康展示成功率、连续失败、最近成功/失败、最近新增和平均耗时。
 - 近期运行表格字段与 `CrawlResult` 一一对应，至少展示状态、起止时间、耗时、发现、获取、新增、更新、跳过和失败。
 - 运行错误、警告、指标和 `run_id` 可以从表格进入详情查看。
@@ -488,7 +490,7 @@ NewsAnalysis 必须覆盖：
 
 ## 11. 架构原则
 
-1. 爬虫负责获取，分析项目负责理解。
+1. 爬虫负责获取，DataHub 负责治理、展示和供给，下游 ValueScope 分析负责理解。
 2. 项目通过数据契约通信，不共享内部代码。
 3. 一个 collection 只有一个写入所有者。
 4. Provider 不负责存储、调度、Web API 或健康统计。

@@ -1,5 +1,5 @@
-"""Personal financial data platform for stock, market, news, and ops workflows."""
+"""ValueScope DataHub package for stock, market, news, and ops workflows."""
 
 __all__ = ["__version__"]
 
-__version__ = "1.4.0"
+__version__ = "2.0.0"

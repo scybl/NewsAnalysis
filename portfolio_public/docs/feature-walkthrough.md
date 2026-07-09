@@ -4,13 +4,13 @@ This walkthrough is written for hiring reviewers. It focuses on user-visible out
 
 ## 1. Data Platform Overview
 
-The home experience presents the project as a financial data platform rather than a single crawler script. It surfaces stock datasets, news evidence, market snapshots, and operational health in one place.
+The home experience presents the project as a DataHub rather than a single crawler script. It surfaces stock datasets, news evidence, market snapshots, and operational health in one place, then makes those datasets available to downstream ValueScope analysis.
 
 What this demonstrates:
 
 - Product framing around data assets.
 - Cross-domain data integration.
-- Separation between user-facing reading and admin-only operations.
+- Separation between user-facing reading, admin-only operations, and downstream analysis consumption.
 
 ## 2. System Governance
 
@@ -54,7 +54,7 @@ What this demonstrates:
 
 - Storage cost control.
 - Retrieval-oriented archive design.
-- Separation between hot analysis data and cold historical payloads.
+- Separation between hot display/analysis-supply data and cold historical payloads.
 
 ## 5. Access and Security
 

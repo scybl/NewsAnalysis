@@ -2,11 +2,12 @@
 
 ## One-Minute Pitch
 
-ValueScope / NewsAnalysis is a personal financial data platform for A-share research. It collects market and news data, stores daily data hot in MongoDB, archives heavy minute data into cold backup, tracks data gaps, and exposes an admin console for operations, data quality, account management, and governance.
+ValueScope DataHub is a personal data collection, governance, and display platform for A-share research data. It collects market and news data, stores daily data hot in MongoDB, archives heavy minute data into cold backup, tracks data gaps, exposes an admin console, and supplies curated datasets for downstream ValueScope analysis.
 
 ## Why It Is More Than a Script
 
 - It has multiple data domains: stocks, market dimensions, news, cold backup, and audit logs.
+- It is positioned as the data layer for downstream ValueScope analysis rather than as the primary analysis engine.
 - It distinguishes hot data from cold data.
 - It has operational safety around long-running jobs.
 - It includes data quality and gap tracking.

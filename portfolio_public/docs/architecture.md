@@ -1,6 +1,6 @@
 # Architecture
 
-ValueScope / NewsAnalysis is organized as a financial data platform with clear ownership boundaries between collection, storage, governance, operations, and presentation.
+ValueScope DataHub is organized as a data collection, governance, and display platform with clear ownership boundaries between acquisition, storage, quality control, operations, presentation, and downstream ValueScope analysis.
 
 ## System Layers
 
@@ -12,7 +12,8 @@ flowchart TB
   cold["Cold Backup"]
   index["Coverage and Health Indexes"]
   api["Web API"]
-  ui["Admin and Research UI"]
+  ui["Admin and Data UI"]
+  analysis["Downstream ValueScope Analysis"]
   audit["Audit Reports and Random Checks"]
 
   sources --> crawler
@@ -23,6 +24,7 @@ flowchart TB
   hot --> cold
   cold --> api
   api --> ui
+  api --> analysis
   audit --> ui
   hot --> audit
   index --> audit
@@ -45,6 +47,7 @@ flowchart TB
 | Web API | Serve stock, news, governance, account, and audit views. |
 | Admin UI | Present operational status and allow controlled actions for the owner. |
 | Cold backup | Store low-frequency historical objects outside the hot database. |
+| ValueScope analysis | Consume curated DataHub datasets; it is not the primary responsibility of this public package. |
 
 ## Production Code Visibility
 

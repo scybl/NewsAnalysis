@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ValueScope · A 股多源数据资产平台</title>
+    <title>ValueScope DataHub · A 股多源数据资产平台</title>
     <script>
       try {
         if (localStorage.getItem("stockTheme") === "dark") {
@@ -18,8 +18,8 @@
       <section class="search-panel">
         <div class="title-row">
           <div>
-            <h1>ValueScope</h1>
-            <p>A 股多源数据资产平台</p>
+            <h1>ValueScope DataHub</h1>
+            <p>A 股数据采集、治理与展示平台</p>
           </div>
         </div>
 
@@ -104,14 +104,14 @@
               <div class="agent-dashboard-head">
                 <div>
                   <h3>历史分析报告</h3>
-                  <p id="agentDashboardMeta">分析模块外置后，这里只展示已生成的历史报告。</p>
+                  <p id="agentDashboardMeta">下游分析外置后，这里只展示已生成的历史报告和数据供给记录。</p>
                 </div>
                 <div id="agentFinalScore" class="agent-final-score">-</div>
               </div>
               <div id="agentProgressPanel" class="agent-progress-panel" hidden></div>
               <div id="agentCards" class="agent-card-grid"></div>
             </section>
-            <div id="analysisOutput" class="analysis-output">选择一只股票后读取本地数据；分析模块已准备拆分为独立项目。</div>
+            <div id="analysisOutput" class="analysis-output">选择一只股票后读取本地数据；历史分析只作为兼容报告读取入口。</div>
           </div>
           <aside class="agent-history-panel">
             <div>

@@ -126,9 +126,9 @@ def test_changed_admin_pages_bust_static_cache_versions():
     expected = {
         "admin-accounts.html": "time-archive-20260708-v1",
         "admin-market.html": "time-archive-20260708-v1",
-        "admin-ops.html": "time-ops-layout-20260709-v1",
-        "admin-crawler.html": "time-crawler-20260708-v1",
-        "admin-news.html": "time-news-20260708-v1",
+        "admin-ops.html": "stock-health-paging-20260709-v1",
+        "admin-crawler.html": "stock-health-paging-20260709-v1",
+        "admin-news.html": "stock-health-paging-20260709-v1",
         "index.html": "time-maintenance-20260708-v1",
     }
 

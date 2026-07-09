@@ -19,6 +19,7 @@ def test_ops_snapshot_handles_missing_files_without_failing(tmp_path):
     assert _task(snapshot, "minute_cold_stock_year_upload")["status"] == "unknown"
     assert _task(snapshot, "daily_market_scheduler")["status"] == "unknown"
     assert _task(snapshot, "data_random_audit_scheduler")["status"] == "unknown"
+    assert _task(snapshot, "stock_storage_health_scheduler")["status"] == "unknown"
     assert snapshot["resources"]["files"]["admin_tasks"]["status"] == "missing"
     assert snapshot["resources"]["files"]["kaipanla_scheduler"]["status"] == "missing"
 
@@ -46,6 +47,32 @@ def test_ops_snapshot_includes_data_random_audit_scheduler(tmp_path):
     assert task["status"] == "idle"
     assert task["resource_level"] == "normal"
     assert task["details"]["scheduler"]["sample_size"] == 20
+
+
+def test_ops_snapshot_includes_stock_storage_health_scheduler(tmp_path):
+    local_data = tmp_path / "local_data"
+    local_data.mkdir()
+    (local_data / "stock_storage_health_scheduler.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "idle_seconds": 900,
+                "min_interval_seconds": 1800,
+                "max_interval_seconds": 7200,
+                "sample_size": 30,
+                "last_run_at": "20260707_130000",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = build_ops_snapshot(tmp_path, crawler_snapshot_fn=lambda: {"summary": {}, "alerts": []})
+    task = _task(snapshot, "stock_storage_health_scheduler")
+
+    assert task["kind"] == "stock_storage_health"
+    assert task["status"] == "idle"
+    assert task["resource_level"] == "normal"
+    assert task["details"]["scheduler"]["sample_size"] == 30
 
 
 def test_ops_snapshot_parses_minute_upload_progress(tmp_path):

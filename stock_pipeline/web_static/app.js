@@ -91,7 +91,7 @@ let pieSlices = [];
 let hoveredPieIndex = -1;
 const pageSize = 50;
 let analysisModuleAvailable = false;
-const ANALYSIS_MODULE_MESSAGE = "分析模块已拆分为外部项目，当前主站只保留数据资产和历史报告读取。";
+const ANALYSIS_MODULE_MESSAGE = "下游分析已拆分为外部 ValueScope，当前 DataHub 只保留数据资产、供给记录和历史报告读取。";
 const defaultAnalysisFrameworks = [
   { key: "value_speculation", label: "价值投机" },
   { key: "value_quality", label: "质量成长价值" },
@@ -110,7 +110,7 @@ initializeAnalysisModuleState();
 function initializeAnalysisModuleState() {
   if (multiAgentBtn) {
     multiAgentBtn.disabled = !analysisModuleAvailable || !selected;
-    multiAgentBtn.textContent = analysisModuleAvailable ? "多Agent分析" : "分析模块已封存";
+    multiAgentBtn.textContent = analysisModuleAvailable ? "多Agent分析" : "下游分析已外置";
     multiAgentBtn.title = analysisModuleAvailable ? "" : ANALYSIS_MODULE_MESSAGE;
   }
   if (analyzeBtn) {
@@ -668,7 +668,7 @@ function selectStock(item) {
   loadedDatasets = [];
   activeDataset = null;
   resetTableFilters();
-  output.textContent = "正在读取本地更新状态；分析模块已封存，只保留历史报告读取。";
+  output.textContent = "正在读取本地更新状态；当前 DataHub 只保留数据读取、供给记录和历史报告读取。";
   renderAnalysisHistoryOptions([]);
   renderAgentRunOptions([]);
   for (const button of results.querySelectorAll(".result")) {

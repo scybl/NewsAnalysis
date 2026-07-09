@@ -18,7 +18,7 @@ _LOG_LINE = re.compile(r"^\[(?P<prefix>[^\]]+)\]\[(?P<ts>[^\]]+)\]\s*(?P<body>.*
 _RUNNING_STATUSES = {"queued", "running", "stopping", "running_unknown_pid"}
 _FAILED_STATUSES = {"failed", "failed_or_stopped"}
 _WARNING_STATUSES = {"warning", "running_unknown_pid"}
-_SCHEDULER_TASK_KINDS = {"daily_market", "idle_stock_prefetch", "kaipanla", "data_random_audit"}
+_SCHEDULER_TASK_KINDS = {"daily_market", "idle_stock_prefetch", "kaipanla", "data_random_audit", "stock_storage_health"}
 
 
 def build_ops_snapshot(
@@ -69,6 +69,15 @@ def build_ops_snapshot(
             "空闲数据随机抽检",
             "data_random_audit",
             local_data / "data_random_audit_scheduler.json",
+            admin_tasks,
+            resource_level=NORMAL_IO,
+            resources=resources,
+        ),
+        _scheduler_task(
+            "stock_storage_health_scheduler",
+            "股票存储健康检查",
+            "stock_storage_health",
+            local_data / "stock_storage_health_scheduler.json",
             admin_tasks,
             resource_level=NORMAL_IO,
             resources=resources,
@@ -337,6 +346,7 @@ def _public_scheduler_config(config: dict[str, Any]) -> dict[str, Any]:
         "minutes_enabled",
         "sample_size",
         "cold_read_samples",
+        "cold_compare_samples",
         "full_history",
         "features",
         "last_run_date",

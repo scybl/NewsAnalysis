@@ -177,3 +177,37 @@ def test_stock_storage_status_snapshot_combines_hot_and_cold_indexes(monkeypatch
     assert item["hot_storage"]["dataset_rows"] == 260
     assert item["cold_backup"]["uploaded_days"] == 300
     assert snapshot["summary"]["cold_uploaded_days"] == 300
+
+
+def test_stock_storage_status_snapshot_filters_and_paginates_abnormal_items(monkeypatch):
+    monkeypatch.setattr(
+        stock_storage,
+        "list_local_stock_summaries",
+        lambda: {
+            "count": 2,
+            "total_dataset_rows": 20,
+            "total_minute_rows": 0,
+            "items": [
+                {"ts_code": "000001.SZ", "name": "平安银行", "updated_at": "20260707_210000", "dataset_count": 1, "dataset_rows": {"daily": 10}},
+                {"ts_code": "000002.SZ", "name": "万科A", "updated_at": "20260707_210001", "dataset_count": 1, "dataset_rows": {"daily": 10}},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        stock_storage,
+        "_daily_coverage_by_code",
+        lambda: {
+            "000001.SZ": {"ts_code": "000001.SZ", "missing_days": 1, "partial_days": 0, "missing_samples": ["20260703"]},
+            "000002.SZ": {"ts_code": "000002.SZ", "missing_days": 0, "partial_days": 0},
+        },
+    )
+    monkeypatch.setattr(stock_storage, "_minute_coverage_by_code", lambda: {})
+    monkeypatch.setattr(stock_storage, "_minute_upload_by_code", lambda: {})
+
+    snapshot = stock_storage.stock_storage_status_snapshot(page=1, page_size=1, filter_key="health_attention")
+
+    assert snapshot["count"] == 1
+    assert snapshot["filtered_total"] == 1
+    assert snapshot["page_count"] == 1
+    assert snapshot["items"][0]["ts_code"] == "000001.SZ"
+    assert snapshot["items"][0]["health_status"] == "warning"

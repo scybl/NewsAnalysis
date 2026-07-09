@@ -52,7 +52,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Test NewsAnalysis and NewsCrawler
+      - name: Test ValueScope DataHub and NewsCrawler
         run: |
           python -m pip install -r requirements.txt
           python -m pip install -e './NewsCrawler[dev]'
@@ -75,8 +75,8 @@ jobs:
           npm ci
           ./node_modules/.bin/tailwindcss \
             -i stock_pipeline/web_static/tailwind.input.css \
-            -o /tmp/newsanalysis-tailwind.css
-          test -s /tmp/newsanalysis-tailwind.css
+            -o /tmp/valuescope-tailwind.css
+          test -s /tmp/valuescope-tailwind.css
 
   compose:
     name: CI / compose
@@ -102,7 +102,7 @@ jobs:
 
       - name: Build production images
         run: |
-          docker build --tag newsanalysis:ci .
+          docker build --tag valuescope:ci .
           docker build --tag news-crawler:ci ./NewsCrawler
 
   validate:

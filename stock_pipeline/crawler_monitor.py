@@ -122,7 +122,7 @@ def news_crawler_prometheus_metrics(snapshot: dict[str, Any] | None = None) -> s
     """Render NewsCrawler monitor state as Prometheus exposition text."""
     payload = snapshot if snapshot is not None else crawler_status_snapshot(limit=25, failure_limit=300)
     lines: list[str] = [
-        "# HELP news_crawler_up 1 if NewsAnalysis can read NewsCrawler monitor collections.",
+        "# HELP news_crawler_up 1 if ValueScope DataHub can read NewsCrawler monitor collections.",
         "# TYPE news_crawler_up gauge",
         f"news_crawler_up {1 if payload.get('enabled') else 0}",
     ]

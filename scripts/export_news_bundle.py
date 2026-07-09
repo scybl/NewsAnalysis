@@ -355,7 +355,7 @@ python3 scripts/export_news_bundle.py export --source guardian --limit 8000 --or
 
 
 def readme_text(manifest: dict[str, Any]) -> str:
-    return f"""# NewsAnalysis Guardian Export Bundle
+    return f"""# ValueScope DataHub Guardian Export Bundle
 
 Format: `{manifest["bundle_format"]}`
 Source: `{manifest["source_name"]}`
@@ -365,7 +365,7 @@ Index: `{manifest["index_file"]}`
 Each article is stored as one standalone JSON object under `objects/`, so a single
 article can be restored by downloading only its JSON file plus the small index.
 
-Import on a NewsAnalysis server:
+Import on a ValueScope DataHub server with the historical `/opt/NewsAnalysis` deploy path:
 
 ```bash
 ./import.sh
