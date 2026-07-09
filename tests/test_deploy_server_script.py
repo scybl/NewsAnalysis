@@ -71,6 +71,10 @@ def test_deploy_workflow_skips_when_production_secrets_are_missing():
     assert "::notice::Production deployment skipped" in workflow
     assert "GITHUB_STEP_SUMMARY" in workflow
     assert "if: steps.deployment_secrets.outputs.enabled == 'true'" in workflow
+    assert "Safe sync and activate when idle" in workflow
+    assert "DEPLOY_PROTECT_RUNNING_JOBS=1" in workflow
+    assert "scripts/deploy_server.sh" in workflow
+    assert "docker compose -f docker-compose.prod.yml up -d --build" not in workflow
     assert "Validate deployment secrets" not in workflow
 
 
