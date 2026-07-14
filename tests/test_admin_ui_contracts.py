@@ -126,7 +126,7 @@ def test_changed_admin_pages_bust_static_cache_versions():
     expected = {
         "admin-accounts.html": "time-archive-20260708-v1",
         "admin-market.html": "time-archive-20260708-v1",
-        "admin-ops.html": "stock-health-paging-20260709-v1",
+        "admin-ops.html": "ops-status-labels-20260714-v1",
         "admin-crawler.html": "stock-health-paging-20260709-v1",
         "admin-news.html": "stock-health-paging-20260709-v1",
         "index.html": "time-maintenance-20260708-v1",
@@ -201,12 +201,22 @@ def test_kaipanla_overview_formats_saved_time_and_fallback_date():
 def test_ops_status_hints_cover_user_visible_status_values():
     script = (STATIC / "admin-ops.js").read_text(encoding="utf-8")
 
-    for status in ("succeeded", "failed", "running", "idle", "unknown", "paused", "failed_or_stopped"):
+    for status in ("succeeded", "failed", "running", "idle", "unknown", "unconfigured", "paused", "failed_or_stopped"):
         assert f"{status}:" in script
     assert "OPS_STATUS_HINTS" in script
     assert "title=\"${escapeAttr(statusHint(safeStatus))}\"" in script
     assert "任务最近一次完整执行成功" in script
+    assert "调度配置文件尚未生成" in script
     assert "缺少配置、日志或状态文件" in script
+
+
+def test_ops_recent_errors_render_alert_status_instead_of_task_success_status():
+    script = (STATIC / "admin-ops.js").read_text(encoding="utf-8")
+
+    assert "function alertStatus(item)" in script
+    assert ".map((task) => ({ ...task, alert_status: alertStatus(task) }))" in script
+    assert 'statusBadge(item.alert_status || item.status || "warning")' in script
+    assert 'return item.last_error ? "warning" : (status || "warning");' in script
 
 
 def test_ops_event_labels_cover_cold_upload_lifecycle_and_crawler_snapshot():

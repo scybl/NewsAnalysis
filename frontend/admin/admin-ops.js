@@ -21,6 +21,7 @@ const OPS_STATUS_LABELS = {
   queued: "排队中",
   deferred: "延后中",
   unknown: "未知",
+  unconfigured: "未配置",
   running_unknown_pid: "运行中",
 };
 
@@ -35,6 +36,7 @@ const OPS_STATUS_HINTS = {
   paused: "调度器被关闭或手动暂停。",
   warning: "任务可读但存在告警，需要检查最近异常。",
   unknown: "缺少配置、日志或状态文件，暂时无法判断。",
+  unconfigured: "调度配置文件尚未生成，保存一次定时配置后会进入空闲或排队状态。",
   running_unknown_pid: "状态显示运行中，但无法确认具体进程号。",
 };
 
@@ -189,8 +191,10 @@ function taskKindLabel(kind) {
 
 function renderOpsErrors(tasks, warnings) {
   const items = [
-    ...tasks.filter((task) => task.last_error || ["failed", "failed_or_stopped", "warning"].includes(task.status || "")),
-    ...warnings.map((message) => ({ title: "系统告警", status: "warning", last_error: message })),
+    ...tasks
+      .filter((task) => task.last_error || ["failed", "failed_or_stopped", "warning"].includes(task.status || ""))
+      .map((task) => ({ ...task, alert_status: alertStatus(task) })),
+    ...warnings.map((message) => ({ title: "系统告警", status: "warning", alert_status: "warning", last_error: message })),
   ].slice(0, 8);
   opsErrorMeta.textContent = items.length ? `${items.length} 条` : "无异常";
   opsErrors.innerHTML = items.length
@@ -198,7 +202,7 @@ function renderOpsErrors(tasks, warnings) {
       <article class="ops-error-item">
         <div>
           <strong>${escapeHtml(item.title || item.id || "异常")}</strong>
-          ${statusBadge(item.status || "warning")}
+          ${statusBadge(item.alert_status || item.status || "warning")}
         </div>
         <p>${escapeHtml(item.last_error || item.last_event || "")}</p>
       </article>
@@ -233,6 +237,13 @@ function renderOpsError(error) {
 function statusBadge(status) {
   const safeStatus = status || "unknown";
   return `<span class="ops-status-badge is-${escapeAttr(safeStatus)}" title="${escapeAttr(statusHint(safeStatus))}">${escapeHtml(statusLabel(safeStatus))}</span>`;
+}
+
+function alertStatus(item) {
+  const status = item.status || "";
+  if (["failed", "failed_or_stopped", "danger"].includes(status)) return status;
+  if (["warning", "running_unknown_pid"].includes(status)) return "warning";
+  return item.last_error ? "warning" : (status || "warning");
 }
 
 function statusLabel(status) {

@@ -17,9 +17,9 @@ def test_ops_snapshot_handles_missing_files_without_failing(tmp_path):
 
     assert snapshot["overall"]["status"] == "ok"
     assert _task(snapshot, "minute_cold_stock_year_upload")["status"] == "unknown"
-    assert _task(snapshot, "daily_market_scheduler")["status"] == "unknown"
-    assert _task(snapshot, "data_random_audit_scheduler")["status"] == "unknown"
-    assert _task(snapshot, "stock_storage_health_scheduler")["status"] == "unknown"
+    assert _task(snapshot, "daily_market_scheduler")["status"] == "unconfigured"
+    assert _task(snapshot, "data_random_audit_scheduler")["status"] == "unconfigured"
+    assert _task(snapshot, "stock_storage_health_scheduler")["status"] == "unconfigured"
     assert snapshot["resources"]["files"]["admin_tasks"]["status"] == "missing"
     assert snapshot["resources"]["files"]["kaipanla_scheduler"]["status"] == "missing"
 
@@ -127,6 +127,33 @@ def test_ops_snapshot_marks_stale_upload_start_as_warning(tmp_path):
     assert task["running"] is True
     assert "upload_start" in task["last_error"]
     assert snapshot["overall"]["status"] == "warning"
+
+
+def test_ops_snapshot_ignores_legacy_minute_log_noise_after_valid_event(tmp_path):
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "minute-cold-stock-year-upload.log").write_text(
+        "\n".join(
+            [
+                "[minute-cold][2026-07-03T10:00:00Z] summary current=10573/10573 percent=100",
+                "  \"storage_object\": \"stock_year_jsonl\"",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = build_ops_snapshot(
+        tmp_path,
+        now=datetime(2026, 7, 3, 10, 1, tzinfo=timezone.utc),
+        crawler_snapshot_fn=lambda: {"summary": {"running_count": 0, "expired_running_count": 0}, "alerts": []},
+    )
+    task = _task(snapshot, "minute_cold_stock_year_upload")
+
+    assert task["status"] == "succeeded"
+    assert task["last_error"] == ""
+    assert snapshot["overall"]["warnings"] == []
 
 
 def test_ops_snapshot_reads_scheduler_and_admin_task_state(tmp_path):

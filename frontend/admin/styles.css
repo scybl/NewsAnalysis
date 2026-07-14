@@ -7933,7 +7933,8 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 }
 
 .ops-status-badge.is-paused,
-.ops-status-badge.is-unknown {
+.ops-status-badge.is-unknown,
+.ops-status-badge.is-unconfigured {
   border-color: #d0d7e2;
   background: #f8fafc;
   color: #667085;

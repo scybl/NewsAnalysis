@@ -18,6 +18,7 @@ _LOG_LINE = re.compile(r"^\[(?P<prefix>[^\]]+)\]\[(?P<ts>[^\]]+)\]\s*(?P<body>.*
 _RUNNING_STATUSES = {"queued", "running", "stopping", "running_unknown_pid"}
 _FAILED_STATUSES = {"failed", "failed_or_stopped"}
 _WARNING_STATUSES = {"warning", "running_unknown_pid"}
+_MISSING_CONFIG_STATUS = "unconfigured"
 _SCHEDULER_TASK_KINDS = {"daily_market", "idle_stock_prefetch", "kaipanla", "data_random_audit", "stock_storage_health"}
 
 
@@ -207,7 +208,10 @@ def _scheduler_task(
         resource_level = HEAVY_IO if bool((config or {}).get("minutes_enabled", True)) else NORMAL_IO
     task = _base_task(task_id, title, kind, resource_level=resource_level or NORMAL_IO, enabled=enabled)
     task["config_file"] = str(config_path)
-    task["status"] = "unknown" if config is None else ("paused" if not enabled else "idle")
+    if config is None:
+        task["status"] = _MISSING_CONFIG_STATUS if not config_error else "unknown"
+    else:
+        task["status"] = "paused" if not enabled else "idle"
     task["last_error"] = config_error or str((config or {}).get("last_error") or "")
     task["details"] = {"scheduler": _public_scheduler_config(config or {})}
     task["last_run_at"] = str((config or {}).get("last_run_at") or "")
@@ -449,7 +453,7 @@ def _parse_minute_log(log_file: Path, now: datetime) -> dict[str, Any]:
         "age_seconds": max(0, age_seconds) if age_seconds is not None else None,
         "progress": progress,
         "details": details,
-        "last_error": str(fields.get("error") or (parse_errors[-1] if parse_errors else "")),
+        "last_error": str(fields.get("error") or ""),
     }
 
 
