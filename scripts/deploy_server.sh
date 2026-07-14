@@ -210,7 +210,25 @@ if admin_tasks_path.exists():
 
 protected_regex = os.environ.get(\"PROTECTED_REGEX\", \"\")
 if protected_regex:
-    host_matches = subprocess.run([\"pgrep\", \"-af\", protected_regex], text=True, capture_output=True, check=False).stdout.strip()
+    def _protected_process_lines(output):
+        ignored_pids = {os.getpid(), os.getppid()}
+        lines = []
+        for line in str(output or \"\").splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            pid_text = text.split(maxsplit=1)[0]
+            if pid_text.isdigit() and int(pid_text) in ignored_pids:
+                continue
+            if \"PROTECTED_REGEX=\" in text or \"PROTECTED_TASK_STATUSES=\" in text:
+                continue
+            if re.search(protected_regex, text):
+                lines.append(line)
+        return \"\\n\".join(lines)
+
+    host_matches = _protected_process_lines(
+        subprocess.run([\"pgrep\", \"-af\", protected_regex], text=True, capture_output=True, check=False).stdout
+    )
     if host_matches:
         print(\"[host]\")
         print(host_matches)
@@ -231,7 +249,7 @@ if protected_regex:
             capture_output=True,
             check=False,
         ).stdout.strip()
-        web_matches = \"\\n\".join(line for line in ps_output.splitlines() if re.search(protected_regex, line))
+        web_matches = _protected_process_lines(ps_output)
         if web_matches:
             print(f\"[{service} container]\")
             print(web_matches)

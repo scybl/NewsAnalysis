@@ -42,9 +42,12 @@ def run_stock_storage_health_check(
     cold_compare_samples: int = 1,
     cold_reader: ColdReader | None = None,
     fresh_fetcher: FreshFetcher | None = None,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     selected_codes, total_candidates, actual_seed = _select_health_check_codes(sample_size=sample_size, codes=codes, seed=seed)
+    _run_checkpoint(checkpoint, stage="before_coverage_refresh", sample_size=sample_size, selected_count=len(selected_codes))
     coverage_refresh = _refresh_daily_k_coverage_safe(selected_codes, today_yyyymmdd()) if selected_codes else {"ok": True, "stocks_checked": 0}
+    _run_checkpoint(checkpoint, stage="before_status_snapshot", sample_size=sample_size, selected_count=len(selected_codes))
     snapshot = stock_storage_status_snapshot(
         limit=max(1, len(selected_codes) or 1),
         page=1,
@@ -55,6 +58,7 @@ def run_stock_storage_health_check(
     )
     items = snapshot.get("items") or []
     abnormal = [item for item in items if str(item.get("health_status") or "") != "ok"]
+    _run_checkpoint(checkpoint, stage="before_cold_compare", sample_size=sample_size, selected_count=len(selected_codes))
     cold_compare = compare_minute_cold_backup_samples(
         sample_size=cold_compare_samples,
         seed=actual_seed,
@@ -85,6 +89,11 @@ def run_stock_storage_health_check(
             for item in abnormal[:20]
         ],
     }
+
+
+def _run_checkpoint(checkpoint: Callable[[dict[str, Any]], None] | None, **details: Any) -> None:
+    if checkpoint is not None:
+        checkpoint(details)
 
 
 def compare_minute_cold_backup_samples(

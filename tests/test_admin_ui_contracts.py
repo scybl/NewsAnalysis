@@ -5,7 +5,7 @@ from stock_pipeline.web import ApiKeyCipher, UserStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STATIC = ROOT / "stock_pipeline" / "web_static"
+STATIC = ROOT / "frontend" / "admin"
 
 
 def _store(tmp_path, payload):

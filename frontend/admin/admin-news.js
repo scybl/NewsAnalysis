@@ -72,7 +72,7 @@ const dataSourceState = {
   coverage: {},
   summary: {},
 };
-const STOCK_PROVIDER_KEYS = new Set(["eastmoney", "akshare", "tushare"]);
+const STOCK_PROVIDER_KEYS = new Set(["akshare", "eastmoney", "tushare"]);
 const STOCK_STANDARD_CATEGORIES = new Set(["个股"]);
 const hasNewsLibrary = Boolean(newsList);
 const hasStockLibrary = Boolean(stockDataTable);

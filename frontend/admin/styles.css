@@ -7910,7 +7910,14 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
   color: #067647;
 }
 
+.ops-status-badge.is-queued {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #175cd3;
+}
+
 .ops-status-badge.is-warning,
+.ops-status-badge.is-deferred,
 .ops-status-badge.is-running_unknown_pid {
   border-color: #fedf89;
   background: #fffaeb;

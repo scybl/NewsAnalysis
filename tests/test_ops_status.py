@@ -165,6 +165,62 @@ def test_ops_snapshot_reads_scheduler_and_admin_task_state(tmp_path):
     assert snapshot["overall"]["heavy_io_running"] is True
 
 
+def test_ops_snapshot_keeps_scheduler_queue_state_separate_from_running(tmp_path):
+    local_data = tmp_path / "local_data"
+    local_data.mkdir()
+    (local_data / "admin_tasks.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_id": "daily-queued",
+                        "kind": "daily_market",
+                        "title": "每日股票数据更新",
+                        "status": "queued",
+                        "updated_epoch": 10,
+                        "events": [{"stage": "queued", "message": "任务已进入资源队列。"}],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (local_data / "daily_market_scheduler.json").write_text(
+        json.dumps({"enabled": True, "last_task_id": "daily-queued", "last_error": ""}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (local_data / "task_queue.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "task_id": "daily-queued",
+                        "title": "每日股票数据更新",
+                        "status": "deferred",
+                        "resource_level": "heavy_io",
+                        "last_defer_reason": "可用内存不足",
+                        "defer_count": 2,
+                        "enqueued_epoch": 1,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = build_ops_snapshot(tmp_path)
+    task = _task(snapshot, "daily_market_scheduler")
+
+    assert task["status"] == "queued"
+    assert task["running"] is False
+    assert snapshot["overall"]["heavy_io_running"] is False
+    assert "daily_market_scheduler" in {item["id"] for item in active_heavy_io_tasks(snapshot)}
+    assert snapshot["resources"]["task_queue"]["counts"]["deferred"] == 1
+    assert snapshot["resources"]["task_queue"]["head"]["last_defer_reason"] == "可用内存不足"
+
+
 def test_active_heavy_io_tasks_include_minute_upload_and_market_spider(tmp_path):
     local_data = tmp_path / "local_data"
     logs_dir = tmp_path / "logs"
@@ -250,18 +306,28 @@ def test_heavy_io_guard_is_wired_to_heavy_start_routes_only():
     source = (Path(__file__).resolve().parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
     kaipanla_start = source.index("def _handle_admin_kaipanla_scheduler")
     kaipanla = source[kaipanla_start : kaipanla_start + 900]
+    daily_start = source.index("def _handle_admin_daily_market_scheduler")
+    daily = source[daily_start : daily_start + 900]
+    idle_start = source.index("def _handle_admin_idle_stock_prefetch")
+    idle = source[idle_start : idle_start + 900]
+    audit_start = source.index("def _handle_admin_data_random_audit_scheduler")
+    audit = source[audit_start : audit_start + 700]
 
     assert 'active_heavy_io_tasks' in source
     assert '_reject_if_heavy_io_running("manual_market_fetch_full")' in source
-    assert '_reject_if_heavy_io_running("full_market_daily_fetch")' in source
-    assert '_reject_if_heavy_io_running("idle_stock_prefetch_with_minutes")' in source
+    assert 'task_queue.enqueue' in source
+    assert '_reject_if_heavy_io_running("full_market_daily_fetch")' not in source
+    assert '_reject_if_heavy_io_running("idle_stock_prefetch_with_minutes")' not in source
     assert "已有重 IO 任务正在运行" in source
     assert "self._ops_snapshot(include_crawler=False)" in source
+    assert "_reject_if_heavy_io_running" not in daily
+    assert "_reject_if_heavy_io_running" not in idle
+    assert "_reject_if_heavy_io_running" not in audit
     assert "_reject_if_heavy_io_running" not in kaipanla
 
 
 def test_admin_ops_frontend_is_read_only_and_linked():
-    static = Path(__file__).resolve().parents[1] / "stock_pipeline" / "web_static"
+    static = Path(__file__).resolve().parents[1] / "frontend" / "admin"
     html = (static / "admin-ops.html").read_text(encoding="utf-8")
     script = (static / "admin-ops.js").read_text(encoding="utf-8")
     styles = (static / "styles.css").read_text(encoding="utf-8")

@@ -8,7 +8,7 @@ from stock_pipeline.web import ANALYSIS_MODULE_STATUS_TEXT, StockWebApp
 
 ROOT = Path(__file__).resolve().parents[1]
 ANALYSIS_ROOT = ROOT.parent / "Analysis"
-STATIC = ROOT / "stock_pipeline" / "web_static"
+STATIC = ROOT / "frontend" / "admin"
 
 
 def test_analysis_execution_is_external_by_default(monkeypatch):

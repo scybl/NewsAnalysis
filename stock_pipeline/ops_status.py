@@ -34,6 +34,7 @@ def build_ops_snapshot(
     now_utc = _as_utc(now or datetime.now(timezone.utc))
     resources: dict[str, Any] = {"files": {}}
     admin_tasks = _read_admin_tasks(local_data / "admin_tasks.json", resources)
+    resources["task_queue"] = _task_queue_summary(local_data / "task_queue.json", resources)
 
     tasks = [
         _minute_cold_upload_task(logs_dir, pid_checker=pid_checker or _pid_exists, now=now_utc),
@@ -217,7 +218,10 @@ def _scheduler_task(
         task["last_event"] = _last_event(latest)
         task["last_error"] = task["last_error"] or str(latest.get("error") or "")
         task["updated_at"] = str(latest.get("updated_at") or "")
-        if latest_status in _RUNNING_STATUSES:
+        if latest_status == "queued":
+            task["status"] = "queued"
+            task["running"] = False
+        elif latest_status in _RUNNING_STATUSES:
             task["status"] = "running"
             task["running"] = True
         elif latest_status in _FAILED_STATUSES:
@@ -316,6 +320,38 @@ def _read_json_file(path: Path, resources: dict[str, Any]) -> tuple[Any | None, 
     except Exception as exc:  # noqa: BLE001 - one bad file must not break the whole snapshot
         files[key] = {"path": str(path), "status": "error", "error": str(exc)}
         return None, str(exc)
+
+
+def _task_queue_summary(path: Path, resources: dict[str, Any]) -> dict[str, Any]:
+    payload, error = _read_json_file(path, resources)
+    if error:
+        return {"status": "error", "counts": {}, "head": None, "error": error}
+    if payload is None:
+        return {"status": "missing", "counts": {}, "head": None, "error": ""}
+    items = payload.get("items") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        return {"status": "error", "counts": {}, "head": None, "error": "队列文件格式无效。"}
+    counts: dict[str, int] = {}
+    ordered = sorted(
+        [item for item in items if isinstance(item, dict)],
+        key=lambda item: float(item.get("enqueued_epoch") or item.get("updated_epoch") or 0),
+    )
+    for item in ordered:
+        status = str(item.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    head = None
+    for item in ordered:
+        if item.get("status") in {"queued", "deferred", "running"}:
+            head = {
+                "task_id": item.get("task_id") or "",
+                "title": item.get("title") or "",
+                "status": item.get("status") or "",
+                "resource_level": item.get("resource_level") or "",
+                "last_defer_reason": item.get("last_defer_reason") or "",
+                "defer_count": _int(item.get("defer_count")),
+            }
+            break
+    return {"status": "ok", "counts": counts, "head": head, "error": ""}
 
 
 def _latest_task(admin_tasks: list[dict[str, Any]], kind: str, task_id: str = "") -> dict[str, Any] | None:

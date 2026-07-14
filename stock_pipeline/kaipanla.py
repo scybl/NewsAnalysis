@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import date
-from typing import Any
+from typing import Any, Callable
 
 from pymongo import ASCENDING, DESCENDING, MongoClient
 
@@ -174,6 +174,7 @@ def run_kaipanla_batch(
     save: bool = True,
     run_id: str = "",
     trade_date: str = "",
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     selected = [key for key in feature_keys if key in KAIPANLA_FEATURES]
     if not selected:
@@ -182,7 +183,9 @@ def run_kaipanla_batch(
     results = []
     succeeded = 0
     failed = 0
-    for key in selected:
+    for index, key in enumerate(selected, start=1):
+        if checkpoint is not None:
+            checkpoint({"stage": "before_feature", "feature": key, "current": index, "total": len(selected), "trade_date": normalized_trade_date})
         try:
             params = (params_by_feature or {}).get(key) or {}
             if normalized_trade_date:

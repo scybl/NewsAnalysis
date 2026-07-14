@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STATIC = ROOT / "stock_pipeline" / "web_static"
+STATIC = ROOT / "frontend" / "admin"
 
 
 def test_credentials_pane_does_not_render_secret_values():
@@ -10,6 +10,7 @@ def test_credentials_pane_does_not_render_secret_values():
     redirect = (STATIC / "admin-credentials.html").read_text(encoding="utf-8")
     script = (STATIC / "admin-credentials.js").read_text(encoding="utf-8")
     web = (ROOT / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    credentials_registry = (ROOT / "backend" / "credentials_registry.py").read_text(encoding="utf-8")
 
     assert "<title>访问与安全 - NewsCrawler</title>" in html
     assert 'data-account-tab="credentials"' in html
@@ -26,32 +27,32 @@ def test_credentials_pane_does_not_render_secret_values():
     assert "credential-meta" not in script
     assert 'value="' not in html
     assert 'value="' not in redirect
-    assert "POLITICO_BROWSER_COOKIES_JSON" in web
-    assert "BLOOMBERG_PROXY" in web
-    assert "BLOOMBERG_COOKIES_JSON" in web
-    assert "BLOOMBERG_LATEST_URL" in web
-    assert "BLOOMBERG_API_URL" in web
-    assert "BLOOMBERG_USE_API" in web
-    assert "BLOOMBERG_REQUIRE_LOGIN_COOKIE" in web
-    assert "DeepSeek API Key" not in web
-    assert "deepseek.api_key" not in web
-    assert '"source": "Tushare"' in web
-    assert '"source": "Guardian"' in web
-    assert '"source": "Baidu Translate"' in web
-    assert "BAIDU_TRANSLATE_APP_ID" in web
-    assert "BAIDU_TRANSLATE_SECRET_KEY" in web
-    assert "baidu_translate_app_id.txt" in web
-    assert "baidu_translate_secret_key.txt" in web
-    assert '"source": "Baidu Netdisk"' in web
-    assert "BAIDU_PAN_APP_KEY" in web
-    assert "BAIDU_PAN_SECRET_KEY" in web
-    assert "BAIDU_PAN_SIGN_KEY" in web
-    assert "BAIDU_PAN_ACCESS_TOKEN" in web
-    assert "BAIDU_PAN_REFRESH_TOKEN" in web
-    assert "BAIDU_PAN_SECRET_DIR" in web
-    assert '"source": "Bloomberg"' in web
-    assert '"source": "Politico"' in web
-    assert '"status_note": "暂停维护"' in web
+    assert "POLITICO_BROWSER_COOKIES_JSON" in credentials_registry
+    assert "BLOOMBERG_PROXY" in credentials_registry
+    assert "BLOOMBERG_COOKIES_JSON" in credentials_registry
+    assert "BLOOMBERG_LATEST_URL" in credentials_registry
+    assert "BLOOMBERG_API_URL" in credentials_registry
+    assert "BLOOMBERG_USE_API" in credentials_registry
+    assert "BLOOMBERG_REQUIRE_LOGIN_COOKIE" in credentials_registry
+    assert "DeepSeek API Key" not in credentials_registry
+    assert "deepseek.api_key" not in credentials_registry
+    assert '"source": "Tushare"' in credentials_registry
+    assert '"source": "Guardian"' in credentials_registry
+    assert '"source": "Baidu Translate"' in credentials_registry
+    assert "BAIDU_TRANSLATE_APP_ID" in credentials_registry
+    assert "BAIDU_TRANSLATE_SECRET_KEY" in credentials_registry
+    assert "baidu_translate_app_id.txt" in credentials_registry
+    assert "baidu_translate_secret_key.txt" in credentials_registry
+    assert '"source": "Baidu Netdisk"' in credentials_registry
+    assert "BAIDU_PAN_APP_KEY" in credentials_registry
+    assert "BAIDU_PAN_SECRET_KEY" in credentials_registry
+    assert "BAIDU_PAN_SIGN_KEY" in credentials_registry
+    assert "BAIDU_PAN_ACCESS_TOKEN" in credentials_registry
+    assert "BAIDU_PAN_REFRESH_TOKEN" in credentials_registry
+    assert "BAIDU_PAN_SECRET_DIR" in credentials_registry
+    assert '"source": "Bloomberg"' in credentials_registry
+    assert '"source": "Politico"' in credentials_registry
+    assert '"status_note": "暂停维护"' in credentials_registry
     assert "credential-status is-danger" in script
     assert 'credential-status ${item.configured ? "is-success" : "is-muted"}' in script
     assert "item.file_env" not in script
@@ -61,10 +62,11 @@ def test_credentials_pane_does_not_render_secret_values():
     assert "groupByCategory" not in script
     assert "item.reloads_next_run" in script
     assert "restart_required" not in web
+    assert "restart_required" not in credentials_registry
     assert "restart_required" not in script
-    assert "CREDENTIAL_PUBLIC_FIELDS" in web
-    assert '"file_env", "path", "storage"' not in web
-    assert '"storage"' not in web.split("CREDENTIAL_PUBLIC_FIELDS", 1)[1].split("ADMIN_CREDENTIALS", 1)[0]
+    assert "CREDENTIAL_PUBLIC_FIELDS" in credentials_registry
+    assert '"file_env", "path", "storage"' not in credentials_registry
+    assert '"storage"' not in credentials_registry.split("CREDENTIAL_PUBLIC_FIELDS", 1)[1].split("ADMIN_CREDENTIALS", 1)[0]
     assert '"path": str(path.relative_to(PROJECT_ROOT))' not in web
 
 

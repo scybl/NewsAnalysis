@@ -873,17 +873,20 @@ function renderDailyMarketScheduler(scheduler) {
   if (dailyMarketTime) dailyMarketTime.value = scheduler.time || "21:30";
   const last = scheduler.last_result || {};
   const running = !!scheduler.running;
+  const queued = !!scheduler.queued;
   dailyMarketStatus.textContent = running
     ? "运行中"
-    : scheduler.enabled
-      ? `已启用 · ${scheduler.time || "21:30"}`
-      : "未启用";
+    : queued
+      ? "排队中"
+      : scheduler.enabled
+        ? `已启用 · ${scheduler.time || "21:30"}`
+        : "未启用";
   if (dailyMarketStockCount) dailyMarketStockCount.textContent = String(scheduler.stock_count ?? "-");
   if (dailyStockListCount) dailyStockListCount.textContent = String(scheduler.stock_list_count ?? "-");
   if (dailyMarketLastDate) dailyMarketLastDate.textContent = formatCompactDate(scheduler.last_run_date || "-");
   if (dailyMarketUpdated) dailyMarketUpdated.textContent = String(last.updated ?? "-");
   if (dailyMarketSkipped) dailyMarketSkipped.textContent = String(last.skipped ?? "-");
-  if (runDailyMarketNowBtn) runDailyMarketNowBtn.disabled = running;
+  if (runDailyMarketNowBtn) runDailyMarketNowBtn.disabled = running || queued;
 }
 
 function renderIdlePrefetchScheduler(scheduler) {
@@ -892,11 +895,14 @@ function renderIdlePrefetchScheduler(scheduler) {
   if (idlePrefetchSeconds) idlePrefetchSeconds.value = scheduler.idle_seconds || 1800;
   if (idlePrefetchRefreshDays) idlePrefetchRefreshDays.value = scheduler.refresh_existing_days ?? 14;
   const running = !!scheduler.running;
+  const queued = !!scheduler.queued;
   idlePrefetchStatus.textContent = running
     ? "运行中"
-    : scheduler.enabled
-      ? `已启用 · 空闲 ${formatDuration(scheduler.idle_seconds || 1800)} · ${scheduler.refresh_existing_days ?? 14} 天刷新已有资料包`
-      : "未启用";
+    : queued
+      ? "排队中"
+      : scheduler.enabled
+        ? `已启用 · 空闲 ${formatDuration(scheduler.idle_seconds || 1800)} · ${scheduler.refresh_existing_days ?? 14} 天刷新已有资料包`
+        : "未启用";
   if (idlePrefetchRemaining) idlePrefetchRemaining.textContent = scheduler.remaining_seconds ? formatDuration(scheduler.remaining_seconds) : "可触发";
   if (idlePrefetchLastRequest) {
     const code = scheduler.last_request_code ? ` · ${scheduler.last_request_code}` : "";
@@ -908,7 +914,7 @@ function renderIdlePrefetchScheduler(scheduler) {
       ? `${last.ts_code}${last.name ? ` ${last.name}` : ""} · ${last.reason === "stale_package" ? "刷新已有资料包" : "全量历史"}`
       : (last.reason === "no_unfetched_stock" ? "没有待预抓股票" : (scheduler.last_error || "-"));
   }
-  if (runIdlePrefetchNowBtn) runIdlePrefetchNowBtn.disabled = running;
+  if (runIdlePrefetchNowBtn) runIdlePrefetchNowBtn.disabled = running || queued;
 }
 
 async function loadKaipanlaDailyOverview(date = "") {
@@ -1080,15 +1086,16 @@ async function loadKaipanlaFeatures() {
 function renderKaipanlaScheduler(scheduler) {
   kaipanlaState.scheduler = scheduler || {};
   const running = !!scheduler.running;
+  const queued = !!scheduler.queued;
   if (kaipanlaEnabled) kaipanlaEnabled.value = scheduler.enabled ? "1" : "0";
   if (kaipanlaTime) kaipanlaTime.value = scheduler.time || "21:45";
-  if (kaipanlaStateText) kaipanlaStateText.textContent = running ? "运行中" : scheduler.enabled ? "已启用" : "未启用";
+  if (kaipanlaStateText) kaipanlaStateText.textContent = running ? "运行中" : queued ? "排队中" : scheduler.enabled ? "已启用" : "未启用";
   if (kaipanlaTimeText) kaipanlaTimeText.textContent = scheduler.time || "21:45";
   if (kaipanlaFeatureCount) kaipanlaFeatureCount.textContent = String((scheduler.features || []).length);
   if (kaipanlaLastDate) kaipanlaLastDate.textContent = formatCompactDate(scheduler.last_run_date || "-");
   const last = scheduler.last_result || {};
   if (kaipanlaLastResult) kaipanlaLastResult.textContent = last.total ? `${last.succeeded || 0} / ${last.failed || 0}` : "-";
-  if (kaipanlaRunBtn) kaipanlaRunBtn.disabled = running;
+  if (kaipanlaRunBtn) kaipanlaRunBtn.disabled = running || queued;
 }
 
 async function validateKaipanlaIntegration() {
@@ -1425,7 +1432,7 @@ function spiderStatusLabel(status) {
 }
 
 function taskStatusLabel(status) {
-  if (status === "queued") return "等待中";
+  if (status === "queued") return "排队中";
   if (status === "running") return "运行中";
   if (status === "stopping") return "停止中";
   if (status === "stopped") return "已停止";

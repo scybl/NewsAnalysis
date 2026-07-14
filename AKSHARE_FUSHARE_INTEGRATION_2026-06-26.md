@@ -11,9 +11,10 @@
 
 - 新增 `stock_pipeline.akshare_client.AkshareClient`
 - 新增 `stock_pipeline.composite_client.FallbackStockClient`
+- 新增 `stock_pipeline.composite_client.ValidatingStockClient`
 - Web/CLI 默认公开源链路：
-  - 主源：东方财富
-  - 补源：AkShare
+  - 主源：AkShare
+  - 校验/补源：东方财富、腾讯行情兜底
 - 同类数据复用现有 key，避免重复数据集：
   - `daily` / `weekly` / `monthly`
   - `moneyflow`
@@ -31,9 +32,9 @@
 
 设计约束：
 
-- 东方财富有数据时，保留东方财富结果，不再额外保存 `akshare_daily` 之类重复 key。
-- 东方财富正常返回空、AkShare 源站失败时，保留主源空结果，不把空结果升级成错误。
-- AkShare 公开源失败只作为补源失败处理，不阻塞主资料包。
+- AkShare 有数据时，保留 AkShare 结果，不再额外保存 `akshare_daily` 之类重复 key。
+- 东方财富/腾讯只用于同 key 校验、字段补齐和 AkShare 失败后的替补，不再作为默认主链路。
+- AkShare 公开源失败时，保留可见错误并由补源链路尝试替补，不阻塞整个资料包。
 - 全市场排行榜/统计类 AkShare 函数暂不塞入单只股票资料包，避免每只股票重复存大表。
 - 财务三表来自 AkShare/东方财富公开接口时，关键字段映射到现有字段，并保留 `raw` 子字段，避免字段丢失。
 

@@ -4,12 +4,13 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .collector import StockDataCollector
 from .analysis_frameworks import ANALYSIS_FRAMEWORKS, build_all_analysis_dossiers, build_analysis_dossier, get_analysis_framework, list_analysis_frameworks
 from .config import PROJECT_ROOT
 from .daily_k_coverage import ensure_indexes as ensure_daily_k_coverage_indexes
+from .daily_k_coverage import normalize_trade_date
 from .daily_k_coverage import refresh_daily_k_coverage
 from .dossier import build_dossier
 from .field_labels import build_table_datasets
@@ -33,6 +34,9 @@ from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, today_yy
 LOCAL_DATA_DIR = PROJECT_ROOT / "local_data"
 MIN_REQUIRED_DATASETS = ("stock_basic", "daily", "daily_basic")
 DAILY_MARKET_DATASETS = ("daily", "weekly", "monthly", "daily_basic", "adj_factor", "stk_limit", "suspend_d", "moneyflow", "margin_detail")
+DAILY_QUOTE_REQUIRED_FIELDS = ("open", "high", "low", "close", "vol", "amount")
+DAILY_BASIC_REQUIRED_ANY_FIELDS = ("turnover_rate", "pe", "pe_ttm", "pb", "total_mv", "circ_mv")
+TaskCheckpoint = Callable[[dict[str, Any]], None]
 
 
 def stock_dir(ts_code: str) -> Path:
@@ -311,6 +315,7 @@ def sync_stock_data(
     full_history: bool = True,
     force: bool = False,
     max_age_seconds: int | None = None,
+    checkpoint: TaskCheckpoint | None = None,
 ) -> dict[str, Any]:
     ts_code = normalize_ts_code(code)
     target_dir = current_dir(ts_code)
@@ -329,7 +334,9 @@ def sync_stock_data(
         existing_external_datasets = read_json(target_dir / "full_data.json").get("external_datasets") or {}
     with tempfile.TemporaryDirectory(prefix=f"{ts_code}.", suffix=".stock_collect") as temp_name:
         temp_dir = Path(temp_name)
+        _run_checkpoint(checkpoint, stage="before_collect", ts_code=ts_code)
         full_data = StockDataCollector(client).collect(ts_code, temp_dir, years=years, full_history=full_history)
+        _run_checkpoint(checkpoint, stage="before_validate", ts_code=ts_code)
         if existing_external_datasets:
             full_data["external_datasets"] = existing_external_datasets
         _validate_full_data(full_data)
@@ -354,6 +361,7 @@ def sync_stock_data(
             },
             "fetch_errors": full_data.get("fetch_errors", []),
         }
+        _run_checkpoint(checkpoint, stage="before_save", ts_code=ts_code)
         mongo_sync = _save_stock_package_safe(ts_code, full_data, metadata, dossier=dossier, analysis_dossiers=analysis_dossiers)
     payload = build_local_stock_payload(ts_code)
     payload["cache_hit"] = False
@@ -366,6 +374,7 @@ def sync_daily_market_for_existing_stocks(
     client: TushareClient,
     target_date: str | None = None,
     codes: list[str] | None = None,
+    checkpoint: TaskCheckpoint | None = None,
 ) -> dict[str, Any]:
     date = target_date or today_yyyymmdd()
     selected = [normalize_ts_code(code) for code in (codes or list_local_stock_codes())]
@@ -379,7 +388,8 @@ def sync_daily_market_for_existing_stocks(
         "failed": 0,
         "items": [],
     }
-    for ts_code in selected:
+    for index, ts_code in enumerate(selected, start=1):
+        _run_checkpoint(checkpoint, stage="before_stock", ts_code=ts_code, current=index, total=len(selected), target_date=date)
         try:
             item = sync_daily_market_for_stock(client, ts_code, date)
         except Exception as exc:  # noqa: BLE001 - keep batch going
@@ -394,8 +404,103 @@ def sync_daily_market_for_existing_stocks(
         else:
             result["failed"] += 1
         result["items"].append(item)
+    _run_checkpoint(checkpoint, stage="before_coverage_refresh", current=len(selected), total=len(selected), target_date=date)
     result["daily_coverage"] = _refresh_daily_k_coverage_safe(selected, date)
     return result
+
+
+def choose_daily_market_target(
+    codes: list[str] | None = None,
+    *,
+    end_date: str | None = None,
+    lookback_dates: int = 20,
+    min_complete_ratio: float = 0.95,
+) -> dict[str, Any]:
+    """Pick the newest recent trade date that still needs daily K backfill."""
+    target_limit = normalize_trade_date(str(end_date or "")) or today_yyyymmdd()
+    selected = [normalize_ts_code(code) for code in (codes or list_local_stock_codes())]
+    try:
+        with mongo_client(STOCK_DATABASE) as client:
+            rows = client[STOCK_DATABASE][STOCK_COLLECTIONS["rows"]]
+            recent_dates = _recent_daily_trade_dates(rows, target_limit, lookback_dates)
+            if not recent_dates:
+                return {
+                    "target_date": target_limit,
+                    "reason": "no_recent_trade_reference",
+                    "expected_stocks": len(selected),
+                    "threshold": 0,
+                    "date_counts": {},
+                }
+            counts = _daily_stock_counts_by_date(rows, recent_dates, selected)
+    except Exception as exc:  # noqa: BLE001 - scheduler should keep running with a safe fallback
+        return {
+            "target_date": target_limit,
+            "reason": "fallback_after_target_selection_error",
+            "error": str(exc),
+            "expected_stocks": len(selected),
+            "threshold": 0,
+            "date_counts": {},
+        }
+
+    expected = len(selected) or max(counts.values(), default=0)
+    threshold = max(1, int(expected * min(1.0, max(0.0, min_complete_ratio)))) if expected else 0
+    for trade_date in recent_dates:
+        if threshold and int(counts.get(trade_date) or 0) < threshold:
+            return {
+                "target_date": trade_date,
+                "reason": "incomplete_recent_trade_date",
+                "expected_stocks": expected,
+                "threshold": threshold,
+                "date_counts": counts,
+            }
+    return {
+        "target_date": recent_dates[0],
+        "reason": "latest_recent_trade_date_complete_enough",
+        "expected_stocks": expected,
+        "threshold": threshold,
+        "date_counts": counts,
+    }
+
+
+def _recent_daily_trade_dates(rows: Any, end_date: str, limit: int) -> list[str]:
+    query = {"snapshot": "current", "dataset": "daily", "trade_date": {"$lte": end_date}}
+    scan_limit = max(1000, max(1, int(limit)) * 2000)
+    dates: list[str] = []
+    seen: set[str] = set()
+    cursor = rows.find(query, {"_id": 0, "trade_date": 1}).sort([("trade_date", -1)]).limit(scan_limit)
+    for doc in cursor:
+        trade_date = normalize_trade_date(str(doc.get("trade_date") or ""))
+        if not trade_date or trade_date in seen:
+            continue
+        seen.add(trade_date)
+        dates.append(trade_date)
+        if len(dates) >= limit:
+            break
+    return dates
+
+
+def _daily_stock_counts_by_date(rows: Any, dates: list[str], codes: list[str]) -> dict[str, int]:
+    if not dates:
+        return {}
+    match: dict[str, Any] = {"snapshot": "current", "dataset": "daily", "trade_date": {"$in": dates}}
+    if codes:
+        match["ts_code"] = {"$in": codes}
+    pipeline = [
+        {"$match": match},
+        {"$group": {"_id": {"trade_date": "$trade_date", "ts_code": "$ts_code"}}},
+        {"$group": {"_id": "$_id.trade_date", "stocks": {"$sum": 1}}},
+    ]
+    result = {date: 0 for date in dates}
+    for doc in rows.aggregate(pipeline, allowDiskUse=True):
+        trade_date = normalize_trade_date(str(doc.get("_id") or ""))
+        if trade_date:
+            result[trade_date] = int(doc.get("stocks") or 0)
+    return result
+
+
+def _run_checkpoint(checkpoint: TaskCheckpoint | None, **details: Any) -> None:
+    if checkpoint is not None:
+        checkpoint(details)
 
 
 def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: str | None = None) -> dict[str, Any]:
@@ -409,7 +514,8 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
     datasets = full_data.setdefault("datasets", {})
     current_daily = datasets.get("daily", [])
     latest_daily_date = _latest_trade_date(current_daily)
-    if _has_trade_date(current_daily, date):
+    quality_reasons = _daily_market_refresh_reasons(datasets, date)
+    if _has_trade_date(current_daily, date) and not quality_reasons:
         return {
             "ok": True,
             "ts_code": ts_code,
@@ -430,6 +536,17 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
 
     daily_rows = raw_updates.get("daily", [])
     if not daily_rows:
+        if _has_trade_date(current_daily, date):
+            return {
+                "ok": True,
+                "ts_code": ts_code,
+                "target_date": date,
+                "status": "skipped",
+                "reason": "target_date_exists_refresh_no_data",
+                "quality_reasons": quality_reasons,
+                "latest_daily_date": latest_daily_date,
+                "fetch_errors": fetch_errors,
+            }
         return {
             "ok": True,
             "ts_code": ts_code,
@@ -484,6 +601,7 @@ def sync_daily_market_for_stock(client: TushareClient, code: str, target_date: s
         "status": "updated",
         "latest_daily_date": metadata["latest_daily_date"],
         "changed": changed,
+        "quality_reasons": quality_reasons,
         "fetch_errors": fetch_errors,
         "mongo_sync": mongo_sync,
     }
@@ -617,6 +735,52 @@ def _has_trade_date(records: list[dict[str, Any]], trade_date: str) -> bool:
     return any(str(row.get("trade_date") or "") == trade_date for row in records if isinstance(row, dict))
 
 
+def _daily_market_refresh_reasons(datasets: dict[str, Any], trade_date: str) -> list[str]:
+    reasons: list[str] = []
+    daily_row = _trade_date_row(datasets.get("daily", []), trade_date)
+    if not daily_row:
+        reasons.append("daily_missing")
+    elif _daily_quote_row_needs_refresh(daily_row):
+        reasons.append("daily_low_quality")
+
+    daily_basic = _trade_date_row(datasets.get("daily_basic", []), trade_date)
+    if not daily_basic:
+        reasons.append("daily_basic_missing")
+    elif _daily_basic_row_needs_refresh(daily_basic):
+        reasons.append("daily_basic_low_quality")
+
+    for dataset in ("adj_factor", "stk_limit"):
+        if not _trade_date_row(datasets.get(dataset, []), trade_date):
+            reasons.append(f"{dataset}_missing")
+    return reasons
+
+
+def _trade_date_row(records: Any, trade_date: str) -> dict[str, Any]:
+    if not isinstance(records, list):
+        return {}
+    for row in records:
+        if isinstance(row, dict) and str(row.get("trade_date") or "") == trade_date:
+            return row
+    return {}
+
+
+def _daily_quote_row_needs_refresh(row: dict[str, Any]) -> bool:
+    if _fallback_source(row):
+        return True
+    return any(row.get(field) in (None, "") for field in DAILY_QUOTE_REQUIRED_FIELDS)
+
+
+def _daily_basic_row_needs_refresh(row: dict[str, Any]) -> bool:
+    if _fallback_source(row):
+        return True
+    return not any(row.get(field) not in (None, "") for field in DAILY_BASIC_REQUIRED_ANY_FIELDS)
+
+
+def _fallback_source(row: dict[str, Any]) -> bool:
+    source = str(row.get("source") or "").lower()
+    return "fallback" in source or source.startswith("tencent_")
+
+
 def _first_record(records: Any) -> dict[str, Any]:
     if isinstance(records, list) and records and isinstance(records[0], dict):
         return records[0]
@@ -635,10 +799,37 @@ def _merge_trade_date_rows(existing: list[dict[str, Any]], incoming: list[dict[s
     for row in incoming:
         date = str(row.get("trade_date") or "")
         if date:
-            merged[date] = row
+            current = merged.get(date)
+            merged[date] = _prefer_market_row(current, row) if current else row
         else:
             passthrough.append(row)
     return sorted(merged.values(), key=lambda row: str(row.get("trade_date") or ""), reverse=True) + passthrough
+
+
+def _prefer_market_row(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
+    if not existing:
+        return incoming
+    return incoming if _market_row_quality_score(incoming) >= _market_row_quality_score(existing) else existing
+
+
+def _market_row_quality_score(row: dict[str, Any]) -> tuple[int, int, int]:
+    non_empty = sum(1 for value in row.values() if value not in (None, ""))
+    source = str(row.get("source") or "").lower()
+    source_score = 0
+    if "akshare" in source:
+        source_score = 3
+    elif "eastmoney" in source:
+        source_score = 2
+    elif "tushare" in source:
+        source_score = 1
+    elif "fallback" in source or source.startswith("tencent_"):
+        source_score = -1
+    key_fields = sum(
+        1
+        for field in ("amount", "turnover_rate", "pe", "pe_ttm", "pb", "total_mv", "circ_mv", "adj_factor", "up_limit", "down_limit")
+        if row.get(field) not in (None, "")
+    )
+    return source_score, key_fields, non_empty
 
 
 def ensure_current_layout(code: str) -> None:

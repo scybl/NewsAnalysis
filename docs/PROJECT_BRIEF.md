@@ -39,7 +39,7 @@ ValueScope DataHub 是一个面向 A 股研究的数据采集、治理和展示�
 
 - Backend: Python, `http.server` 自定义 Web 服务, MongoDB, Docker Compose
 - Frontend: 原生 HTML/CSS/JavaScript，无重型前端框架
-- Data: 东方财富、AkShare 候选源、同花顺新闻、开盘啦、通达信链路、历史 Tushare 资料包兼容
+- Data: AkShare 主源、东方财富/腾讯校验补源、同花顺新闻、开盘啦、通达信链路、历史 Tushare 资料包兼容
 - AI: 历史 DeepSeek / 多 Agent 兼容链路，主要作为下游分析的数据消费入口
 - Ops: 加密密钥库、任务审计、远程部署脚本、CI/部署工作流
 

@@ -23,11 +23,16 @@ from http.cookies import SimpleCookie
 from cryptography.fernet import Fernet, InvalidToken
 import pymongo
 
+from backend.auth_policy import ADMIN_ONLY_PAGES, ADMIN_ROLES, DATA_CONSOLE_ROLES, DATA_CONSOLE_PAGES, READONLY_ADMIN_ROLE
+from backend.credentials_registry import ADMIN_CREDENTIALS, BAIDU_PAN_SECRET_DIR, CREDENTIAL_PUBLIC_FIELDS, CRAWLER_SECRET_DIR
+from backend.fetch_registry import DATA_FETCH_ACTIONS, SPIDER_SOURCES, data_key_snapshot, fetch_method_snapshot
+from backend.paths import STATIC_DIR
+
 from .agent_jobs import PersistentAgentJobStore
 from .analysis_frameworks import get_analysis_framework, list_analysis_frameworks
 from .config import PROJECT_ROOT, get_settings
 from .akshare_client import AkshareClient
-from .composite_client import FallbackStockClient
+from .composite_client import ValidatingStockClient
 from .crawler_monitor import crawler_status_snapshot, news_crawler_prometheus_metrics
 from .crawler_failure_actions import retry_failure_group
 from .data_sources import configure_data_sources, data_source_snapshot, provider_available, provider_status
@@ -47,6 +52,7 @@ from .stock_storage import (
     analysis_output_path,
     analysis_review_context,
     build_local_stock_payload,
+    choose_daily_market_target,
     current_dir,
     list_analysis_results,
     list_local_stock_codes,
@@ -63,6 +69,9 @@ from .stock_storage import (
     sync_stock_data,
 )
 from .stock_storage_repair import repair_stock_storage_issue, report_stock_storage_issue, run_stock_storage_health_check
+from .task_queue import HEAVY_IO as QUEUE_HEAVY_IO
+from .task_queue import NORMAL_IO as QUEUE_NORMAL_IO
+from .task_queue import QUEUE_OWNER, ResourceAwareTaskQueue
 from .ths_minute import build_config as build_ths_minute_config
 from .ths_minute import fetch_and_store_minutes
 from .tushare_client import TushareClient, TushareError
@@ -71,13 +80,9 @@ from .translation import BaiduTranslateClient, BaiduTranslateConfig, Translation
 from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, today_yyyymmdd, write_json
 
 
-STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 AGENT_GATEWAY_AVAILABLE = False
 DATA_DISTRIBUTION_AVAILABLE = False
 ANALYSIS_MODULE_STATUS_TEXT = "分析模块已拆分为外部项目，当前主站只保留数据资产和历史报告读取。"
-SPIDER_SOURCES = (
-    {"id": "ths_market", "name": "分钟行情", "description": "指定股票分钟行情补抓，默认通达信历史分钟 K，写入 MongoDB 和本地资料包"},
-)
 SENSITIVE_LOCAL_PATH_KEYS = {
     "local_dir",
     "stock_dir",
@@ -110,266 +115,8 @@ BILLABLE_API_PATHS = {
 }
 USER_KEY_NAMES = {"tushare", "deepseek"}
 SYSTEM_KEY_NAMES = {"deepseek"}
-DATA_FETCH_ACTIONS = {
-    "/api/sync-stock-data": "同步股票资料包（东方财富默认，Tushare 封存回退）",
-    "/api/sync-ths-market-data": "补抓分钟行情（外部行情源/MongoDB）",
-    "/api/analyze": "生成分析前的数据同步与模型调用",
-    "/api/multi-agent-analyze": "多 Agent 分析前的数据同步与模型调用",
-    "/api/admin/market-fetch/start": "启动分钟行情补采",
-    "/api/admin/daily-market-scheduler:run_now": "立即执行每日股票数据更新",
-    "/api/admin/stock-storage-repair": "补齐异常股票存储数据",
-    "/api/admin/kaipanla/scheduler:run_now": "立即执行开盘啦数据抓取",
-    "/api/admin/news-library/refetch": "重新抓取新闻并补充到新闻库",
-    "/api/admin/news-library/translate": "调用百度翻译生成 Guardian 中文译文",
-    "/api/admin/news-crawler/failure-action": "重抓新闻失败 item 并归档仍失败的链接",
-}
 AGENT_TOKEN_PREFIX = "na_agent_"
 AGENT_ALLOWED_SCOPES = {"R", "B"}
-ADMIN_ROLES = {"admin", "admin_readonly"}
-READONLY_ADMIN_ROLE = "admin_readonly"
-DATA_CONSOLE_ROLES = {*ADMIN_ROLES, "user"}
-DATA_CONSOLE_PAGES = {"/admin-market.html", "/admin-news.html", "/admin-crawler.html"}
-ADMIN_ONLY_PAGES = {
-    "/admin-accounts.html",
-    "/admin-ops.html",
-    "/admin-data-audit.html",
-    "/admin-audit.html",
-    "/admin-archives.html",
-    "/admin-credentials.html",
-    "/admin-distribution.html",
-    "/admin-agent.html",
-}
-CRAWLER_SECRET_DIR = PROJECT_ROOT / "local_data" / "secure" / "news_crawler"
-BAIDU_PAN_SECRET_DIR = PROJECT_ROOT / "local_data" / "secure" / "baidu_pan"
-CREDENTIAL_PUBLIC_FIELDS = {
-    "name",
-    "source",
-    "label",
-    "kind",
-    "env",
-    "description",
-    "status_note",
-    "status_tone",
-    "reloads_next_run",
-}
-ADMIN_CREDENTIALS = (
-    {
-        "name": "tushare.api_token",
-        "label": "Tushare Token",
-        "source": "Tushare",
-        "kind": "api_key",
-        "storage": "secret_store",
-        "env": "TUSHARE_API",
-        "description": "Tushare 回退数据源使用的 token。",
-        "status_note": "暂停维护",
-        "status_tone": "danger",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "guardian.api_key",
-        "label": "Guardian API Key",
-        "source": "Guardian",
-        "kind": "api_key",
-        "storage": "file",
-        "env": "GUARDIAN_API_KEY",
-        "file_env": "GUARDIAN_API_KEY_FILE",
-        "path": "guardian_api_key.txt",
-        "description": "Guardian provider 的 API key。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "guardian.baidu_translate_app_id",
-        "label": "Baidu Translate App ID",
-        "source": "Baidu Translate",
-        "kind": "api_key",
-        "storage": "file",
-        "env": "BAIDU_TRANSLATE_APP_ID",
-        "file_env": "BAIDU_TRANSLATE_APP_ID_FILE",
-        "path": "baidu_translate_app_id.txt",
-        "description": "百度翻译开放平台的 App ID，用于新闻中文翻译。",
-        "reloads_next_run": False,
-    },
-    {
-        "name": "guardian.baidu_translate_secret_key",
-        "label": "Baidu Translate Secret Key",
-        "source": "Baidu Translate",
-        "kind": "api_key",
-        "storage": "file",
-        "env": "BAIDU_TRANSLATE_SECRET_KEY",
-        "file_env": "BAIDU_TRANSLATE_SECRET_KEY_FILE",
-        "path": "baidu_translate_secret_key.txt",
-        "description": "百度翻译开放平台的密钥，用于新闻中文翻译。",
-        "reloads_next_run": False,
-    },
-    {
-        "name": "baidu_pan.app_key",
-        "label": "AppKey",
-        "source": "Baidu Netdisk",
-        "kind": "api_key",
-        "storage": "file",
-        "env": "BAIDU_PAN_APP_KEY",
-        "path": "app_key",
-        "secret_dir": "baidu_pan",
-        "description": "百度网盘开放平台 AppKey，用于冷数据上传和取回。",
-        "reloads_next_run": False,
-    },
-    {
-        "name": "baidu_pan.secret_key",
-        "label": "SecretKey",
-        "source": "Baidu Netdisk",
-        "kind": "api_key",
-        "storage": "file",
-        "env": "BAIDU_PAN_SECRET_KEY",
-        "path": "secret_key",
-        "secret_dir": "baidu_pan",
-        "description": "百度网盘开放平台 SecretKey。",
-        "reloads_next_run": False,
-    },
-    {
-        "name": "baidu_pan.sign_key",
-        "label": "SignKey",
-        "source": "Baidu Netdisk",
-        "kind": "api_key",
-        "storage": "file",
-        "env": "BAIDU_PAN_SIGN_KEY",
-        "path": "sign_key",
-        "secret_dir": "baidu_pan",
-        "description": "百度网盘开放平台 SignKey。",
-        "reloads_next_run": False,
-    },
-    {
-        "name": "baidu_pan.access_token",
-        "label": "Access Token",
-        "source": "Baidu Netdisk",
-        "kind": "api_key",
-        "storage": "file",
-        "env": "BAIDU_PAN_ACCESS_TOKEN",
-        "path": "access_token",
-        "secret_dir": "baidu_pan",
-        "description": "百度网盘访问令牌，用于 bdpan/API 访问。",
-        "reloads_next_run": False,
-    },
-    {
-        "name": "baidu_pan.refresh_token",
-        "label": "Refresh Token",
-        "source": "Baidu Netdisk",
-        "kind": "api_key",
-        "storage": "file",
-        "env": "BAIDU_PAN_REFRESH_TOKEN",
-        "path": "refresh_token",
-        "secret_dir": "baidu_pan",
-        "description": "百度网盘刷新令牌，用于后续更新 access token。",
-        "reloads_next_run": False,
-    },
-    {
-        "name": "bloomberg.cookie",
-        "label": "Bloomberg Cookie",
-        "source": "Bloomberg",
-        "kind": "cookie",
-        "storage": "file",
-        "env": "BLOOMBERG_COOKIE",
-        "file_env": "BLOOMBERG_COOKIE_FILE",
-        "path": "bloomberg_cookie.txt",
-        "description": "Bloomberg 请求头 Cookie，适合粘贴完整 cookie 字符串。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "bloomberg.cookies_json",
-        "label": "Bloomberg Cookies JSON",
-        "source": "Bloomberg",
-        "kind": "cookie_json",
-        "storage": "file",
-        "env": "BLOOMBERG_COOKIES_JSON",
-        "file_env": "BLOOMBERG_COOKIES_JSON_FILE",
-        "path": "bloomberg_cookies_json.txt",
-        "description": "Chrome 导出的 Bloomberg cookies JSON 数组，优先用于模拟已登录浏览器会话。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "bloomberg.latest_url",
-        "label": "Bloomberg Latest URL",
-        "source": "Bloomberg",
-        "kind": "url",
-        "storage": "file",
-        "env": "BLOOMBERG_LATEST_URL",
-        "file_env": "BLOOMBERG_LATEST_URL_FILE",
-        "path": "bloomberg_latest_url.txt",
-        "description": "Bloomberg 最新文章入口页，默认 https://www.bloomberg.com/latest。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "bloomberg.api_url",
-        "label": "Bloomberg API URL",
-        "source": "Bloomberg",
-        "kind": "url",
-        "storage": "file",
-        "env": "BLOOMBERG_API_URL",
-        "file_env": "BLOOMBERG_API_URL_FILE",
-        "path": "bloomberg_api_url.txt",
-        "description": "Bloomberg lineup-next 文章列表接口，留空则使用默认接口。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "bloomberg.use_api",
-        "label": "Bloomberg Use API",
-        "source": "Bloomberg",
-        "kind": "boolean",
-        "storage": "file",
-        "env": "BLOOMBERG_USE_API",
-        "file_env": "BLOOMBERG_USE_API_FILE",
-        "path": "bloomberg_use_api.txt",
-        "description": "是否优先使用 Bloomberg API 发现文章，填 1/0 或 true/false。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "bloomberg.require_login_cookie",
-        "label": "Bloomberg Require Login Cookie",
-        "source": "Bloomberg",
-        "kind": "boolean",
-        "storage": "file",
-        "env": "BLOOMBERG_REQUIRE_LOGIN_COOKIE",
-        "file_env": "BLOOMBERG_REQUIRE_LOGIN_COOKIE_FILE",
-        "path": "bloomberg_require_login_cookie.txt",
-        "description": "启用后会检查 _breg-uid 等关键登录 cookie，不完整则直接停止。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "bloomberg.proxy",
-        "label": "Bloomberg Proxy",
-        "source": "Bloomberg",
-        "kind": "proxy",
-        "storage": "file",
-        "env": "BLOOMBERG_PROXY",
-        "file_env": "BLOOMBERG_PROXY_FILE",
-        "path": "bloomberg_proxy.txt",
-        "description": "Bloomberg 出站代理，例如 http://user:pass@host:port。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "politico_browser.proxy",
-        "label": "Politico Browser Proxy",
-        "source": "Politico",
-        "kind": "proxy",
-        "storage": "file",
-        "env": "POLITICO_BROWSER_PROXY",
-        "file_env": "POLITICO_BROWSER_PROXY_FILE",
-        "path": "politico_browser_proxy.txt",
-        "description": "Politico 浏览器 provider 使用的代理。",
-        "reloads_next_run": True,
-    },
-    {
-        "name": "politico_browser.cookies_json",
-        "label": "Politico Cookies JSON",
-        "source": "Politico",
-        "kind": "cookie_json",
-        "storage": "file",
-        "env": "POLITICO_BROWSER_COOKIES_JSON",
-        "file_env": "POLITICO_BROWSER_COOKIES_JSON_FILE",
-        "path": "politico_browser_cookies_json.txt",
-        "description": "Playwright cookies JSON 数组，用于复用已验证会话。",
-        "reloads_next_run": True,
-    },
-)
 AGENT_SCOPE_LABELS = {
     "R": "读取本地股票、新闻、报告和任务状态",
     "B": "提交模型消耗型多 Agent 分析任务",
@@ -418,10 +165,10 @@ def _readonly_admin_account(settings, username: str, password: str) -> dict | No
     return None
 
 
-def _public_stock_client(settings) -> FallbackStockClient:
-    return FallbackStockClient(
-        EastmoneyClient(pause=settings.tushare_pause_seconds),
-        [AkshareClient(pause=settings.tushare_pause_seconds)],
+def _public_stock_client(settings) -> ValidatingStockClient:
+    return ValidatingStockClient(
+        AkshareClient(pause=settings.tushare_pause_seconds),
+        [EastmoneyClient(pause=settings.tushare_pause_seconds)],
     )
 
 
@@ -663,8 +410,18 @@ class StockWebApp:
         self.invite_codes = {code.strip() for code in self.settings.web_invite_codes.split(",") if code.strip()}
         self.user_store.seed_invites(self.invite_codes, ttl_seconds=self.settings.web_invite_ttl_seconds, created_by="env")
         self.task_registry = TaskRegistry(PROJECT_ROOT / "local_data" / "admin_tasks.json")
+        self.task_queue = ResourceAwareTaskQueue(
+            PROJECT_ROOT / "local_data" / "task_queue.json",
+            self.task_registry,
+            external_blockers=lambda task_id: self._running_heavy_io_blockers(task_id),
+            autostart=False,
+        )
         self.daily_market_scheduler = DailyMarketScheduler(self, PROJECT_ROOT / "local_data" / "daily_market_scheduler.json", self.task_registry)
-        self.kaipanla_scheduler = KaipanlaScheduler(PROJECT_ROOT / "local_data" / "kaipanla_scheduler.json", self.task_registry)
+        self.kaipanla_scheduler = KaipanlaScheduler(
+            PROJECT_ROOT / "local_data" / "kaipanla_scheduler.json",
+            self.task_registry,
+            self.task_queue,
+        )
         self.stock_activity_lock = threading.Lock()
         self.last_stock_request_epoch = time.time()
         self.last_stock_request_at = timestamp()
@@ -689,6 +446,15 @@ class StockWebApp:
         self.agent_job_store = PersistentAgentJobStore(PROJECT_ROOT / "local_data" / "agent_jobs.json")
         self.agent_rate_lock = threading.Lock()
         self.agent_rate_state: dict[str, list[float]] = {}
+        self.task_queue.start()
+
+    def _running_heavy_io_blockers(self, requested_task_id: str) -> list[dict[str, Any]]:
+        running_heavy_tasks = [
+            task
+            for task in active_heavy_io_tasks(build_ops_snapshot(PROJECT_ROOT, crawler_snapshot_fn=None))
+            if task.get("running") or task.get("status") in {"running", "running_unknown_pid", "stopping", "warning"}
+        ]
+        return _public_heavy_io_blockers(running_heavy_tasks, requested_task_id=requested_task_id)
 
     def _build_multi_agent_result(self, payload: dict, progress_callback=None) -> dict:
         if not self.settings.stock_analysis_execution_enabled:
@@ -1304,6 +1070,18 @@ class StockWebApp:
                     if not self._require_data_console():
                         return
                     self._json({"ok": True, **data_source_snapshot(app.settings)})
+                    return
+                if parsed.path == "/api/admin/backend/registry":
+                    if not self._require_admin():
+                        return
+                    self._json(
+                        {
+                            "ok": True,
+                            "data_keys": data_key_snapshot(),
+                            "fetch_methods": fetch_method_snapshot(),
+                            "spider_sources": list(SPIDER_SOURCES),
+                        }
+                    )
                     return
                 if parsed.path == "/api/admin/credentials":
                     if not self._require_admin():
@@ -1997,8 +1775,6 @@ class StockWebApp:
                     if action == "run_now":
                         if not self._require_data_fetch_approval("/api/admin/daily-market-scheduler:run_now", payload):
                             return
-                        if self._reject_if_heavy_io_running("full_market_daily_fetch"):
-                            return
                         self._json({"ok": True, **app.daily_market_scheduler.run_now()})
                         return
                     if action == "save":
@@ -2016,8 +1792,6 @@ class StockWebApp:
                 try:
                     if action == "run_now":
                         if not self._require_data_fetch_approval("/api/sync-stock-data", payload):
-                            return
-                        if self._reject_if_heavy_io_running("idle_stock_prefetch_with_minutes"):
                             return
                         self._json({"ok": True, **app.idle_stock_prefetch_scheduler.run_now()})
                         return
@@ -2039,8 +1813,6 @@ class StockWebApp:
                 action = str(payload.get("action") or "save").strip()
                 try:
                     if action == "run_now":
-                        if self._reject_if_heavy_io_running("data_random_audit_manual"):
-                            return
                         self._json({"ok": True, **app.data_random_audit_scheduler.run_now()})
                         return
                     if action == "save":
@@ -2922,6 +2694,13 @@ class TaskRegistry:
             items = sorted(self.tasks.values(), key=lambda item: item.get("updated_epoch", 0), reverse=True)[:limit]
             return json.loads(json.dumps(items, ensure_ascii=False, default=str))
 
+    def get_task(self, task_id: str) -> dict | None:
+        with self.lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            return json.loads(json.dumps(task, ensure_ascii=False, default=str))
+
     def _trim_locked(self) -> None:
         if len(self.tasks) <= self.max_items:
             return
@@ -2951,6 +2730,15 @@ class TaskRegistry:
         now_epoch = time.time()
         for task in self.tasks.values():
             if task.get("status") not in {"queued", "running", "stopping"}:
+                continue
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            if task.get("status") == "queued" and metadata.get("queued_by") == QUEUE_OWNER:
+                task["updated_at"] = now
+                task["updated_epoch"] = now_epoch
+                task.setdefault("events", []).append(
+                    {"time": now, "stage": "queued", "message": "服务重启，队列任务保留等待重新调度。", "details": {}}
+                )
+                changed = True
                 continue
             task["status"] = "failed"
             task["updated_at"] = now
@@ -2997,6 +2785,20 @@ class TaskRegistry:
         }
 
 
+def _task_registry_status(task_registry: Any, task_id: str) -> str:
+    if not task_id:
+        return ""
+    getter = getattr(task_registry, "get_task", None)
+    if not callable(getter):
+        return ""
+    task = getter(task_id) or {}
+    return str(task.get("status") or "")
+
+
+def _task_registry_active(task_registry: Any, task_id: str) -> bool:
+    return _task_registry_status(task_registry, task_id) in {"queued", "running", "stopping"}
+
+
 class IdleStockPrefetchScheduler:
     def __init__(self, app: StockWebApp, config_path: Path, task_registry: TaskRegistry):
         self.app = app
@@ -3006,6 +2808,10 @@ class IdleStockPrefetchScheduler:
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.config = self._load_config()
+        self.app.task_queue.register(
+            "idle_stock_prefetch",
+            lambda task_id, payload: self._run_task(task_id, str((payload or {}).get("trigger") or "queued")),
+        )
         self.thread = threading.Thread(target=self._loop, name="idle-stock-prefetch-scheduler", daemon=True)
         self.thread.start()
 
@@ -3033,7 +2839,9 @@ class IdleStockPrefetchScheduler:
         activity = self.app.stock_request_state()
         with self.lock:
             config = dict(self.config)
-            running = bool(self.worker and self.worker.is_alive())
+            task_status = _task_registry_status(self.task_registry, str(config.get("last_task_id") or ""))
+            running = bool(self.worker and self.worker.is_alive()) or task_status == "running"
+            queued = task_status == "queued"
         idle_seconds = int(config.get("idle_seconds") or self.app.settings.idle_stock_prefetch_seconds)
         remaining = max(0, idle_seconds - int(activity.get("idle_seconds") or 0))
         return {
@@ -3044,6 +2852,7 @@ class IdleStockPrefetchScheduler:
                 "minutes_enabled": bool(config.get("minutes_enabled", self.app.settings.idle_stock_prefetch_minutes_enabled)),
                 "refresh_existing_days": int(config.get("refresh_existing_days") or self.app.settings.idle_stock_prefetch_refresh_existing_days),
                 "running": running,
+                "queued": queued,
                 "last_request_at": activity.get("last_request_at") or "",
                 "last_request_code": activity.get("last_request_code") or "",
                 "current_idle_seconds": activity.get("idle_seconds") or 0,
@@ -3060,9 +2869,9 @@ class IdleStockPrefetchScheduler:
             try:
                 with self.lock:
                     enabled = bool(self.config.get("enabled"))
-                    running = bool(self.worker and self.worker.is_alive())
+                    active = bool(self.worker and self.worker.is_alive()) or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or ""))
                     idle_seconds = int(self.config.get("idle_seconds") or self.app.settings.idle_stock_prefetch_seconds)
-                if not enabled or running:
+                if not enabled or active:
                     continue
                 if int(self.app.stock_request_state().get("idle_seconds") or 0) < idle_seconds:
                     continue
@@ -3074,16 +2883,21 @@ class IdleStockPrefetchScheduler:
 
     def _start_run(self, trigger: str) -> dict:
         with self.lock:
-            if self.worker and self.worker.is_alive():
+            if self.worker and self.worker.is_alive() or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or "")):
                 raise RuntimeError("空闲股票预抓任务正在运行。")
             task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
             self.config["last_task_id"] = task_id
             self._write_config_locked()
         self.task_registry.create_task(task_id, "idle_stock_prefetch", "空闲股票资料包预抓", metadata={"trigger": trigger})
-        self.task_registry.update_task(task_id, status="running")
-        self.task_registry.add_event(task_id, "running", "开始选择未抓取过详情的股票。", {"trigger": trigger})
-        self.worker = threading.Thread(target=self._run_task, args=(task_id, trigger), name=f"idle-stock-prefetch-{task_id}", daemon=True)
-        self.worker.start()
+        resource_level = QUEUE_HEAVY_IO if bool(self.config.get("minutes_enabled", self.app.settings.idle_stock_prefetch_minutes_enabled)) else QUEUE_NORMAL_IO
+        self.app.task_queue.enqueue(
+            task_id=task_id,
+            handler_key="idle_stock_prefetch",
+            kind="idle_stock_prefetch",
+            title="空闲股票资料包预抓",
+            payload={"trigger": trigger},
+            resource_level=resource_level,
+        )
         return self.status()
 
     def _run_task(self, task_id: str, trigger: str) -> None:
@@ -3107,8 +2921,21 @@ class IdleStockPrefetchScheduler:
                 f"开始{'刷新' if force_refresh else '预抓'} {ts_code} 全量资料包。",
                 {"ts_code": ts_code, "full_history": True, "reason": candidate_reason, "force": force_refresh},
             )
+            self.app.task_queue.checkpoint(task_id, resource_level=QUEUE_NORMAL_IO, stage="stock_package_before_sync", details={"ts_code": ts_code})
             client = self.app.tushare if provider_available("tushare") and self.app.settings.tushare_token else _public_stock_client(self.app.settings)
-            payload = sync_stock_data(client, ts_code, years=None, full_history=True, force=force_refresh)
+            payload = sync_stock_data(
+                client,
+                ts_code,
+                years=None,
+                full_history=True,
+                force=force_refresh,
+                checkpoint=lambda details: self.app.task_queue.checkpoint(
+                    task_id,
+                    resource_level=QUEUE_NORMAL_IO,
+                    stage=f"stock_package_{details.get('stage') or 'checkpoint'}",
+                    details=details,
+                ),
+            )
             minutes_result = self._prefetch_minutes(ts_code, task_id)
             result = {
                 "ok": True,
@@ -3153,6 +2980,7 @@ class IdleStockPrefetchScheduler:
             {"ts_code": ts_code, "source": source, "pages": pages, "page_size": page_size},
         )
         try:
+            self.app.task_queue.checkpoint(task_id, resource_level=QUEUE_HEAVY_IO, stage="minute_prefetch_before_fetch", details={"ts_code": ts_code})
             result = fetch_and_store_minutes(
                 [ts_code],
                 config=build_ths_minute_config(),
@@ -3160,6 +2988,12 @@ class IdleStockPrefetchScheduler:
                 source=source,
                 pages=pages,
                 page_size=page_size,
+                checkpoint=lambda details: self.app.task_queue.checkpoint(
+                    task_id,
+                    resource_level=QUEUE_HEAVY_IO,
+                    stage=f"minute_prefetch_{details.get('stage') or 'checkpoint'}",
+                    details=details,
+                ),
             )
             item = next((row for row in result.get("results", []) if row.get("ts_code") == ts_code), {})
             summary = {
@@ -3280,6 +3114,15 @@ class DataRandomAuditScheduler:
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.config = self._load_config()
+        self.app.task_queue.register(
+            "data_random_audit",
+            lambda task_id, payload: self._run_task(
+                task_id,
+                str((payload or {}).get("trigger") or "queued"),
+                max(1, min(200, int((payload or {}).get("sample_size") or 20))),
+                max(0, min(10, int((payload or {}).get("cold_read_samples") or 0))),
+            ),
+        )
         self.thread = threading.Thread(target=self._loop, name="data-random-audit-scheduler", daemon=True)
         self.thread.start()
 
@@ -3305,7 +3148,9 @@ class DataRandomAuditScheduler:
         activity = self.app.stock_request_state()
         with self.lock:
             config = dict(self.config)
-            running = bool(self.worker and self.worker.is_alive())
+            task_status = _task_registry_status(self.task_registry, str(config.get("last_task_id") or ""))
+            running = bool(self.worker and self.worker.is_alive()) or task_status == "running"
+            queued = task_status == "queued"
         idle_seconds = int(config.get("idle_seconds") or 1800)
         interval_seconds = int(config.get("interval_seconds") or 21600)
         last_run_epoch = float(config.get("last_run_epoch") or 0)
@@ -3318,6 +3163,7 @@ class DataRandomAuditScheduler:
                 "sample_size": max(1, min(200, int(config.get("sample_size") or 20))),
                 "cold_read_samples": max(0, min(10, int(config.get("cold_read_samples") or 0))),
                 "running": running,
+                "queued": queued,
                 "last_request_at": activity.get("last_request_at") or "",
                 "current_idle_seconds": activity.get("idle_seconds") or 0,
                 "remaining_idle_seconds": max(0, idle_seconds - int(activity.get("idle_seconds") or 0)),
@@ -3335,17 +3181,15 @@ class DataRandomAuditScheduler:
             try:
                 with self.lock:
                     enabled = bool(self.config.get("enabled"))
-                    running = bool(self.worker and self.worker.is_alive())
+                    active = bool(self.worker and self.worker.is_alive()) or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or ""))
                     idle_seconds = int(self.config.get("idle_seconds") or 1800)
                     interval_seconds = int(self.config.get("interval_seconds") or 21600)
                     last_run_epoch = float(self.config.get("last_run_epoch") or 0)
-                if not enabled or running:
+                if not enabled or active:
                     continue
                 if int(self.app.stock_request_state().get("idle_seconds") or 0) < idle_seconds:
                     continue
                 if last_run_epoch and time.time() - last_run_epoch < interval_seconds:
-                    continue
-                if self._heavy_io_blockers("data_random_audit_idle"):
                     continue
                 self._start_run(trigger="idle")
             except Exception as exc:  # noqa: BLE001 - background scheduler must keep ticking
@@ -3355,7 +3199,7 @@ class DataRandomAuditScheduler:
 
     def _start_run(self, trigger: str) -> dict:
         with self.lock:
-            if self.worker and self.worker.is_alive():
+            if self.worker and self.worker.is_alive() or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or "")):
                 raise RuntimeError("数据随机抽检任务正在运行。")
             sample_size = max(1, min(200, int(self.config.get("sample_size") or 20)))
             cold_read_samples = max(0, min(10, int(self.config.get("cold_read_samples") or 0)))
@@ -3368,15 +3212,14 @@ class DataRandomAuditScheduler:
             "数据随机抽检",
             metadata={"trigger": trigger, "sample_size": sample_size, "cold_read_samples": cold_read_samples},
         )
-        self.task_registry.update_task(task_id, status="running")
-        self.task_registry.add_event(task_id, "running", "开始随机抽检服务器数据健康。", {"trigger": trigger, "sample_size": sample_size})
-        self.worker = threading.Thread(
-            target=self._run_task,
-            args=(task_id, trigger, sample_size, cold_read_samples),
-            name=f"data-random-audit-{task_id}",
-            daemon=True,
+        self.app.task_queue.enqueue(
+            task_id=task_id,
+            handler_key="data_random_audit",
+            kind="data_random_audit",
+            title="数据随机抽检",
+            payload={"trigger": trigger, "sample_size": sample_size, "cold_read_samples": cold_read_samples},
+            resource_level=QUEUE_NORMAL_IO,
         )
-        self.worker.start()
         return self.status()
 
     def _run_task(self, task_id: str, trigger: str, sample_size: int, cold_read_samples: int) -> None:
@@ -3390,11 +3233,17 @@ class DataRandomAuditScheduler:
                 return
             config = build_ths_minute_config(database="market_data", collection="minute_day_buckets")
             client = pymongo.MongoClient(config.mongo_uri, serverSelectionTimeoutMS=8000)
+            self.app.task_queue.checkpoint(task_id, resource_level=QUEUE_NORMAL_IO, stage="data_random_audit_before_build", details={"sample_size": sample_size})
+
+            def progress(message: str) -> None:
+                self.task_registry.add_event(task_id, "running", str(message), {})
+                self.app.task_queue.checkpoint(task_id, resource_level=QUEUE_NORMAL_IO, stage="data_random_audit_progress", details={"message": str(message)})
+
             payload = build_random_audit_payload(
                 client,
                 sample_size=sample_size,
                 cold_read_samples=cold_read_samples,
-                progress=lambda message: self.task_registry.add_event(task_id, "running", str(message), {}),
+                progress=progress,
             )
             summary = payload.get("summary") or {}
             status = "succeeded" if payload.get("ok") else "failed"
@@ -3421,10 +3270,7 @@ class DataRandomAuditScheduler:
                 client.close()
 
     def _heavy_io_blockers(self, requested_task_id: str) -> list[dict]:
-        return _public_heavy_io_blockers(
-            active_heavy_io_tasks(build_ops_snapshot(PROJECT_ROOT, crawler_snapshot_fn=None)),
-            requested_task_id=requested_task_id,
-        )
+        return self.app._running_heavy_io_blockers(requested_task_id)
 
     def _remember_result(self, result: dict) -> None:
         with self.lock:
@@ -3479,13 +3325,24 @@ class StockStorageHealthScheduler:
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.config = self._load_config()
+        self.app.task_queue.register(
+            "stock_storage_health",
+            lambda task_id, payload: self._run_task(
+                task_id,
+                str((payload or {}).get("trigger") or "queued"),
+                max(1, min(200, int((payload or {}).get("sample_size") or 30))),
+                _stock_storage_cold_compare_sample_count((payload or {}).get("cold_compare_samples")),
+            ),
+        )
         self.thread = threading.Thread(target=self._loop, name="stock-storage-health-scheduler", daemon=True)
         self.thread.start()
 
     def status(self) -> dict:
         with self.lock:
             config = dict(self.config)
-            running = bool(self.worker and self.worker.is_alive())
+            task_status = _task_registry_status(self.task_registry, str(config.get("last_task_id") or ""))
+            running = bool(self.worker and self.worker.is_alive()) or task_status == "running"
+            queued = task_status == "queued"
         now = time.time()
         next_run_epoch = float(config.get("next_run_epoch") or 0)
         return {
@@ -3497,6 +3354,7 @@ class StockStorageHealthScheduler:
                 "sample_size": max(1, min(200, int(config.get("sample_size") or 30))),
                 "cold_compare_samples": _stock_storage_cold_compare_sample_count(config.get("cold_compare_samples")),
                 "running": running,
+                "queued": queued,
                 "next_run_at": config.get("next_run_at") or "",
                 "remaining_next_run_seconds": max(0, int(next_run_epoch - now)) if next_run_epoch else 0,
                 "last_run_at": config.get("last_run_at") or "",
@@ -3511,21 +3369,17 @@ class StockStorageHealthScheduler:
             try:
                 with self.lock:
                     enabled = bool(self.config.get("enabled"))
-                    running = bool(self.worker and self.worker.is_alive())
+                    active = bool(self.worker and self.worker.is_alive()) or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or ""))
                     idle_seconds = int(self.config.get("idle_seconds") or 900)
                     next_run_epoch = float(self.config.get("next_run_epoch") or 0)
                     if enabled and not next_run_epoch:
                         self._schedule_next_locked()
                         next_run_epoch = float(self.config.get("next_run_epoch") or 0)
-                if not enabled or running:
+                if not enabled or active:
                     continue
                 if int(self.app.stock_request_state().get("idle_seconds") or 0) < idle_seconds:
                     continue
                 if next_run_epoch and time.time() < next_run_epoch:
-                    continue
-                if self._heavy_io_blockers("stock_storage_health_idle"):
-                    with self.lock:
-                        self._schedule_next_locked(short=True)
                     continue
                 self._start_run(trigger="idle")
             except Exception as exc:  # noqa: BLE001 - background scheduler must keep ticking
@@ -3536,7 +3390,7 @@ class StockStorageHealthScheduler:
 
     def _start_run(self, trigger: str) -> dict:
         with self.lock:
-            if self.worker and self.worker.is_alive():
+            if self.worker and self.worker.is_alive() or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or "")):
                 raise RuntimeError("股票存储健康检查正在运行。")
             sample_size = max(1, min(200, int(self.config.get("sample_size") or 30)))
             cold_compare_samples = _stock_storage_cold_compare_sample_count(self.config.get("cold_compare_samples"))
@@ -3549,20 +3403,14 @@ class StockStorageHealthScheduler:
             "股票存储健康检查",
             metadata={"trigger": trigger, "sample_size": sample_size, "cold_compare_samples": cold_compare_samples},
         )
-        self.task_registry.update_task(task_id, status="running")
-        self.task_registry.add_event(
-            task_id,
-            "running",
-            "开始随机检查股票存储健康。",
-            {"trigger": trigger, "sample_size": sample_size, "cold_compare_samples": cold_compare_samples},
+        self.app.task_queue.enqueue(
+            task_id=task_id,
+            handler_key="stock_storage_health",
+            kind="stock_storage_health",
+            title="股票存储健康检查",
+            payload={"trigger": trigger, "sample_size": sample_size, "cold_compare_samples": cold_compare_samples},
+            resource_level=QUEUE_NORMAL_IO,
         )
-        self.worker = threading.Thread(
-            target=self._run_task,
-            args=(task_id, trigger, sample_size, cold_compare_samples),
-            name=f"stock-storage-health-{task_id}",
-            daemon=True,
-        )
-        self.worker.start()
         return self.status()
 
     def _run_task(self, task_id: str, trigger: str, sample_size: int, cold_compare_samples: int) -> None:
@@ -3573,7 +3421,16 @@ class StockStorageHealthScheduler:
                 self.task_registry.add_event(task_id, "succeeded", "检测到重 IO 任务，本轮股票存储健康检查已跳过。", result)
                 self._remember_result(result)
                 return
-            result = run_stock_storage_health_check(sample_size=sample_size, cold_compare_samples=cold_compare_samples)
+            result = run_stock_storage_health_check(
+                sample_size=sample_size,
+                cold_compare_samples=cold_compare_samples,
+                checkpoint=lambda details: self.app.task_queue.checkpoint(
+                    task_id,
+                    resource_level=QUEUE_NORMAL_IO,
+                    stage=f"stock_storage_health_{details.get('stage') or 'checkpoint'}",
+                    details=details,
+                ),
+            )
             status = "succeeded" if result.get("ok") else "failed"
             self.task_registry.update_task(task_id, status=status, error="" if result.get("ok") else str(result.get("error") or ""), result=result)
             self.task_registry.add_event(
@@ -3590,10 +3447,7 @@ class StockStorageHealthScheduler:
             self._remember_result(result)
 
     def _heavy_io_blockers(self, requested_task_id: str) -> list[dict]:
-        return _public_heavy_io_blockers(
-            active_heavy_io_tasks(build_ops_snapshot(PROJECT_ROOT, crawler_snapshot_fn=None)),
-            requested_task_id=requested_task_id,
-        )
+        return self.app._running_heavy_io_blockers(requested_task_id)
 
     def _remember_result(self, result: dict) -> None:
         with self.lock:
@@ -3668,6 +3522,14 @@ class DailyMarketScheduler:
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
         self.config = self._load_config()
+        self.app.task_queue.register(
+            "daily_market",
+            lambda task_id, payload: self._run_task(
+                task_id,
+                str((payload or {}).get("target_date") or today_yyyymmdd()),
+                str((payload or {}).get("trigger") or "queued"),
+            ),
+        )
         self.thread = threading.Thread(target=self._loop, name="daily-market-scheduler", daemon=True)
         self.thread.start()
 
@@ -3686,16 +3548,22 @@ class DailyMarketScheduler:
     def status(self) -> dict:
         with self.lock:
             config = dict(self.config)
-            running = bool(self.worker and self.worker.is_alive())
+            task_status = _task_registry_status(self.task_registry, str(config.get("last_task_id") or ""))
+            running = bool(self.worker and self.worker.is_alive()) or task_status == "running"
+            queued = task_status == "queued"
         return {
             "scheduler": {
                 "enabled": bool(config.get("enabled")),
                 "time": config.get("time") or "21:30",
                 "last_run_date": config.get("last_run_date") or "",
                 "last_run_at": config.get("last_run_at") or "",
+                "last_target_date": config.get("last_target_date") or "",
+                "last_target_reason": config.get("last_target_reason") or "",
+                "last_started_at": config.get("last_started_at") or "",
                 "last_task_id": config.get("last_task_id") or "",
                 "last_result": config.get("last_result") or {},
                 "running": running,
+                "queued": queued,
                 "stock_count": len(list_local_stock_codes()),
                 "stock_list_count": (config.get("last_result") or {}).get("stock_list_count"),
             }
@@ -3708,8 +3576,8 @@ class DailyMarketScheduler:
                     enabled = bool(self.config.get("enabled"))
                     schedule_time = str(self.config.get("time") or "21:30")
                     last_run_date = str(self.config.get("last_run_date") or "")
-                    running = bool(self.worker and self.worker.is_alive())
-                if not enabled or running:
+                    active = bool(self.worker and self.worker.is_alive()) or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or ""))
+                if not enabled or active:
                     continue
                 now = datetime.now(CN_TZ).strftime("%H:%M")
                 today = today_yyyymmdd()
@@ -3722,38 +3590,36 @@ class DailyMarketScheduler:
 
     def _start_run(self, trigger: str) -> dict:
         with self.lock:
-            if self.worker and self.worker.is_alive():
+            if self.worker and self.worker.is_alive() or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or "")):
                 raise RuntimeError("每日股票数据更新任务正在运行。")
             task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
-            target_date = today_yyyymmdd()
+            target_info = choose_daily_market_target()
+            target_date = str(target_info.get("target_date") or today_yyyymmdd())
             self.config["last_task_id"] = task_id
+            self.config["last_target_date"] = target_date
+            self.config["last_target_reason"] = target_info.get("reason") or ""
+            self.config["last_started_at"] = timestamp()
             self._write_config_locked()
         self.task_registry.create_task(
             task_id,
             "daily_market",
             "每日股票数据更新",
-            metadata={"trigger": trigger, "target_date": target_date},
+            metadata={"trigger": trigger, "target_date": target_date, "target_reason": target_info.get("reason") or ""},
         )
-        self.task_registry.update_task(task_id, status="running")
-        self.task_registry.add_event(task_id, "running", "开始刷新股票基础列表。", {"target_date": target_date})
-        self.worker = threading.Thread(target=self._run_task, args=(task_id, target_date, trigger), name=f"daily-market-{target_date}", daemon=True)
-        self.worker.start()
+        self.app.task_queue.enqueue(
+            task_id=task_id,
+            handler_key="daily_market",
+            kind="daily_market",
+            title="每日股票数据更新",
+            payload={"trigger": trigger, "target_date": target_date},
+            resource_level=QUEUE_HEAVY_IO,
+        )
         return self.status()
 
     def _run_task(self, task_id: str, target_date: str, trigger: str) -> None:
         try:
-            if provider_available("tushare"):
-                if not self.app.settings.tushare_token:
-                    raise RuntimeError("系统 Tushare token 未配置，每日股票数据更新已暂停。")
-                client = TushareClient(
-                    self.app.settings.tushare_token,
-                    self.app.settings.tushare_base_url,
-                    pause=self.app.settings.tushare_pause_seconds,
-                )
-                stock_list = self.app.index.stocks(refresh=True)
-            else:
-                client = EastmoneyClient(pause=self.app.settings.tushare_pause_seconds)
-                stock_list = self.app.index.stocks(refresh=False)
+            client = _public_stock_client(self.app.settings)
+            stock_list = self.app.index.stocks(refresh=False)
             if not stock_list:
                 raise RuntimeError("本地股票列表为空，无法执行每日股票数据更新。请先同步至少一只股票资料包。")
             self.task_registry.add_event(
@@ -3762,7 +3628,16 @@ class DailyMarketScheduler:
                 f"股票基础列表刷新完成，共 {len(stock_list)} 只。",
                 {"stock_list_count": len(stock_list)},
             )
-            result = sync_daily_market_for_existing_stocks(client, target_date=target_date)
+            result = sync_daily_market_for_existing_stocks(
+                client,
+                target_date=target_date,
+                checkpoint=lambda details: self.app.task_queue.checkpoint(
+                    task_id,
+                    resource_level=QUEUE_HEAVY_IO,
+                    stage=f"daily_market_{details.get('stage') or 'checkpoint'}",
+                    details=details,
+                ),
+            )
             result["stock_list_count"] = len(stock_list)
             result["trigger"] = trigger
             self.task_registry.update_task(task_id, status="succeeded", result=result)
@@ -3817,13 +3692,23 @@ class DailyMarketScheduler:
 
 
 class KaipanlaScheduler:
-    def __init__(self, config_path: Path, task_registry: TaskRegistry):
+    def __init__(self, config_path: Path, task_registry: TaskRegistry, task_queue: ResourceAwareTaskQueue):
         self.config_path = config_path
         self.task_registry = task_registry
+        self.task_queue = task_queue
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
         self.config = self._load_config()
+        self.task_queue.register(
+            "kaipanla",
+            lambda task_id, payload: self._run_task(
+                task_id,
+                str((payload or {}).get("trigger") or "queued"),
+                list((payload or {}).get("features") or []),
+                dict((payload or {}).get("params_by_feature") or {}),
+            ),
+        )
         self.thread = threading.Thread(target=self._loop, name="kaipanla-scheduler", daemon=True)
         self.thread.start()
 
@@ -3855,7 +3740,9 @@ class KaipanlaScheduler:
     def status(self) -> dict:
         with self.lock:
             config = dict(self.config)
-            running = bool(self.worker and self.worker.is_alive())
+            task_status = _task_registry_status(self.task_registry, str(config.get("last_task_id") or ""))
+            running = bool(self.worker and self.worker.is_alive()) or task_status == "running"
+            queued = task_status == "queued"
         return {
             "scheduler": {
                 "enabled": bool(config.get("enabled")),
@@ -3868,6 +3755,7 @@ class KaipanlaScheduler:
                 "last_result": config.get("last_result") or {},
                 "last_error": config.get("last_error") or "",
                 "running": running,
+                "queued": queued,
             }
         }
 
@@ -3878,8 +3766,8 @@ class KaipanlaScheduler:
                     enabled = bool(self.config.get("enabled"))
                     schedule_time = str(self.config.get("time") or "21:45")
                     last_run_date = str(self.config.get("last_run_date") or "")
-                    running = bool(self.worker and self.worker.is_alive())
-                if not enabled or running:
+                    active = bool(self.worker and self.worker.is_alive()) or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or ""))
+                if not enabled or active:
                     continue
                 now = datetime.now(CN_TZ).strftime("%H:%M")
                 today = today_yyyymmdd()
@@ -3892,7 +3780,7 @@ class KaipanlaScheduler:
 
     def _start_run(self, trigger: str) -> dict:
         with self.lock:
-            if self.worker and self.worker.is_alive():
+            if self.worker and self.worker.is_alive() or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or "")):
                 raise RuntimeError("开盘啦数据抓取任务正在运行。")
             features = list(self.config.get("features") or [])
             if not features:
@@ -3902,16 +3790,32 @@ class KaipanlaScheduler:
             self.config["last_task_id"] = task_id
             self._write_config_locked()
         self.task_registry.create_task(task_id, "kaipanla", "开盘啦数据抓取", metadata={"trigger": trigger, "features": features})
-        self.task_registry.update_task(task_id, status="running")
-        self.task_registry.add_event(task_id, "running", "开始抓取开盘啦数据。", {"features": features})
-        self.worker = threading.Thread(target=self._run_task, args=(task_id, trigger, features, params_by_feature), name=f"kaipanla-{task_id}", daemon=True)
-        self.worker.start()
+        self.task_queue.enqueue(
+            task_id=task_id,
+            handler_key="kaipanla",
+            kind="kaipanla",
+            title="开盘啦数据抓取",
+            payload={"trigger": trigger, "features": features, "params_by_feature": params_by_feature},
+            resource_level=QUEUE_NORMAL_IO,
+        )
         return self.status()
 
     def _run_task(self, task_id: str, trigger: str, features: list[str], params_by_feature: dict[str, dict]) -> None:
         try:
             trade_date = today_yyyymmdd()
-            result = run_kaipanla_batch(features, params_by_feature, save=True, run_id=task_id, trade_date=trade_date)
+            result = run_kaipanla_batch(
+                features,
+                params_by_feature,
+                save=True,
+                run_id=task_id,
+                trade_date=trade_date,
+                checkpoint=lambda details: self.task_queue.checkpoint(
+                    task_id,
+                    resource_level=QUEUE_NORMAL_IO,
+                    stage=f"kaipanla_{details.get('stage') or 'checkpoint'}",
+                    details=details,
+                ),
+            )
             status = "succeeded" if result.get("ok") else "failed"
             self.task_registry.add_event(task_id, status, f"开盘啦抓取完成：成功 {result.get('succeeded', 0)}，失败 {result.get('failed', 0)}。", result)
             self.task_registry.update_task(task_id, status=status, error="" if result.get("ok") else "部分开盘啦功能抓取失败。", result=result)

@@ -17,11 +17,19 @@ class FakeTaskRegistry:
         self.tasks.setdefault(task_id, {}).update(kwargs)
 
 
+class FakeTaskQueue:
+    def checkpoint(self, *args, **kwargs) -> dict:
+        return {"paused": False, "pause_seconds": 0, "pressure": {}}
+
+
 def _scheduler(*, enabled: bool = True):
     scheduler = object.__new__(web.IdleStockPrefetchScheduler)
     scheduler.config = {"minutes_enabled": enabled}
     scheduler.lock = web.threading.Lock()
-    scheduler.app = SimpleNamespace(settings=SimpleNamespace(idle_stock_prefetch_minutes_enabled=True, idle_stock_prefetch_refresh_existing_days=14))
+    scheduler.app = SimpleNamespace(
+        settings=SimpleNamespace(idle_stock_prefetch_minutes_enabled=True, idle_stock_prefetch_refresh_existing_days=14),
+        task_queue=FakeTaskQueue(),
+    )
     scheduler.task_registry = FakeTaskRegistry()
     scheduler._write_config_locked = lambda: None
     return scheduler
@@ -30,7 +38,7 @@ def _scheduler(*, enabled: bool = True):
 def test_idle_prefetch_fetches_minutes(monkeypatch):
     scheduler = _scheduler()
 
-    def fake_fetch(codes, *, config, sleep_range, source, pages, page_size):
+    def fake_fetch(codes, *, config, sleep_range, source, pages, page_size, checkpoint=None):
         return {
             "ok": True,
             "source": source,

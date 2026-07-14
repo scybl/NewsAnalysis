@@ -124,7 +124,7 @@ python3 -m venv .venv
 ```bash
 .venv/bin/python -m pytest -q tests
 .venv/bin/python -m pytest -q NewsCrawler/tests
-node --check stock_pipeline/web_static/admin-news.js
+node --check frontend/admin/admin-news.js
 ```
 
 GitHub Actions 的 CI 已拆分为：
@@ -157,6 +157,7 @@ alias qiangzhitongbu="cd /Users/libingze/Desktop/sandbox/NewsAnalysis && scripts
 
 ## 数据与运维文档
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：当前架构图、前后端边界、数据流和下一步开发落点参考。
 - [docs/PROJECT_MASTER_PLAN_CN.md](docs/PROJECT_MASTER_PLAN_CN.md)：中文项目总规划、已完成能力、待建设路线图和技术路线。
 - [docs/DATA_AND_OPERATIONS.md](docs/DATA_AND_OPERATIONS.md)：数据分层、冷备份、审计、自查、开盘啦和 NewsCrawler 运维说明。
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)：生产部署、安全同步、CI、GitHub Actions 和常用运维命令。

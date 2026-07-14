@@ -75,7 +75,7 @@ DEFAULT_PROVIDERS: dict[str, DataSourceProvider] = {
         "tencent_fallback",
         "腾讯行情兜底",
         "active",
-        "仅在东方财富 K 线接口异常时用于补齐日/周/月行情，记录会标记 source=tencent_fallback。",
+        "在 AkShare/东方财富行情接口异常时用于补齐日/周/月行情，记录会标记 source=tencent_fallback。",
         ["stock_daily_quote"],
         "只作为行情兜底，不提供财务和估值资料包。",
     ),
@@ -83,15 +83,16 @@ DEFAULT_PROVIDERS: dict[str, DataSourceProvider] = {
         "eastmoney",
         "东方财富",
         "active",
-        "Tushare 封存后的默认市场与财务资料包来源，提供股票基础信息、行情、估值、财务摘要、股东、融资融券、资金流、分红和公告等。",
+        "作为 AkShare 主链路的正确性验证和补源，提供股票基础信息、行情、估值、财务摘要、股东、融资融券、资金流、分红和公告等。",
         ["stock_profile", "stock_daily_quote", "finance_summary", "valuation", "sector_snapshot", "capital_flow", "shareholder", "corporate_action", "disclosure"],
     ),
     "akshare": DataSourceProvider(
         "akshare",
         "AkShare",
-        "planned",
-        "候选聚合源，用于补齐公开市场数据，接入前需要逐接口验证稳定性。",
-        ["stock_profile", "stock_daily_quote", "finance_summary", "index_quote"],
+        "active",
+        "默认公开数据主源，优先采集 A 股行情、财务三表、财务指标、分红、公告、股东、指数、板块和其他公开市场数据；东方财富/腾讯用于校验和补齐。",
+        ["stock_profile", "stock_daily_quote", "finance_summary", "valuation", "capital_flow", "shareholder", "corporate_action", "disclosure", "index_quote", "sector_snapshot"],
+        "底层仍是公开网页/API，单接口可能被限流或断开；资料包链路会用东方财富/腾讯补源。",
     ),
     "tushare": DataSourceProvider(
         "tushare",
@@ -105,16 +106,16 @@ DEFAULT_PROVIDERS: dict[str, DataSourceProvider] = {
 
 
 STANDARD_DATA_TYPES: dict[str, StandardDataType] = {
-    "stock_profile": StandardDataType("stock_profile", "股票基础信息", "个股", "代码、名称、行业、市场、上市状态等。", ["stock_data", "eastmoney", "akshare", "tushare"], ["stock_data", "eastmoney", "akshare", "tushare"]),
-    "stock_daily_quote": StandardDataType("stock_daily_quote", "个股日行情", "个股", "个股日 K、涨跌幅、成交量、成交额和换手率等。", ["stock_data", "eastmoney", "tencent_fallback", "akshare", "tushare"], ["stock_data", "eastmoney", "tencent_fallback", "akshare", "tushare"]),
-    "finance_summary": StandardDataType("finance_summary", "财务摘要", "个股", "利润、资产负债、现金流和关键财务指标。", ["stock_data", "eastmoney", "akshare", "tushare"], ["stock_data", "eastmoney", "akshare", "tushare"]),
-    "valuation": StandardDataType("valuation", "估值指标", "个股", "PE、PB、市值、换手率等。", ["stock_data", "eastmoney", "akshare", "tushare"], ["stock_data", "eastmoney", "akshare", "tushare"]),
+    "stock_profile": StandardDataType("stock_profile", "股票基础信息", "个股", "代码、名称、行业、市场、上市状态等。", ["stock_data", "akshare", "eastmoney", "tushare"], ["stock_data", "akshare", "eastmoney", "tushare"]),
+    "stock_daily_quote": StandardDataType("stock_daily_quote", "个股日行情", "个股", "个股日 K、涨跌幅、成交量、成交额和换手率等。", ["stock_data", "akshare", "eastmoney", "tencent_fallback", "tushare"], ["stock_data", "akshare", "eastmoney", "tencent_fallback", "tushare"]),
+    "finance_summary": StandardDataType("finance_summary", "财务摘要", "个股", "利润、资产负债、现金流和关键财务指标。", ["stock_data", "akshare", "eastmoney", "tushare"], ["stock_data", "akshare", "eastmoney", "tushare"]),
+    "valuation": StandardDataType("valuation", "估值指标", "个股", "PE、PB、市值、换手率等。", ["stock_data", "akshare", "eastmoney", "tushare"], ["stock_data", "akshare", "eastmoney", "tushare"]),
     "market_minute_quote": StandardDataType("market_minute_quote", "分时行情", "市场行情", "个股、板块、指数分钟级走势，作为市场实时结构观察。", ["market_data", "tonghuashun", "kaipanla"], ["market_data", "tonghuashun", "kaipanla"]),
     "limit_up_event": StandardDataType("limit_up_event", "涨停/连板事件", "市场行情", "涨停、连板梯队、反包、炸板和市场强度。", ["market_data", "kaipanla"], ["market_data", "kaipanla"]),
     "dragon_tiger": StandardDataType("dragon_tiger", "龙虎榜", "市场行情", "上榜股票、席位买卖和个股明细。", ["market_data", "kaipanla"], ["market_data", "kaipanla"]),
     "sector_snapshot": StandardDataType("sector_snapshot", "板块快照", "市场行情", "板块排行、成分股、资金、强度和分时。", ["market_data", "kaipanla", "eastmoney"], ["market_data", "kaipanla", "eastmoney"]),
     "market_sentiment": StandardDataType("market_sentiment", "市场情绪", "市场行情", "涨跌停、上涨下跌家数、情绪热度等。", ["market_data", "kaipanla"], ["market_data", "kaipanla"]),
-    "capital_flow": StandardDataType("capital_flow", "资金流", "市场行情", "主力资金、大单资金和板块资金。", ["market_data", "kaipanla", "eastmoney", "tushare"], ["market_data", "kaipanla", "eastmoney", "tushare"]),
+    "capital_flow": StandardDataType("capital_flow", "资金流", "市场行情", "主力资金、大单资金和板块资金。", ["market_data", "kaipanla", "akshare", "eastmoney", "tushare"], ["market_data", "kaipanla", "akshare", "eastmoney", "tushare"]),
     "news_item": StandardDataType("news_item", "新闻", "市场新闻", "财经、公司、行业、宏观新闻证据。", ["news_data", "tonghuashun"], ["news_data", "tonghuashun"]),
 }
 
@@ -122,7 +123,10 @@ STANDARD_DATA_TYPES: dict[str, StandardDataType] = {
 def data_source_snapshot(settings: Any | None = None) -> dict[str, Any]:
     config = _load_config()
     all_providers = [_provider_payload(provider, config, settings) for provider in DEFAULT_PROVIDERS.values()]
-    providers = [provider for provider in all_providers if provider.get("key") not in HIDDEN_PROVIDER_KEYS]
+    providers = sorted(
+        [provider for provider in all_providers if provider.get("key") not in HIDDEN_PROVIDER_KEYS],
+        key=lambda item: (int(item.get("priority") or 100), str(item.get("label") or "")),
+    )
     types = [_data_type_payload(item, all_providers) for item in STANDARD_DATA_TYPES.values()]
     coverage = _coverage_snapshot()
     return {
@@ -256,7 +260,7 @@ def _coverage_snapshot() -> dict[str, Any]:
 def _provider_configured(key: str, settings: Any | None) -> bool:
     if key == "tushare":
         return bool(getattr(settings, "tushare_token", ""))
-    if key in {"stock_data", "market_data", "news_data", "kaipanla", "tonghuashun", "tencent_fallback", "eastmoney"}:
+    if key in {"stock_data", "market_data", "news_data", "kaipanla", "tonghuashun", "tencent_fallback", "eastmoney", "akshare"}:
         return True
     return False
 
@@ -268,8 +272,8 @@ def _default_priority(key: str) -> int:
         "news_data": 10,
         "kaipanla": 20,
         "tonghuashun": 30,
-        "tencent_fallback": 50,
+        "akshare": 30,
         "eastmoney": 60,
-        "akshare": 70,
+        "tencent_fallback": 70,
         "tushare": 100,
     }.get(key, 100)

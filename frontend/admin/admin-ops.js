@@ -18,6 +18,8 @@ const OPS_STATUS_LABELS = {
   failed: "失败",
   failed_or_stopped: "异常停止",
   succeeded: "已完成",
+  queued: "排队中",
+  deferred: "延后中",
   unknown: "未知",
   running_unknown_pid: "运行中",
 };
@@ -27,6 +29,8 @@ const OPS_STATUS_HINTS = {
   failed: "任务最近一次执行失败，或调度记录里保留了错误信息。",
   failed_or_stopped: "任务曾处于运行状态，但现在找不到进程，也没有成功 summary。",
   running: "任务正在执行，进程或调度记录仍处于运行状态。",
+  queued: "任务已进入资源队列，按提交顺序等待执行。",
+  deferred: "任务在队列中，但当前内存、swap、负载或重 IO 状态不适合执行。",
   idle: "调度器可用但当前空闲，等待下一次触发。",
   paused: "调度器被关闭或手动暂停。",
   warning: "任务可读但存在告警，需要检查最近异常。",
@@ -38,6 +42,8 @@ const OPS_EVENT_LABELS = {
   summary: "完成摘要",
   succeeded: "成功",
   failed: "失败",
+  queued: "排队中",
+  deferred: "延后中",
   running: "运行中",
   idle: "空闲",
   unknown: "未知",
@@ -48,6 +54,8 @@ const OPS_EVENT_LABELS = {
   local_removed: "本地已清理",
   index_done: "索引完成",
   crawler_status_snapshot: "爬虫状态快照",
+  throttled: "资源暂停",
+  resumed: "恢复执行",
 };
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -99,18 +107,23 @@ async function loadOpsStatus() {
 function renderOpsSnapshot(snapshot) {
   const overall = snapshot.overall || {};
   const tasks = snapshot.tasks || [];
+  const resources = snapshot.resources || {};
   opsMeta.textContent = `${statusLabel(overall.status)} · ${formatDateTime(snapshot.generated_at)} · ${tasks.length} 个任务`;
-  renderOpsSummary(overall);
+  renderOpsSummary(overall, resources.task_queue || {});
   renderOpsTasks(tasks);
   renderOpsErrors(tasks, overall.warnings || []);
   renderOpsData(snapshot.data || {});
 }
 
-function renderOpsSummary(overall) {
+function renderOpsSummary(overall, queue) {
+  const queueCounts = queue.counts || {};
+  const queuedCount = Number(queueCounts.queued || 0) + Number(queueCounts.deferred || 0) + Number(queueCounts.running || 0);
+  const queueTone = Number(queueCounts.deferred || 0) ? "warning" : queuedCount ? "ok" : "";
   const items = [
     ["系统状态", statusLabel(overall.status), overall.status || "unknown"],
     ["运行任务", overall.running_count ?? 0, ""],
     ["重 IO", overall.heavy_io_running ? "占用" : "空闲", overall.heavy_io_running ? "warning" : "ok"],
+    ["队列", queuedCount ? `${queuedCount} 个` : "空", queueTone],
     ["告警", (overall.warnings || []).length, ""],
   ];
   opsSummary.innerHTML = items.map(([label, value, tone]) => `

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .analysis_frameworks import build_all_analysis_dossiers
 from .config import PROJECT_ROOT, load_dotenv
@@ -70,6 +70,7 @@ def fetch_and_store_minutes(
     source: str = "tdx",
     pages: int | str = 5,
     page_size: int = 800,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     try:
         import pymongo
@@ -88,6 +89,7 @@ def fetch_and_store_minutes(
         client.admin.command("ping")
         for index, raw_code in enumerate(codes):
             ts_code = normalize_ts_code(raw_code)
+            _run_checkpoint(checkpoint, stage="before_stock", ts_code=ts_code, current=index + 1, total=len(codes), source=source)
             try:
                 results.append(
                     fetch_store_one_stock(
@@ -98,6 +100,7 @@ def fetch_and_store_minutes(
                         source=source,
                         pages=pages,
                         page_size=page_size,
+                        checkpoint=checkpoint,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - keep other symbols running
@@ -126,26 +129,29 @@ def fetch_store_one_stock(
     source: str = "tdx",
     pages: int | str = 5,
     page_size: int = 800,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     normalized_source = _normalize_source(source)
     if normalized_source == "auto":
         try:
-            return fetch_store_one_stock(ts_code, cfg, collection, payload_collection, source="tdx", pages=pages, page_size=page_size)
+            return fetch_store_one_stock(ts_code, cfg, collection, payload_collection, source="tdx", pages=pages, page_size=page_size, checkpoint=checkpoint)
         except Exception as tdx_exc:  # noqa: BLE001 - fall back to latest THS snapshot
-            result = fetch_store_one_stock(ts_code, cfg, collection, payload_collection, source="ths", pages=1, page_size=page_size)
+            result = fetch_store_one_stock(ts_code, cfg, collection, payload_collection, source="ths", pages=1, page_size=page_size, checkpoint=checkpoint)
             result["fallback_from"] = "tdx"
             result["fallback_error"] = str(tdx_exc)
             return result
     if normalized_source == "tdx":
+        _run_checkpoint(checkpoint, stage="before_tdx_fetch", ts_code=ts_code, source=normalized_source)
         return fetch_store_tdx_stock(ts_code, collection, pages=pages, page_size=page_size)
     if normalized_source == "pytdx_history":
-        return fetch_store_pytdx_history_stock(ts_code, collection)
+        return fetch_store_pytdx_history_stock(ts_code, collection, checkpoint=checkpoint)
     if normalized_source != "ths":
         raise ValueError(f"未知分钟行情数据源：{source}")
+    _run_checkpoint(checkpoint, stage="before_ths_fetch", ts_code=ts_code, source=normalized_source)
     return fetch_store_ths_stock(ts_code, cfg, collection, payload_collection)
 
 
-def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, Any]:
+def fetch_store_pytdx_history_stock(ts_code: str, collection: Any, *, checkpoint: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     trade_dates = _local_daily_trade_dates(ts_code)
     if not trade_dates:
         raise RuntimeError("本地资料包缺少 daily 交易日列表，请先更新每日行情。")
@@ -161,6 +167,15 @@ def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, 
     cold_archive: dict[str, Any] = {"ok": True, "status": "skipped", "reason": "no_new_rows"}
     for start in range(0, len(pending_dates), chunk_size):
         chunk_dates = pending_dates[start : start + chunk_size]
+        _run_checkpoint(
+            checkpoint,
+            stage="before_pytdx_history_chunk",
+            ts_code=ts_code,
+            source="pytdx_history",
+            current=start + 1,
+            total=len(pending_dates),
+            chunk_days=len(chunk_dates),
+        )
         try:
             fetched = fetch_pytdx_history_minutes(ts_code, chunk_dates)
         except Exception as exc:  # noqa: BLE001 - keep partial progress and continue
@@ -208,6 +223,11 @@ def fetch_store_pytdx_history_stock(ts_code: str, collection: Any) -> dict[str, 
         "error": "",
         "failures": failures[:20],
     }
+
+
+def _run_checkpoint(checkpoint: Callable[[dict[str, Any]], None] | None, **details: Any) -> None:
+    if checkpoint is not None:
+        checkpoint(details)
 
 
 def fetch_store_tdx_stock(ts_code: str, collection: Any, *, pages: int | str = 5, page_size: int = 800) -> dict[str, Any]:

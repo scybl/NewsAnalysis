@@ -133,6 +133,7 @@ async function runDataAuditSchedulerNow() {
 
 function renderDataAuditScheduler(scheduler) {
   const running = !!scheduler.running;
+  const queued = !!scheduler.queued;
   if (dataAuditSchedulerEnabled) dataAuditSchedulerEnabled.checked = !!scheduler.enabled;
   if (dataAuditSchedulerIdleSeconds) dataAuditSchedulerIdleSeconds.value = scheduler.idle_seconds || 1800;
   if (dataAuditSchedulerIntervalSeconds) dataAuditSchedulerIntervalSeconds.value = scheduler.interval_seconds || 21600;
@@ -141,9 +142,11 @@ function renderDataAuditScheduler(scheduler) {
   if (dataAuditSchedulerMeta) {
     dataAuditSchedulerMeta.textContent = running
       ? "后台抽检运行中"
-      : scheduler.enabled
-        ? `已启用 · 空闲 ${formatDuration(scheduler.idle_seconds || 1800)} · 间隔 ${formatDuration(scheduler.interval_seconds || 21600)}`
-        : "未启用";
+      : queued
+        ? "后台抽检排队中"
+        : scheduler.enabled
+          ? `已启用 · 空闲 ${formatDuration(scheduler.idle_seconds || 1800)} · 间隔 ${formatDuration(scheduler.interval_seconds || 21600)}`
+          : "未启用";
   }
   if (dataAuditSchedulerIdleRemaining) dataAuditSchedulerIdleRemaining.textContent = scheduler.remaining_idle_seconds ? formatDuration(scheduler.remaining_idle_seconds) : "可触发";
   if (dataAuditSchedulerIntervalRemaining) dataAuditSchedulerIntervalRemaining.textContent = scheduler.remaining_interval_seconds ? formatDuration(scheduler.remaining_interval_seconds) : "可触发";
@@ -155,7 +158,7 @@ function renderDataAuditScheduler(scheduler) {
       ? `${statusLabel(summary.status || result.status)} · 异常 ${summary.anomalies ?? 0}`
       : "-";
   }
-  if (dataAuditSchedulerRunBtn) dataAuditSchedulerRunBtn.disabled = running;
+  if (dataAuditSchedulerRunBtn) dataAuditSchedulerRunBtn.disabled = running || queued;
 }
 
 async function runDataAudit() {

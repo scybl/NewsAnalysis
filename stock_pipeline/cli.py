@@ -7,13 +7,14 @@ from pathlib import Path
 
 from .analyst import INITIAL_QUESTION, StockAnalyst, session_path_for
 from .akshare_client import AkshareClient
-from .composite_client import FallbackStockClient
+from .composite_client import ValidatingStockClient
 from .collector import StockDataCollector
 from .config import PROJECT_ROOT, get_settings
 from .daily_k_coverage import ensure_indexes as ensure_daily_k_coverage_indexes
 from .daily_k_coverage import inspect_daily_k_coverage_gaps, refresh_daily_k_coverage
 from .deepseek_client import DeepSeekClient
 from .dossier import build_dossier
+from .eastmoney_client import EastmoneyClient
 from .kaipanla import (
     list_kaipanla_features,
     list_kaipanla_records,
@@ -253,18 +254,20 @@ def run_collect(args: argparse.Namespace) -> Path:
     settings = get_settings(require_deepseek=False)
     ts_code = normalize_ts_code(args.code)
     output_dir = ensure_dir(Path(args.output_dir) / f"{ts_code}_{timestamp()}")
-    collector = StockDataCollector(
-        FallbackStockClient(
-            TushareClient(settings.tushare_token, settings.tushare_base_url, pause=settings.tushare_pause_seconds),
-            [AkshareClient(pause=settings.tushare_pause_seconds)],
-        )
-    )
+    collector = StockDataCollector(_public_stock_client(settings))
     print(f"开始采集 {ts_code}，输出目录：{output_dir}")
     full_data = collector.collect(ts_code, output_dir, years=args.years, full_history=args.full_history or args.years is None)
     dossier = build_dossier(full_data)
     write_json(output_dir / "dossier.json", dossier)
     _print_collect_summary(dossier, output_dir)
     return output_dir
+
+
+def _public_stock_client(settings) -> ValidatingStockClient:
+    return ValidatingStockClient(
+        AkshareClient(pause=settings.tushare_pause_seconds),
+        [EastmoneyClient(pause=settings.tushare_pause_seconds)],
+    )
 
 
 def run_analyze(args: argparse.Namespace) -> None:

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-STATIC = Path(__file__).resolve().parents[1] / "stock_pipeline" / "web_static"
+STATIC = Path(__file__).resolve().parents[1] / "frontend" / "admin"
 
 
 def test_crawler_console_is_dedicated_and_read_only():
@@ -199,6 +199,7 @@ def test_admin_time_labels_hide_year_and_seconds_in_frontend_formatters():
 
 def test_regular_user_data_console_is_limited_and_read_only():
     web = (STATIC.parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    auth_policy = (STATIC.parents[1] / "backend" / "auth_policy.py").read_text(encoding="utf-8")
     admin_script = (STATIC / "admin.js").read_text(encoding="utf-8")
     news_script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
     crawler_script = (STATIC / "admin-crawler.js").read_text(encoding="utf-8")
@@ -208,10 +209,10 @@ def test_regular_user_data_console_is_limited_and_read_only():
 
     market_html = (STATIC / "admin-market.html").read_text(encoding="utf-8")
     stock_html = (STATIC / "admin-news.html").read_text(encoding="utf-8")
-    assert 'DATA_CONSOLE_PAGES = {"/admin-market.html", "/admin-news.html", "/admin-crawler.html"}' in web
-    assert 'DATA_CONSOLE_ROLES = {*ADMIN_ROLES, "user"}' in web
-    assert '"/admin-accounts.html"' in web
-    assert '"/admin-audit.html"' in web
+    assert 'DATA_CONSOLE_PAGES = {"/admin-market.html", "/admin-news.html", "/admin-crawler.html"}' in auth_policy
+    assert 'DATA_CONSOLE_ROLES = {*ADMIN_ROLES, "user"}' in auth_policy
+    assert '"/admin-accounts.html"' in auth_policy
+    assert '"/admin-audit.html"' in auth_policy
     assert "parsed.path in ADMIN_ONLY_PAGES" in web
     assert "def _require_data_console" in web
     assert 'parsed.path == "/metrics/news-crawler"' in web
@@ -380,11 +381,11 @@ def test_market_and_data_source_pages_have_explicit_layout_sections():
     assert "data-source-overview-grid" in stock_sources
     stock_script = (STATIC / "admin-news.js").read_text(encoding="utf-8")
     assert "股票来源" in stock_sources
-    assert "东方财富、AkShare" in stock_sources
+    assert "AkShare、东方财富" in stock_sources
     assert "股票来源与存储" not in stock_sources
     assert "本地热数据存储" not in stock_sources
     assert "股票数据源" not in stock_sources
-    assert 'STOCK_PROVIDER_KEYS = new Set(["eastmoney", "akshare", "tushare"])' in stock_script
+    assert 'STOCK_PROVIDER_KEYS = new Set(["akshare", "eastmoney", "tushare"])' in stock_script
     assert "来源/存储节点" not in stock_script
     assert "活跃节点" not in stock_script
     assert "活跃来源" in stock_script

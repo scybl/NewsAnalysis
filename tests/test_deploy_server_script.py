@@ -21,7 +21,11 @@ def test_deploy_script_protects_long_running_jobs_and_fetch_tasks():
     assert "active crawl_runs" in script
     assert "stock_pipeline market minute-cold" in script
     assert "bdpan .* upload" in script
-    assert "re.search(protected_regex, line)" in script
+    assert "def _protected_process_lines(output):" in script
+    assert "ignored_pids = {os.getpid(), os.getppid()}" in script
+    assert '\\"PROTECTED_REGEX=\\" in text' in script
+    assert '\\"PROTECTED_TASK_STATUSES=\\" in text' in script
+    assert "re.search(protected_regex, text)" in script
     assert 'grep -E \\\\\\"$PROTECTED_REGEX' not in script
     assert "Protected long-running job detected" in script
     assert "docker compose -f docker-compose.prod.yml build" in script
