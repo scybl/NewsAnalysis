@@ -131,7 +131,7 @@ def test_tonghuashun_uses_category_page_overrides_as_hard_limits():
     ]
 
 
-def test_tonghuashun_uses_history_based_hard_limits_for_busy_categories():
+def test_tonghuashun_respects_max_pages_for_busy_categories():
     list_html = (FIXTURES / "tonghuashun_list.html").read_text()
     provider = TonghuashunProvider()
     session = RecordingSession(Response(text=list_html))
@@ -139,9 +139,21 @@ def test_tonghuashun_uses_history_based_hard_limits_for_busy_categories():
 
     refs = list(provider.discover(NewsCrawlRequest(categories=("产经新闻",), max_pages=1)))
 
+    assert len(refs) == 1
+    assert refs[0].metadata["crawl_hard_limit"] == 1
+    assert session.urls == ["http://news.10jqka.com.cn/cjkx_list/index_1.shtml"]
+
+
+def test_tonghuashun_caps_large_max_pages_at_category_hard_limit():
+    list_html = (FIXTURES / "tonghuashun_list.html").read_text()
+    provider = TonghuashunProvider()
+    session = RecordingSession(Response(text=list_html))
+    provider.session = session
+
+    refs = list(provider.discover(NewsCrawlRequest(categories=("产经新闻",), max_pages=50)))
+
     assert len(refs) == DEFAULT_CATEGORY_HARD_LIMITS["产经新闻"]
     assert refs[0].metadata["crawl_hard_limit"] == DEFAULT_CATEGORY_HARD_LIMITS["产经新闻"]
-    assert session.urls[0] == "http://news.10jqka.com.cn/cjkx_list/index_1.shtml"
     assert session.urls[-1] == "http://news.10jqka.com.cn/cjkx_list/index_30.shtml"
 
 
@@ -164,6 +176,18 @@ def test_tonghuashun_stops_category_when_list_page_404s():
 def test_tonghuashun_preserves_stock_subdomain_articles():
     assert _mobile_url("http://stock.10jqka.com.cn/hks/20260625/c123456.shtml") == (
         "http://stock.10jqka.com.cn/hks/20260625/c123456.shtml"
+    )
+
+
+def test_tonghuashun_converts_field_articles_to_mobile():
+    assert _mobile_url("http://field.10jqka.com.cn/20260714/c678178722.shtml") == (
+        "http://m.10jqka.com.cn/20260714/c678178722.shtml"
+    )
+
+
+def test_tonghuashun_converts_bond_articles_to_mobile():
+    assert _mobile_url("http://bond.10jqka.com.cn/20260713/c678147059.shtml") == (
+        "http://m.10jqka.com.cn/20260713/c678147059.shtml"
     )
     assert _mobile_url("http://news.10jqka.com.cn/20260625/c123456.shtml") == (
         "http://m.10jqka.com.cn/20260625/c123456.shtml"

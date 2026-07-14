@@ -1941,8 +1941,7 @@ class KaipanlaCrawler:
             result = response.json()
             
             if not result or result.get("errcode") != "0":
-                print(f"获取实时指数列表失败: {result.get('errcode', 'unknown error')}")
-                return {}
+                raise RuntimeError(f"获取实时指数列表失败: {result.get('errcode', 'unknown error')}")
             
             # 解析数据
             indexes = []
@@ -1955,7 +1954,7 @@ class KaipanlaCrawler:
                     "value": float(stock.get("last_px", 0)),
                     "change_pct": float(stock.get("increase_rate", "0").replace("%", "")),
                     "change_amount": float(stock.get("increase_amount", 0)),
-                    "turnover": int(stock.get("turnover", 0))
+                    "turnover": _to_int(stock.get("turnover", 0)),
                 }
                 indexes.append(index_data)
             
@@ -1965,8 +1964,7 @@ class KaipanlaCrawler:
             }
             
         except Exception as e:
-            print(f"请求实时指数列表失败: {e}")
-            return {}
+            raise RuntimeError(f"请求实时指数列表失败: {e}") from e
 
     def get_realtime_sharp_withdrawal(self, timeout=None):
         """
@@ -3297,8 +3295,7 @@ class KaipanlaCrawler:
             driver.quit()
 
             if not result:
-                print("No data retrieved")
-                return pd.Series()
+                raise RuntimeError("同花顺热榜未返回数据")
 
             # 转换为Series，index为排名
             series = pd.Series(result)
@@ -3309,10 +3306,9 @@ class KaipanlaCrawler:
             return series
 
         except Exception as e:
-            print(f"Crawling failed: {str(e)}")
             if driver:
                 driver.quit()
-            return pd.Series()
+            raise RuntimeError(f"同花顺热榜抓取失败: {e}") from e
 
     def get_sector_strength(self, sector_code, date=None, timeout=1600):
         """
@@ -4704,7 +4700,7 @@ class KaipanlaCrawler:
         
         # 东方财富网竞价数据API
         # 参考URL: http://push2.eastmoney.com/api/qt/stock/details/get
-        url = "http://push2.eastmoney.com/api/qt/stock/details/get"
+        url = "https://push2delay.eastmoney.com/api/qt/stock/details/get"
         
         params = {
             "fields1": "f1,f2,f3,f4",
@@ -4712,7 +4708,7 @@ class KaipanlaCrawler:
             "mpi": "1000",  # 每页数量
             "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             "fltt": "2",
-            "pos": "-0",  # 从最新开始
+            "pos": "0",  # 获取全日明细后再过滤 9:15-9:25 竞价段
             "secid": secid,
             "wbp2u": "|0|0|0|web",
             "_": str(int(time.time() * 1000))
@@ -4727,40 +4723,46 @@ class KaipanlaCrawler:
                 "Referer": f"http://quote.eastmoney.com/f1.html?newcode={market}.{code}"
             }
             
-            response = requests.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=timeout
-            )
+            response = None
+            request_timeout = (min(5, max(1, int(timeout or 1))), timeout)
+            for attempt in range(2):
+                try:
+                    response = requests.get(
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=request_timeout
+                    )
+                    break
+                except requests.exceptions.RequestException:
+                    if attempt >= 1:
+                        raise
+                    time.sleep(0.5)
+            if response is None:
+                raise RuntimeError(f"请求竞价tick数据失败 ({stock_code}): 响应内容为空")
             response.raise_for_status()
             
             if not response.text.strip():
-                print(f"请求竞价tick数据失败 ({stock_code}): 响应内容为空")
-                return {}
+                raise RuntimeError(f"请求竞价tick数据失败 ({stock_code}): 响应内容为空")
             
             try:
                 result = response.json()
             except (ValueError, requests.exceptions.JSONDecodeError) as json_error:
-                print(f"请求竞价tick数据失败 ({stock_code}): JSON解析错误 - {json_error}")
-                return {}
+                raise RuntimeError(f"请求竞价tick数据失败 ({stock_code}): JSON解析错误 - {json_error}") from json_error
             
             if not result or result.get("rc") != 0:
                 error_code = result.get('rc', 'unknown error') if result else 'empty response'
-                print(f"获取竞价tick数据失败: {error_code}")
-                return {}
+                raise RuntimeError(f"获取竞价tick数据失败: {error_code}")
             
             # 解析数据
             data_obj = result.get("data", {})
             if not data_obj:
-                print(f"未获取到股票 {stock_code} 的竞价tick数据")
-                return {}
+                raise RuntimeError(f"未获取到股票 {stock_code} 的竞价tick数据")
             
             # 获取details字段（包含tick数据）
             details = data_obj.get("details", "")
             if not details:
-                print(f"未获取到股票 {stock_code} 的竞价tick明细数据")
-                return {}
+                raise RuntimeError(f"未获取到股票 {stock_code} 的竞价tick明细数据")
             
             # 解析details数据
             # details可能是字符串或列表
@@ -4792,14 +4794,21 @@ class KaipanlaCrawler:
                         records.append(record)
             
             elif isinstance(details, list):
-                # 列表格式: [[时间, 价格, 成交量, 成交额, 性质], ...]
+                # 列表格式可能是 ["时间,价格,成交量,..."] 或 [[时间, 价格, 成交量, ...], ...]
                 for item in details:
-                    if not isinstance(item, (list, tuple)) or len(item) < 3:
+                    if isinstance(item, str):
+                        parts = item.split(",")
+                    elif isinstance(item, (list, tuple)):
+                        parts = list(item)
+                    else:
                         continue
-                    
-                    time_str = str(item[0])  # 时间
-                    price = float(item[1]) if item[1] else 0.0  # 价格
-                    volume = int(item[2]) if item[2] else 0  # 成交量（手）
+
+                    if len(parts) < 3:
+                        continue
+
+                    time_str = str(parts[0])  # 时间
+                    price = float(parts[1]) if parts[1] else 0.0  # 价格
+                    volume = int(parts[2]) if parts[2] else 0  # 成交量（手）
                     
                     # 只保留9:15:00到9:25:00的竞价数据
                     if time_str >= "09:15:00" and time_str <= "09:25:00":
@@ -4811,8 +4820,7 @@ class KaipanlaCrawler:
                         records.append(record)
             
             if not records:
-                print(f"未找到股票 {stock_code} 的竞价时段数据（9:15-9:25）")
-                return {}
+                raise RuntimeError(f"未找到股票 {stock_code} 的竞价时段数据（9:15-9:25）")
             
             df = pd.DataFrame(records)
             
@@ -4824,5 +4832,4 @@ class KaipanlaCrawler:
             }
             
         except Exception as e:
-            print(f"请求竞价tick数据失败 ({stock_code}): {e}")
-            return {}
+            raise RuntimeError(f"请求竞价tick数据失败 ({stock_code}): {e}") from e

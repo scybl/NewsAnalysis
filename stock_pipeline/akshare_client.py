@@ -14,7 +14,7 @@ class AkshareClient:
 
     AkShare is a public-data wrapper, not an authoritative database.  This
     adapter is intentionally best-effort: unstable upstream pages should produce
-    an empty/error dataset rather than break the primary Eastmoney collection.
+    an empty/error dataset so validator/fallback clients can fill the gap.
     """
 
     source_name = "AkShare"
@@ -22,6 +22,7 @@ class AkshareClient:
     def __init__(self, timeout: float = 20.0, pause: float = 0.2):
         self.timeout = timeout
         self.pause = pause
+        self._hist_daily_cache: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         try:
             import akshare as ak  # type: ignore
         except ImportError as exc:  # pragma: no cover - dependency guard
@@ -37,6 +38,8 @@ class AkshareClient:
             if api_name in {"daily", "weekly", "monthly"}:
                 period = {"daily": "daily", "weekly": "weekly", "monthly": "monthly"}[api_name]
                 return _result(api_name, self._hist(ts_code, period, start_date, end_date))
+            if api_name == "daily_basic":
+                return _result(api_name, self._daily_basic(ts_code, start_date, end_date))
             if api_name == "moneyflow":
                 return _result(api_name, self._moneyflow(ts_code))
             if api_name == "fina_indicator":
@@ -69,14 +72,20 @@ class AkshareClient:
         raise TushareError(f"AkShare 暂未映射接口：{api_name}")
 
     def _hist(self, ts_code: str, period: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        df = self.ak.stock_zh_a_hist(
-            symbol=_symbol(ts_code),
-            period=period,
-            start_date=start_date,
-            end_date=end_date,
-            adjust="",
-            timeout=self.timeout,
-        )
+        try:
+            df = self.ak.stock_zh_a_hist(
+                symbol=_symbol(ts_code),
+                period=period,
+                start_date=start_date,
+                end_date=end_date,
+                adjust="",
+                timeout=self.timeout,
+            )
+        except Exception:
+            fallback_rows = self._hist_from_daily(ts_code, period, start_date, end_date)
+            if fallback_rows:
+                return fallback_rows
+            raise
         rows = []
         for row in _records(df):
             trade_date = _date8(row.get("日期"))
@@ -100,6 +109,38 @@ class AkshareClient:
             )
         return rows
 
+    def _hist_from_daily(self, ts_code: str, period: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        cache = getattr(self, "_hist_daily_cache", None)
+        if cache is None:
+            cache = {}
+            self._hist_daily_cache = cache
+        cache_key = (ts_code, start_date, end_date)
+        if cache_key not in cache:
+            df = self.ak.stock_zh_a_daily(symbol=_daily_symbol(ts_code), start_date=start_date, end_date=end_date, adjust="")
+            rows = [_daily_hist_row(ts_code, row) for row in _records(df)]
+            rows = [row for row in rows if row.get("trade_date")]
+            rows.sort(key=lambda item: str(item.get("trade_date") or ""))
+            cache[cache_key] = rows
+        rows = [dict(row) for row in cache[cache_key]]
+        if period == "daily":
+            return _with_period_change(rows)
+        if period in {"weekly", "monthly"}:
+            return _aggregate_hist_rows(rows, period)
+        return []
+
+    def _daily_basic(self, ts_code: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "ts_code": row.get("ts_code"),
+                "trade_date": row.get("trade_date"),
+                "close": row.get("close"),
+                "turnover_rate": row.get("turnover_rate"),
+                "source": "akshare_stock_zh_a_hist_daily_basic",
+            }
+            for row in self._hist(ts_code, "daily", start_date, end_date)
+            if row.get("trade_date")
+        ]
+
     def _income(self, ts_code: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
         df = self.ak.stock_profit_sheet_by_report_em(symbol=_em_symbol(ts_code))
         rows = []
@@ -111,16 +152,16 @@ class AkshareClient:
                 {
                     "ts_code": ts_code,
                     "end_date": end,
-                    "ann_date": _date8(row.get("公告日期")),
-                    "total_revenue": _num(row.get("营业总收入")),
-                    "revenue": _num(row.get("营业收入")),
-                    "oper_cost": _num(row.get("营业成本")),
-                    "operate_profit": _num(row.get("营业利润")),
-                    "total_profit": _num(row.get("利润总额")),
-                    "n_income": _num(row.get("净利润")),
-                    "n_income_attr_p": _num(row.get("归属于母公司股东的净利润")),
-                    "basic_eps": _num(row.get("基本每股收益")),
-                    "diluted_eps": _num(row.get("稀释每股收益")),
+                    "ann_date": _date8(_pick(row, "公告日期", "NOTICE_DATE")),
+                    "total_revenue": _num(_pick(row, "营业总收入", "TOTAL_OPERATE_INCOME", "OPERATE_INCOME")),
+                    "revenue": _num(_pick(row, "营业收入", "OPERATE_INCOME", "TOTAL_OPERATE_INCOME")),
+                    "oper_cost": _num(_pick(row, "营业成本", "OPERATE_COST", "TOTAL_OPERATE_COST")),
+                    "operate_profit": _num(_pick(row, "营业利润", "OPERATE_PROFIT")),
+                    "total_profit": _num(_pick(row, "利润总额", "TOTAL_PROFIT")),
+                    "n_income": _num(_pick(row, "净利润", "NETPROFIT", "PARENT_NETPROFIT")),
+                    "n_income_attr_p": _num(_pick(row, "归属于母公司股东的净利润", "PARENT_NETPROFIT")),
+                    "basic_eps": _num(_pick(row, "基本每股收益", "BASIC_EPS")),
+                    "diluted_eps": _num(_pick(row, "稀释每股收益", "DILUTED_EPS")),
                     "source": "akshare_stock_profit_sheet_by_report_em",
                     "raw": _clean_raw(row),
                 }
@@ -138,15 +179,15 @@ class AkshareClient:
                 {
                     "ts_code": ts_code,
                     "end_date": end,
-                    "ann_date": _date8(row.get("公告日期")),
-                    "total_assets": _num(row.get("资产总计")),
-                    "total_liab": _num(row.get("负债合计")),
-                    "total_hldr_eqy_exc_min_int": _num(row.get("归属于母公司股东权益合计")),
-                    "total_hldr_eqy_inc_min_int": _num(row.get("所有者权益合计")),
-                    "money_cap": _num(row.get("货币资金")),
-                    "accounts_receiv": _num(row.get("应收账款")),
-                    "inventories": _num(row.get("存货")),
-                    "fix_assets": _num(row.get("固定资产")),
+                    "ann_date": _date8(_pick(row, "公告日期", "NOTICE_DATE")),
+                    "total_assets": _num(_pick(row, "资产总计", "TOTAL_ASSETS")),
+                    "total_liab": _num(_pick(row, "负债合计", "TOTAL_LIABILITIES")),
+                    "total_hldr_eqy_exc_min_int": _num(_pick(row, "归属于母公司股东权益合计", "TOTAL_PARENT_EQUITY", "TOTAL_EQUITY")),
+                    "total_hldr_eqy_inc_min_int": _num(_pick(row, "所有者权益合计", "TOTAL_EQUITY")),
+                    "money_cap": _num(_pick(row, "货币资金", "MONETARYFUNDS", "MONETARY_FUND")),
+                    "accounts_receiv": _num(_pick(row, "应收账款", "ACCOUNTS_RECE", "ACCOUNTS_RECEIVABLE")),
+                    "inventories": _num(_pick(row, "存货", "INVENTORY", "INVENTORIES")),
+                    "fix_assets": _num(_pick(row, "固定资产", "FIXED_ASSET", "FIX_ASSET")),
                     "source": "akshare_stock_balance_sheet_by_report_em",
                     "raw": _clean_raw(row),
                 }
@@ -164,11 +205,12 @@ class AkshareClient:
                 {
                     "ts_code": ts_code,
                     "end_date": end,
-                    "ann_date": _date8(row.get("公告日期")),
-                    "n_cashflow_act": _num(row.get("经营活动产生的现金流量净额")),
-                    "n_cashflow_inv_act": _num(row.get("投资活动产生的现金流量净额")),
-                    "n_cash_flows_fnc_act": _num(row.get("筹资活动产生的现金流量净额")),
-                    "c_cash_equ_end_period": _num(row.get("期末现金及现金等价物余额")),
+                    "ann_date": _date8(_pick(row, "公告日期", "NOTICE_DATE")),
+                    "net_profit": _num(_pick(row, "净利润", "NETPROFIT")),
+                    "n_cashflow_act": _num(_pick(row, "经营活动产生的现金流量净额", "NETCASH_OPERATE")),
+                    "n_cashflow_inv_act": _num(_pick(row, "投资活动产生的现金流量净额", "NETCASH_INVEST")),
+                    "n_cash_flows_fnc_act": _num(_pick(row, "筹资活动产生的现金流量净额", "NETCASH_FINANCE")),
+                    "c_cash_equ_end_period": _num(_pick(row, "期末现金及现金等价物余额", "END_CCE")),
                     "source": "akshare_stock_cash_flow_sheet_by_report_em",
                     "raw": _clean_raw(row),
                 }
@@ -409,6 +451,10 @@ def _market(ts_code: str) -> str:
     return "sz"
 
 
+def _daily_symbol(ts_code: str) -> str:
+    return f"{_market(ts_code)}{_symbol(ts_code)}"
+
+
 def _em_symbol(ts_code: str) -> str:
     normalized = normalize_ts_code(ts_code)
     symbol, exchange = normalized.split(".", 1)
@@ -444,6 +490,14 @@ def _clean_value(value: Any) -> Any:
     if text in {"NaT", "nan", "None"}:
         return None
     return value
+
+
+def _pick(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value) not in {"", "NaT", "nan", "None"}:
+            return value
+    return None
 
 
 def _date8(value: Any) -> str:
@@ -491,3 +545,110 @@ def _num(value: Any) -> float | None:
     if math.isnan(result) or math.isinf(result):
         return None
     return result
+
+
+def _daily_hist_row(ts_code: str, row: dict[str, Any]) -> dict[str, Any]:
+    turnover = _num(row.get("turnover"))
+    return {
+        "ts_code": ts_code,
+        "trade_date": _date8(row.get("date")),
+        "open": _num(row.get("open")),
+        "close": _num(row.get("close")),
+        "high": _num(row.get("high")),
+        "low": _num(row.get("low")),
+        "vol": _divide(_num(row.get("volume")), 100),
+        "amount": _num(row.get("amount")),
+        "pct_chg": None,
+        "change": None,
+        "turnover_rate": turnover * 100 if turnover is not None else None,
+        "source": "akshare_stock_zh_a_daily",
+    }
+
+
+def _with_period_change(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    previous_close: float | None = None
+    result = []
+    for row in rows:
+        item = dict(row)
+        close = _num(item.get("close"))
+        if close is not None and previous_close:
+            change = close - previous_close
+            item["change"] = round(change, 6)
+            item["pct_chg"] = round(change / previous_close * 100, 6)
+        if close is not None:
+            previous_close = close
+        result.append(item)
+    return result
+
+
+def _aggregate_hist_rows(rows: list[dict[str, Any]], period: str) -> list[dict[str, Any]]:
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = _period_key(str(row.get("trade_date") or ""), period)
+        if key is None:
+            continue
+        groups.setdefault(key, []).append(row)
+    aggregated = []
+    for key in sorted(groups):
+        items = sorted(groups[key], key=lambda item: str(item.get("trade_date") or ""))
+        first = items[0]
+        last = items[-1]
+        turnover_values = [_num(item.get("turnover_rate")) for item in items]
+        aggregated.append(
+            {
+                "ts_code": last.get("ts_code"),
+                "trade_date": last.get("trade_date"),
+                "open": first.get("open"),
+                "close": last.get("close"),
+                "high": _max_value(item.get("high") for item in items),
+                "low": _min_value(item.get("low") for item in items),
+                "vol": _sum_values(item.get("vol") for item in items),
+                "amount": _sum_values(item.get("amount") for item in items),
+                "pct_chg": None,
+                "change": None,
+                "turnover_rate": _sum_values(value for value in turnover_values if value is not None),
+                "source": f"akshare_stock_zh_a_daily_aggregated_{period}",
+            }
+        )
+    return _with_period_change(aggregated)
+
+
+def _period_key(trade_date: str, period: str) -> tuple[Any, ...] | None:
+    try:
+        parsed = datetime.strptime(trade_date, "%Y%m%d")
+    except ValueError:
+        return None
+    if period == "weekly":
+        iso = parsed.isocalendar()
+        return (iso.year, iso.week)
+    if period == "monthly":
+        return (parsed.year, parsed.month)
+    return None
+
+
+def _divide(value: float | None, divisor: float) -> float | None:
+    return value / divisor if value is not None else None
+
+
+def _sum_values(values: Any) -> float | None:
+    total = 0.0
+    seen = False
+    for value in values:
+        number = _num(value)
+        if number is None:
+            continue
+        total += number
+        seen = True
+    return total if seen else None
+
+
+def _max_value(values: Any) -> float | None:
+    numbers = [_num(value) for value in values]
+    numbers = [value for value in numbers if value is not None]
+    return max(numbers) if numbers else None
+
+
+def _min_value(values: Any) -> float | None:
+    numbers = [_num(value) for value in values]
+    numbers = [value for value in numbers if value is not None]
+    return min(numbers) if numbers else None

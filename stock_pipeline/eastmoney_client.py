@@ -256,7 +256,7 @@ class EastmoneyClient:
 
     def _stock_basic(self, ts_code: str) -> dict[str, Any]:
         org = self._org_basic(ts_code)
-        financial = self._financial_rows("RPT_DMSK_FN_INCOME", ts_code, page_size=1)
+        financial = [] if org else self._financial_rows("RPT_DMSK_FN_INCOME", ts_code, page_size=1)
         first = org or (financial[0] if financial else {})
         symbol, exchange = ts_code.split(".")
         return {
@@ -360,10 +360,9 @@ class EastmoneyClient:
             return {}
 
     def _industry_member(self, ts_code: str) -> list[dict[str, Any]]:
-        rows = self._financial_rows("RPT_DMSK_FN_INCOME", ts_code, page_size=1)
-        first = rows[0] if rows else {}
-        name = first.get("INDUSTRY_NAME") or ""
-        code = first.get("INDUSTRY_CODE") or ""
+        first = self._org_basic(ts_code)
+        name = first.get("EM2016") or first.get("INDUSTRY_NAME") or ""
+        code = first.get("INDUSTRY_CODE") or first.get("INDUSTRY_CODE_NEW") or name
         if not name and not code:
             return []
         return [{"ts_code": ts_code, "l1_code": code, "l1_name": name, "l3_code": code, "l3_name": name, "is_new": "Y", "source": "eastmoney"}]
@@ -478,8 +477,6 @@ class EastmoneyClient:
                 if ((data.get("data") or {}).get("klines") or []):
                     break
             except TushareError:
-                if index < len(ranges) - 1:
-                    time.sleep(2 + index * 3)
                 data = {}
                 continue
         return self._parse_moneyflow(ts_code, data)
@@ -498,9 +495,8 @@ class EastmoneyClient:
                     "lmt": "1000000",
                 },
             )
-        except TushareError as exc:
-            time.sleep(2)
-            raise exc
+        except TushareError:
+            raise
 
     def _parse_moneyflow(self, ts_code: str, data: dict[str, Any]) -> list[dict[str, Any]]:
         rows = []
@@ -1042,7 +1038,7 @@ class EastmoneyClient:
                     "Accept": "application/json,text/plain,*/*",
                     "Referer": referer,
                 },
-                timeout=self.timeout,
+                timeout=_request_timeout(self.timeout),
             )
             response.raise_for_status()
             body = response.text
@@ -1068,14 +1064,19 @@ class EastmoneyClient:
         full_url = f"{url}?{query}"
         body = ""
         error = ""
+        timeout_value = max(1.0, float(self.timeout or 1))
+        curl_max_time = max(5, int(timeout_value))
+        curl_connect_time = max(1, min(5, int(timeout_value)))
         for attempt in range(3):
             try:
                 result = subprocess.run(
                     [
                         "curl",
                         "-sS",
+                        "--connect-timeout",
+                        str(curl_connect_time),
                         "--max-time",
-                        str(max(5, int(self.timeout))),
+                        str(curl_max_time),
                         "-H",
                         "User-Agent: Mozilla/5.0",
                         "-H",
@@ -1087,9 +1088,16 @@ class EastmoneyClient:
                     check=False,
                     capture_output=True,
                     text=True,
+                    timeout=curl_max_time + 2,
                 )
             except FileNotFoundError as exc:
                 raise TushareError("系统缺少 curl，跳过 Eastmoney 接口。") from exc
+            except subprocess.TimeoutExpired as exc:
+                error = f"curl timeout after {curl_max_time + 2}s"
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+                    continue
+                raise TushareError(f"Eastmoney curl 超时：{url} {error}") from exc
             if self.pause:
                 time.sleep(self.pause)
             body = result.stdout.strip()
@@ -1108,7 +1116,7 @@ class EastmoneyClient:
                             "Accept": "application/json,text/plain,*/*",
                             "Referer": "https://quote.eastmoney.com/",
                         },
-                        timeout=self.timeout,
+                        timeout=_request_timeout(self.timeout),
                     )
                     response.raise_for_status()
                     body = response.text.strip()
@@ -1127,6 +1135,11 @@ class EastmoneyClient:
 def _result(api_name: str, records: list[dict[str, Any]]) -> TushareResult:
     fields = sorted({key for row in records for key in row})
     return TushareResult(api_name=api_name, fields=fields, records=records)
+
+
+def _request_timeout(timeout: int | float) -> tuple[float, float]:
+    value = max(1.0, float(timeout or 1))
+    return (min(5.0, value), value)
 
 
 def _secid(ts_code: str) -> str:

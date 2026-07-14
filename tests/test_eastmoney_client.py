@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from stock_pipeline.eastmoney_client import EastmoneyClient
+from stock_pipeline.tushare_client import TushareError
 
 
 class FakeEastmoneyClient(EastmoneyClient):
@@ -135,3 +136,102 @@ def test_eastmoney_daily_basic_scales_snapshot_ratios():
     assert rows[0]["pe"] == 12.34
     assert rows[0]["pb"] == 2.5
     assert rows[0]["volume_ratio"] == 3.21
+
+
+def test_eastmoney_moneyflow_failures_do_not_backoff_sleep(monkeypatch):
+    client = EastmoneyClient(timeout=1, pause=0)
+    sleeps = []
+
+    def fail_payload(*_args, **_kwargs):
+        raise TushareError("ssl disconnected")
+
+    monkeypatch.setattr(client, "_moneyflow_payload", fail_payload)
+    monkeypatch.setattr("stock_pipeline.eastmoney_client.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    assert client._moneyflow("000001.SZ", "19900101", "20260714") == []
+    assert sleeps == []
+
+
+def test_eastmoney_stock_basic_skips_financial_fallback_when_org_exists(monkeypatch):
+    client = FakeEastmoneyClient()
+
+    def fail_financial(*_args, **_kwargs):
+        raise AssertionError("financial fallback should not be called")
+
+    monkeypatch.setattr(client, "_financial_rows", fail_financial)
+
+    row = client._stock_basic("000001.SZ")
+
+    assert row["name"] == "平安银行"
+    assert row["fullname"] == "平安银行股份有限公司"
+
+
+def test_eastmoney_industry_member_uses_org_basic_without_financial(monkeypatch):
+    client = FakeEastmoneyClient()
+
+    monkeypatch.setattr(client, "_org_basic", lambda _code: {"EM2016": "银行", "INDUSTRY_CODE": "BK0475"})
+
+    def fail_financial(*_args, **_kwargs):
+        raise AssertionError("financial fallback should not be called")
+
+    monkeypatch.setattr(client, "_financial_rows", fail_financial)
+
+    rows = client._industry_member("000001.SZ")
+
+    assert rows == [
+        {
+            "ts_code": "000001.SZ",
+            "l1_code": "BK0475",
+            "l1_name": "银行",
+            "l3_code": "BK0475",
+            "l3_name": "银行",
+            "is_new": "Y",
+            "source": "eastmoney",
+        }
+    ]
+
+
+def test_eastmoney_requests_use_connect_and_read_timeout(monkeypatch):
+    captured = {}
+    client = EastmoneyClient(timeout=8, pause=0)
+
+    class Response:
+        text = '{"data":{}}'
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": {}}
+
+    def fake_get(*_args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return Response()
+
+    monkeypatch.setattr("stock_pipeline.eastmoney_client.requests.get", fake_get)
+
+    client._json("https://example.test/api", {"x": "1"})
+
+    assert captured["timeout"] == (5.0, 8.0)
+
+
+def test_eastmoney_curl_uses_connect_and_process_timeout(monkeypatch):
+    captured = {}
+    client = EastmoneyClient(timeout=8, pause=0)
+
+    class Result:
+        stdout = '{"ok": true}'
+        stderr = ""
+        returncode = 0
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["timeout"] = kwargs.get("timeout")
+        return Result()
+
+    monkeypatch.setattr("stock_pipeline.eastmoney_client.subprocess.run", fake_run)
+
+    assert client._curl_json("https://example.test/api", {"a": "b"}) == {"ok": True}
+    assert "--connect-timeout" in captured["args"]
+    assert "--max-time" in captured["args"]
+    assert captured["timeout"] == 10

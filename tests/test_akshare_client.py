@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from stock_pipeline.akshare_client import AkshareClient
-from stock_pipeline.composite_client import FallbackStockClient
+from stock_pipeline.composite_client import FallbackStockClient, ValidatingStockClient
 from stock_pipeline.tushare_client import TushareError, TushareResult
 
 
@@ -19,6 +19,45 @@ class FakeFrame:
 
 
 class FakeAk:
+    def stock_zh_a_hist(self, symbol, period, start_date, end_date, adjust, timeout):
+        assert symbol == "000001"
+        assert period == "daily"
+        return FakeFrame(
+            [
+                {
+                    "日期": "2024-01-02",
+                    "开盘": 9.39,
+                    "收盘": 9.21,
+                    "最高": 9.42,
+                    "最低": 9.21,
+                    "成交量": 1158366,
+                    "成交额": 1075742252.45,
+                    "涨跌幅": -1.92,
+                    "涨跌额": -0.18,
+                    "换手率": 0.6,
+                }
+            ]
+        )
+
+    def stock_profit_sheet_by_report_em(self, symbol):
+        assert symbol == "SZ000001"
+        return FakeFrame(
+            [
+                {
+                    "REPORT_DATE": "2024-12-31 00:00:00",
+                    "NOTICE_DATE": "2025-03-15 00:00:00",
+                    "TOTAL_OPERATE_INCOME": 146695000000.0,
+                    "OPERATE_INCOME": 146695000000.0,
+                    "OPERATE_PROFIT": 55206000000.0,
+                    "TOTAL_PROFIT": 54738000000.0,
+                    "NETPROFIT": 44508000000.0,
+                    "PARENT_NETPROFIT": 44508000000.0,
+                    "BASIC_EPS": 2.15,
+                    "DILUTED_EPS": 2.15,
+                }
+            ]
+        )
+
     def stock_individual_fund_flow(self, stock, market):
         assert stock == "000001"
         assert market == "sz"
@@ -108,6 +147,41 @@ class FakeAk:
         )
 
 
+class FallbackDailyAk(FakeAk):
+    def stock_zh_a_hist(self, symbol, period, start_date, end_date, adjust, timeout):
+        raise RuntimeError("eastmoney hist disconnected")
+
+    def stock_zh_a_daily(self, symbol, start_date, end_date, adjust):
+        assert symbol == "sz000001"
+        self.daily_calls = getattr(self, "daily_calls", 0) + 1
+        return FakeFrame(
+            [
+                {
+                    "date": "2024-01-02",
+                    "open": 9.0,
+                    "high": 9.5,
+                    "low": 8.9,
+                    "close": 9.2,
+                    "volume": 10000.0,
+                    "amount": 92000.0,
+                    "outstanding_share": 1000000.0,
+                    "turnover": 0.01,
+                },
+                {
+                    "date": "2024-01-03",
+                    "open": 9.2,
+                    "high": 9.8,
+                    "low": 9.1,
+                    "close": 9.6,
+                    "volume": 20000.0,
+                    "amount": 192000.0,
+                    "outstanding_share": 1000000.0,
+                    "turnover": 0.02,
+                },
+            ]
+        )
+
+
 def test_akshare_moneyflow_uses_existing_dataset_fields(monkeypatch):
     client = object.__new__(AkshareClient)
     client.ak = FakeAk()
@@ -131,6 +205,92 @@ def test_akshare_moneyflow_uses_existing_dataset_fields(monkeypatch):
             "source": "akshare_stock_individual_fund_flow",
         }
     ]
+
+
+def test_akshare_daily_falls_back_to_daily_api_with_amount_and_turnover():
+    client = object.__new__(AkshareClient)
+    client.ak = FallbackDailyAk()
+    client.pause = 0
+    client.timeout = 1
+
+    result = client.query("daily", {"ts_code": "000001.SZ", "start_date": "20240101", "end_date": "20240131"})
+
+    assert result.records[0]["vol"] == 100.0
+    assert result.records[0]["amount"] == 92000.0
+    assert result.records[0]["turnover_rate"] == 1.0
+    assert result.records[1]["change"] == 0.4
+    assert result.records[1]["pct_chg"] == 4.347826
+
+
+def test_akshare_weekly_falls_back_to_aggregated_daily_api():
+    client = object.__new__(AkshareClient)
+    client.ak = FallbackDailyAk()
+    client.pause = 0
+    client.timeout = 1
+
+    result = client.query("weekly", {"ts_code": "000001.SZ", "start_date": "20240101", "end_date": "20240131"})
+
+    assert result.records == [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": "20240103",
+            "open": 9.0,
+            "close": 9.6,
+            "high": 9.8,
+            "low": 8.9,
+            "vol": 300.0,
+            "amount": 284000.0,
+            "pct_chg": None,
+            "change": None,
+            "turnover_rate": 3.0,
+            "source": "akshare_stock_zh_a_daily_aggregated_weekly",
+        }
+    ]
+
+
+def test_akshare_daily_fallback_is_cached_for_period_aggregation():
+    ak = FallbackDailyAk()
+    client = object.__new__(AkshareClient)
+    client.ak = ak
+    client.pause = 0
+    client.timeout = 1
+
+    for api_name in ["daily", "weekly", "monthly"]:
+        client.query(api_name, {"ts_code": "000001.SZ", "start_date": "20240101", "end_date": "20240131"})
+
+    assert ak.daily_calls == 1
+
+
+def test_akshare_daily_basic_uses_hist_turnover_rate():
+    client = object.__new__(AkshareClient)
+    client.ak = FakeAk()
+    client.pause = 0
+    client.timeout = 1
+    result = client.query("daily_basic", {"ts_code": "000001.SZ", "start_date": "20240101", "end_date": "20240131"})
+
+    assert result.records == [
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": "20240102",
+            "close": 9.21,
+            "turnover_rate": 0.6,
+            "source": "akshare_stock_zh_a_hist_daily_basic",
+        }
+    ]
+
+
+def test_akshare_income_maps_current_em_uppercase_fields():
+    client = object.__new__(AkshareClient)
+    client.ak = FakeAk()
+    client.pause = 0
+    result = client.query("income", {"ts_code": "000001.SZ", "start_date": "20240101", "end_date": "20241231"})
+
+    row = result.records[0]
+    assert row["end_date"] == "20241231"
+    assert row["ann_date"] == "20250315"
+    assert row["total_revenue"] == 146695000000.0
+    assert row["n_income"] == 44508000000.0
+    assert row["basic_eps"] == 2.15
 
 
 def test_akshare_dividend_handles_missing_dates():
@@ -205,4 +365,43 @@ def test_fallback_client_keeps_primary_empty_when_fallback_fails():
     result = FallbackStockClient(primary, [fallback]).query("moneyflow", {"ts_code": "000001.SZ"})
 
     assert result.api_name == "moneyflow"
+    assert result.records == []
+
+
+def test_validating_client_uses_akshare_primary_and_fills_missing_fields():
+    primary = SimpleNamespace(
+        source_name="akshare",
+        query=lambda api_name, params, fields: TushareResult(
+            api_name=api_name,
+            fields=["end_date", "total_revenue", "n_income", "source"],
+            records=[{"end_date": "20241231", "total_revenue": None, "n_income": 10, "source": "akshare"}],
+        ),
+    )
+    validator = SimpleNamespace(
+        source_name="eastmoney",
+        query=lambda api_name, params, fields: TushareResult(
+            api_name=api_name,
+            fields=["end_date", "total_revenue", "n_income", "source"],
+            records=[{"end_date": "20241231", "total_revenue": 100, "n_income": 11, "source": "eastmoney"}],
+        ),
+    )
+
+    result = ValidatingStockClient(primary, [validator]).query("income", {"ts_code": "000001.SZ"})
+
+    assert result.records == [{"end_date": "20241231", "total_revenue": 100, "n_income": 10, "source": "akshare+validated:eastmoney"}]
+
+
+def test_validating_client_keeps_safe_empty_optional_dataset_when_primary_fails():
+    def fail(api_name, params, fields):
+        raise TushareError("akshare unsupported")
+
+    primary = SimpleNamespace(source_name="akshare", query=fail)
+    validator = SimpleNamespace(
+        source_name="eastmoney",
+        query=lambda api_name, params, fields: TushareResult(api_name=api_name, fields=[], records=[]),
+    )
+
+    result = ValidatingStockClient(primary, [validator]).query("suspend_d", {"ts_code": "000001.SZ"})
+
+    assert result.api_name == "suspend_d"
     assert result.records == []

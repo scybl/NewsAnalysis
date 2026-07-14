@@ -126,7 +126,7 @@ class TonghuashunProvider:
 
 
 def _mobile_url(url: str) -> str:
-    if urlparse(url).netloc == "news.10jqka.com.cn":
+    if urlparse(url).netloc in {"news.10jqka.com.cn", "field.10jqka.com.cn", "bond.10jqka.com.cn"}:
         return re.sub(r"https?://\w+\.10jqka\.com\.cn/", "http://m.10jqka.com.cn/", url)
     return url
 
@@ -134,7 +134,9 @@ def _mobile_url(url: str) -> str:
 def _category_hard_limit(request: NewsCrawlRequest, category: str) -> int:
     if category in request.category_pages:
         return max(1, int(request.category_pages[category]))
-    return max(1, int(request.max_pages or 1), DEFAULT_CATEGORY_HARD_LIMITS.get(category, 1))
+    default_limit = max(1, DEFAULT_CATEGORY_HARD_LIMITS.get(category, 1))
+    requested_pages = max(1, int(request.max_pages or default_limit))
+    return min(requested_pages, default_limit)
 
 
 def _seq(url: str) -> str | None:
