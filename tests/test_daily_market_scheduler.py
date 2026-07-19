@@ -40,9 +40,13 @@ class FakeTaskRegistry:
 class FakeTaskQueue:
     def __init__(self):
         self.enqueued = []
+        self.active_attempts = {}
 
     def enqueue(self, **kwargs):
         self.enqueued.append(kwargs)
+
+    def is_attempt_active(self, _task_id, attempt_id):
+        return self.active_attempts.get(attempt_id, True)
 
 
 def make_scheduler(tmp_path):
@@ -164,6 +168,22 @@ def test_daily_market_scheduler_propagates_queue_defer(monkeypatch, tmp_path):
     assert not scheduler.task_registry.updates
 
 
+def test_daily_market_scheduler_ignores_stale_queue_attempt(monkeypatch, tmp_path):
+    scheduler = make_scheduler(tmp_path)
+    scheduler.app.task_queue.active_attempts["attempt-old"] = False
+    monkeypatch.setattr(web, "_public_stock_client", lambda settings: SimpleNamespace(source="public"))
+    monkeypatch.setattr(
+        web,
+        "sync_daily_market_for_existing_stocks",
+        lambda client, target_date=None, checkpoint=None, resume_checkpoint=None: {"updated": 1, "skipped": 0, "no_data": 0, "failed": 0},
+    )
+
+    scheduler._run_task("task-1", "20260629", "manual", queue_attempt_id="attempt-old")
+
+    assert not scheduler.task_registry.updates
+    assert scheduler.config["last_run_date"] == ""
+
+
 def test_daily_market_scheduler_fails_when_market_stock_list_is_empty(monkeypatch, tmp_path):
     scheduler = make_scheduler(tmp_path)
     scheduler.app.index.stocks = lambda *, refresh: []
@@ -186,3 +206,18 @@ def test_kaipanla_scheduler_freezes_trade_date_in_queue_payload(monkeypatch, tmp
     assert scheduler.task_registry.created[-1]["metadata"]["trade_date"] == "20260714"
     assert scheduler.task_queue.enqueued[-1]["payload"]["trade_date"] == "20260714"
     assert scheduler.task_queue.enqueued[-1]["resource_level"] == web.QUEUE_LIGHT_IO
+
+
+def test_kaipanla_scheduler_ignores_stale_queue_attempt(monkeypatch, tmp_path):
+    scheduler = make_kaipanla_scheduler(tmp_path)
+    scheduler.task_queue.active_attempts["attempt-old"] = False
+    monkeypatch.setattr(
+        web,
+        "run_kaipanla_batch",
+        lambda *_args, **_kwargs: {"ok": True, "succeeded": 1, "failed": 0},
+    )
+
+    scheduler._run_task("task-1", "manual", "20260714", ["daily_data"], {}, queue_attempt_id="attempt-old")
+
+    assert not scheduler.task_registry.updates
+    assert scheduler.config["last_run_date"] == ""

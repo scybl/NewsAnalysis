@@ -18,6 +18,13 @@ QUEUE_SCHEMA_VERSION = 2
 CHECKPOINT_VERSION = 1
 DEFAULT_PAYLOAD_VERSION = 1
 DEFAULT_HANDLER_VERSION = 1
+DEFAULT_STUCK_SECONDS_BY_RESOURCE = {
+    HEAVY_IO: 2 * 60 * 60,
+    NORMAL_IO: 45 * 60,
+    LIGHT_IO: 30 * 60,
+}
+DEFAULT_MAX_STUCK_RETRIES = 2
+DEFAULT_WATCHDOG_POLL_SECONDS = 5.0
 
 TaskHandler = Callable[[str, dict[str, Any]], Any]
 PressureReader = Callable[[], dict[str, Any]]
@@ -113,6 +120,9 @@ class ResourceAwareTaskQueue:
         external_blockers: ExternalBlockers | None = None,
         sleep_func: SleepFunc | None = None,
         poll_seconds: float = 5.0,
+        stuck_seconds_by_resource: dict[str, int | float] | None = None,
+        max_stuck_retries: int = DEFAULT_MAX_STUCK_RETRIES,
+        watchdog_poll_seconds: float = DEFAULT_WATCHDOG_POLL_SECONDS,
         autostart: bool = False,
     ):
         self.path = path
@@ -121,6 +131,12 @@ class ResourceAwareTaskQueue:
         self.external_blockers = external_blockers or (lambda _task_id: [])
         self.sleep_func = sleep_func or time.sleep
         self.poll_seconds = max(0.1, float(poll_seconds))
+        self.stuck_seconds_by_resource = {
+            **DEFAULT_STUCK_SECONDS_BY_RESOURCE,
+            **{str(key): float(value) for key, value in (stuck_seconds_by_resource or {}).items()},
+        }
+        self.max_stuck_retries = max(0, int(max_stuck_retries))
+        self.watchdog_poll_seconds = max(0.1, float(watchdog_poll_seconds))
         self.lock = threading.Lock()
         self.handlers: dict[str, TaskHandler] = {}
         self.handler_versions: dict[str, int] = {}
@@ -175,6 +191,10 @@ class ResourceAwareTaskQueue:
             "last_defer_reason": "",
             "checkpoint_version": CHECKPOINT_VERSION,
             "checkpoint": {},
+            "attempt_count": 0,
+            "active_attempt_id": "",
+            "started_epoch": 0.0,
+            "stuck_retry_count": 0,
             "started_at": "",
             "finished_at": "",
             "error": "",
@@ -216,10 +236,26 @@ class ResourceAwareTaskQueue:
 
     def _loop(self) -> None:
         while not self.stop_event.wait(self.poll_seconds):
+            self.force_retry_stuck_tasks()
             item = self._next_ready_item()
             if not item:
                 continue
             self._run_or_defer(item)
+
+    def force_retry_stuck_tasks(self, *, now: float | None = None) -> list[dict[str, Any]]:
+        now_value = time.time() if now is None else float(now)
+        stale: list[tuple[str, str, str]] = []
+        with self.lock:
+            for item in self.items.values():
+                reason = self._stuck_reason(item, now=now_value)
+                if reason:
+                    stale.append((str(item.get("task_id") or ""), str(item.get("active_attempt_id") or ""), reason))
+        actions: list[dict[str, Any]] = []
+        for task_id, attempt_id, reason in stale:
+            action = self._force_retry_stuck_item(task_id, attempt_id=attempt_id, reason=reason, now=now_value)
+            if action:
+                actions.append(action)
+        return actions
 
     def _next_ready_item(self) -> dict[str, Any] | None:
         now = time.time()
@@ -273,47 +309,214 @@ class ResourceAwareTaskQueue:
         if reasons:
             self._defer(item, "；".join(reasons), pressure)
             return
-        self._mark_running(item, pressure)
-        try:
-            handler(task_id, dict(item.get("payload") or {}))
-            final_status = self._task_status(task_id)
-            with self.lock:
-                current = self.items.get(task_id)
-                if current:
-                    current["status"] = "failed" if final_status == "failed" else "succeeded"
-                    current["finished_at"] = timestamp()
-                    current["updated_at"] = timestamp()
-                    current["updated_epoch"] = time.time()
-                    self._write_locked()
-        except QueueTaskDeferred:
+        attempt_id = self._mark_running(item, pressure)
+        if not attempt_id:
             return
-        except Exception as exc:  # noqa: BLE001 - queue must keep serving later tasks
-            self.task_registry.update_task(task_id, status="failed", error=str(exc))
-            self.task_registry.add_event(task_id, "failed", "队列任务执行失败。", {"error": str(exc)})
-            with self.lock:
-                current = self.items.get(task_id)
-                if current:
-                    current["status"] = "failed"
-                    current["error"] = str(exc)
-                    current["finished_at"] = timestamp()
-                    current["updated_at"] = timestamp()
-                    current["updated_epoch"] = time.time()
-                    self._write_locked()
+        payload = dict(item.get("payload") or {})
+        payload["_queue_attempt_id"] = attempt_id
+        outcome = self._run_handler_with_watchdog(task_id, handler, payload, attempt_id)
+        if not self._attempt_is_active(task_id, attempt_id):
+            return
+        if isinstance(outcome, QueueTaskDeferred):
+            return
+        if isinstance(outcome, Exception):
+            self._mark_failed(task_id, attempt_id, str(outcome), event_message="队列任务执行失败。")
+            return
+        final_status = self._task_status(task_id)
+        with self.lock:
+            current = self.items.get(task_id)
+            if current and str(current.get("active_attempt_id") or "") == attempt_id:
+                current["status"] = "failed" if final_status == "failed" else "succeeded"
+                current["active_attempt_id"] = ""
+                current["finished_at"] = timestamp()
+                current["updated_at"] = timestamp()
+                current["updated_epoch"] = time.time()
+                self._write_locked()
 
-    def _mark_running(self, item: dict[str, Any], pressure: dict[str, Any]) -> None:
+    def _run_handler_with_watchdog(
+        self,
+        task_id: str,
+        handler: TaskHandler,
+        payload: dict[str, Any],
+        attempt_id: str,
+    ) -> Exception | None:
+        outcome: dict[str, Exception | None] = {"exception": None}
+
+        def run_handler() -> None:
+            try:
+                handler(task_id, payload)
+            except Exception as exc:  # noqa: BLE001 - parent thread decides final queue state
+                outcome["exception"] = exc
+
+        thread = threading.Thread(target=run_handler, name=f"resource-task-{task_id}", daemon=True)
+        thread.start()
+        while thread.is_alive() and not self.stop_event.is_set():
+            thread.join(timeout=self.watchdog_poll_seconds)
+            if not thread.is_alive():
+                break
+            action = self._force_retry_stuck_item(task_id, attempt_id=attempt_id)
+            if action:
+                return QueueTaskDeferred(task_id, str(action.get("reason") or "stuck task retried"))
+        if thread.is_alive():
+            return QueueTaskDeferred(task_id, "队列正在停止，当前尝试保持运行态等待重启恢复。")
+        thread.join(timeout=0)
+        return outcome["exception"]
+
+    def _mark_failed(self, task_id: str, attempt_id: str, error: str, *, event_message: str) -> None:
+        if not self._attempt_is_active(task_id, attempt_id):
+            return
+        self.task_registry.update_task(task_id, status="failed", error=error)
+        self.task_registry.add_event(task_id, "failed", event_message, {"error": error})
+        with self.lock:
+            current = self.items.get(task_id)
+            if current and str(current.get("active_attempt_id") or "") == attempt_id:
+                current["status"] = "failed"
+                current["active_attempt_id"] = ""
+                current["error"] = error
+                current["finished_at"] = timestamp()
+                current["updated_at"] = timestamp()
+                current["updated_epoch"] = time.time()
+                self._write_locked()
+
+    def _attempt_is_active(self, task_id: str, attempt_id: str) -> bool:
+        with self.lock:
+            current = self.items.get(task_id)
+            return bool(current and current.get("status") == "running" and str(current.get("active_attempt_id") or "") == attempt_id)
+
+    def is_attempt_active(self, task_id: str, attempt_id: str) -> bool:
+        if not attempt_id:
+            return True
+        return self._attempt_is_active(task_id, attempt_id)
+
+    def _stuck_reason(self, item: dict[str, Any], *, now: float) -> str:
+        if item.get("status") != "running":
+            return ""
+        threshold = self._stuck_seconds(item)
+        if threshold <= 0:
+            return ""
+        try:
+            heartbeat_epoch = float(item.get("updated_epoch") or item.get("started_epoch") or 0)
+        except (TypeError, ValueError):
+            heartbeat_epoch = 0.0
+        if heartbeat_epoch <= 0:
+            return ""
+        silent_seconds = max(0.0, now - heartbeat_epoch)
+        if silent_seconds <= threshold:
+            return ""
+        return f"运行中任务 {silent_seconds:g} 秒没有 heartbeat，超过阈值 {threshold:g} 秒"
+
+    def _stuck_seconds(self, item: dict[str, Any]) -> float:
+        level = str(item.get("resource_level") or NORMAL_IO)
+        return float(self.stuck_seconds_by_resource.get(level, self.stuck_seconds_by_resource.get(NORMAL_IO, 0)))
+
+    def _force_retry_stuck_item(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str = "",
+        reason: str = "",
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        now_value = time.time() if now is None else float(now)
+        now_text = timestamp()
+        with self.lock:
+            current = self.items.get(task_id)
+            if not current or current.get("status") != "running":
+                return None
+            current_attempt_id = str(current.get("active_attempt_id") or "")
+            if attempt_id and current_attempt_id and current_attempt_id != attempt_id:
+                return None
+            reason = reason or self._stuck_reason(current, now=now_value)
+            if not reason:
+                return None
+            retry_count = int(current.get("stuck_retry_count") or 0)
+            if retry_count >= self.max_stuck_retries:
+                error = f"{reason}；已达到最大强制重试次数 {self.max_stuck_retries}。"
+                current["status"] = "failed"
+                current["active_attempt_id"] = ""
+                current["error"] = error
+                current["finished_at"] = now_text
+                current["updated_at"] = now_text
+                current["updated_epoch"] = now_value
+                self._write_locked()
+                action = {"task_id": task_id, "action": "failed", "reason": error, "retry_count": retry_count}
+            else:
+                retry_count += 1
+                payload = dict(current.get("payload") or {})
+                payload.pop("resume_checkpoint", None)
+                current["payload"] = payload
+                current["status"] = "queued"
+                current["active_attempt_id"] = ""
+                current["started_at"] = ""
+                current["started_epoch"] = 0.0
+                current["finished_at"] = ""
+                current["checkpoint"] = {}
+                current["stuck_retry_count"] = retry_count
+                current["run_after_epoch"] = now_value
+                current["last_defer_reason"] = reason
+                current["error"] = ""
+                current["updated_at"] = now_text
+                current["updated_epoch"] = now_value
+                self._write_locked()
+                action = {"task_id": task_id, "action": "requeued", "reason": reason, "retry_count": retry_count}
+        if action["action"] == "failed":
+            self.task_registry.update_task(
+                task_id,
+                status="failed",
+                error=str(action["reason"]),
+                metadata={
+                    "queue_status": "timed_out_failed",
+                    "queue_force_retry_count": action["retry_count"],
+                    "queue_stuck_reason": action["reason"],
+                },
+            )
+            self.task_registry.add_event(
+                task_id,
+                "failed",
+                "任务运行超时且强制重试次数已用完，已停止继续重抓。",
+                {"reason": action["reason"], "retry_count": action["retry_count"]},
+            )
+        else:
+            self.task_registry.update_task(
+                task_id,
+                status="queued",
+                error="",
+                metadata={
+                    "queue_status": "forced_retry",
+                    "queue_resume_pending": False,
+                    "queue_force_retry_count": action["retry_count"],
+                    "queue_stuck_reason": action["reason"],
+                },
+            )
+            self.task_registry.add_event(
+                task_id,
+                "queued",
+                "任务运行超过 watchdog 阈值未更新，已强制结束本次尝试并重新入队全量重抓。",
+                {"reason": action["reason"], "retry_count": action["retry_count"]},
+            )
+        return action
+
+    def _mark_running(self, item: dict[str, Any], pressure: dict[str, Any]) -> str:
         task_id = str(item.get("task_id") or "")
+        attempt_id = ""
         with self.lock:
             current = self.items.get(task_id)
             if not current or current.get("status") not in {"queued", "deferred"}:
-                return
+                return ""
+            attempt_count = int(current.get("attempt_count") or 0) + 1
+            attempt_id = f"{task_id}:{attempt_count}:{timestamp()}"
             current["status"] = "running"
-            current["started_at"] = current.get("started_at") or timestamp()
+            current["attempt_count"] = attempt_count
+            current["active_attempt_id"] = attempt_id
+            current["started_at"] = timestamp()
+            current["started_epoch"] = time.time()
             current["updated_at"] = timestamp()
             current["updated_epoch"] = time.time()
             current["last_pressure"] = pressure
             self._write_locked()
         self.task_registry.update_task(task_id, status="running", metadata={"queue_status": "running", "queue_resume_pending": False})
         self.task_registry.add_event(task_id, "running", "资源队列开始执行任务。", {"pressure": pressure})
+        return attempt_id
 
     def _defer(self, item: dict[str, Any], reason: str, pressure: dict[str, Any]) -> None:
         task_id = str(item.get("task_id") or "")
@@ -424,6 +627,7 @@ class ResourceAwareTaskQueue:
             current["payload"] = payload
             current["status"] = "deferred"
             current["defer_count"] = defer_count
+            current["active_attempt_id"] = ""
             current["run_after_epoch"] = time.time() + delay
             current["last_defer_reason"] = reason
             current["last_throttle_reason"] = reason
@@ -578,6 +782,15 @@ class ResourceAwareTaskQueue:
             "handler_version": DEFAULT_HANDLER_VERSION,
             "payload_version": DEFAULT_PAYLOAD_VERSION,
             "checkpoint_version": CHECKPOINT_VERSION,
+        }.items():
+            if key not in normalized:
+                normalized[key] = default
+                changed = True
+        for key, default in {
+            "attempt_count": 0,
+            "active_attempt_id": "",
+            "started_epoch": 0.0,
+            "stuck_retry_count": 0,
         }.items():
             if key not in normalized:
                 normalized[key] = default
@@ -787,6 +1000,8 @@ def _resume_running_item(item: dict[str, Any]) -> dict[str, Any]:
     payload["resume_checkpoint"] = checkpoint
     resumed["payload"] = payload
     resumed["status"] = "queued"
+    resumed["active_attempt_id"] = ""
+    resumed["started_epoch"] = 0.0
     resumed["run_after_epoch"] = time.time()
     resumed["last_defer_reason"] = ""
     resumed["error"] = ""

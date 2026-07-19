@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 
 from stock_pipeline.task_queue import HEAVY_IO, LIGHT_IO, NORMAL_IO, QUEUE_OWNER, QUEUE_SCHEMA_VERSION, ResourceAwareTaskQueue
@@ -400,3 +401,97 @@ def test_resource_queue_migrates_old_kaipanla_items_to_light_io_with_trade_date(
 
     assert item["resource_level"] == LIGHT_IO
     assert item["payload"]["trade_date"] == "20260714"
+
+
+def test_resource_queue_force_retries_running_item_without_recent_heartbeat(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("stuck")
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0},
+        poll_seconds=0.1,
+        stuck_seconds_by_resource={NORMAL_IO: 10},
+        max_stuck_retries=2,
+    )
+    queue.enqueue(
+        task_id="stuck",
+        handler_key="handler",
+        kind="test",
+        title="Stuck",
+        payload={"resume_checkpoint": {"stage": "old"}, "target_date": "20260714"},
+        resource_level=NORMAL_IO,
+    )
+    queue._mark_running(queue.snapshot()["items"][0], {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0})
+    with queue.lock:
+        queue.items["stuck"]["updated_epoch"] = 100
+
+    actions = queue.force_retry_stuck_tasks(now=111)
+    item = queue.snapshot()["items"][0]
+
+    assert actions[0]["action"] == "requeued"
+    assert item["status"] == "queued"
+    assert item["stuck_retry_count"] == 1
+    assert item["active_attempt_id"] == ""
+    assert item["run_after_epoch"] == 111
+    assert "resume_checkpoint" not in item["payload"]
+    assert item["payload"]["target_date"] == "20260714"
+    assert registry.tasks["stuck"]["status"] == "queued"
+    assert registry.tasks["stuck"]["metadata"]["queue_status"] == "forced_retry"
+
+
+def test_resource_queue_fails_stuck_item_after_retry_limit(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("stuck")
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0},
+        poll_seconds=0.1,
+        stuck_seconds_by_resource={NORMAL_IO: 10},
+        max_stuck_retries=1,
+    )
+    queue.enqueue(task_id="stuck", handler_key="handler", kind="test", title="Stuck", resource_level=NORMAL_IO)
+    queue._mark_running(queue.snapshot()["items"][0], {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0})
+    with queue.lock:
+        queue.items["stuck"]["updated_epoch"] = 100
+        queue.items["stuck"]["stuck_retry_count"] = 1
+
+    actions = queue.force_retry_stuck_tasks(now=111)
+    item = queue.snapshot()["items"][0]
+
+    assert actions[0]["action"] == "failed"
+    assert item["status"] == "failed"
+    assert "最大强制重试次数" in item["error"]
+    assert registry.tasks["stuck"]["status"] == "failed"
+    assert registry.tasks["stuck"]["metadata"]["queue_status"] == "timed_out_failed"
+
+
+def test_resource_queue_watchdog_requeues_handler_that_stops_heartbeating(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("stuck")
+    release = threading.Event()
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0},
+        poll_seconds=0.1,
+        stuck_seconds_by_resource={NORMAL_IO: 0.01},
+        max_stuck_retries=1,
+        watchdog_poll_seconds=0.01,
+    )
+
+    def stuck_handler(_task_id, _payload):
+        release.wait(1)
+
+    queue.register("handler", stuck_handler)
+    queue.enqueue(task_id="stuck", handler_key="handler", kind="test", title="Stuck", resource_level=NORMAL_IO)
+
+    queue._run_or_defer(queue._next_ready_item())
+    item = queue.snapshot()["items"][0]
+
+    assert item["status"] == "queued"
+    assert item["stuck_retry_count"] == 1
+    assert registry.tasks["stuck"]["status"] == "queued"
+    assert registry.tasks["stuck"]["metadata"]["queue_status"] == "forced_retry"
+    release.set()

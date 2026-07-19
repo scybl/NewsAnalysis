@@ -3543,6 +3543,7 @@ class DailyMarketScheduler:
                 str((payload or {}).get("target_date") or today_yyyymmdd()),
                 str((payload or {}).get("trigger") or "queued"),
                 dict((payload or {}).get("resume_checkpoint") or {}),
+                str((payload or {}).get("_queue_attempt_id") or ""),
             ),
             handler_version=2,
         )
@@ -3632,7 +3633,14 @@ class DailyMarketScheduler:
         )
         return self.status()
 
-    def _run_task(self, task_id: str, target_date: str, trigger: str, resume_checkpoint: dict[str, Any] | None = None) -> None:
+    def _run_task(
+        self,
+        task_id: str,
+        target_date: str,
+        trigger: str,
+        resume_checkpoint: dict[str, Any] | None = None,
+        queue_attempt_id: str = "",
+    ) -> None:
         try:
             client = _public_stock_client(self.app.settings)
             stock_list = self.app.index.stocks(refresh=False)
@@ -3658,6 +3666,8 @@ class DailyMarketScheduler:
             )
             result["stock_list_count"] = len(stock_list)
             result["trigger"] = trigger
+            if queue_attempt_id and not self.app.task_queue.is_attempt_active(task_id, queue_attempt_id):
+                return
             self.task_registry.update_task(task_id, status="succeeded", result=result)
             self.task_registry.add_event(
                 task_id,
@@ -3674,6 +3684,8 @@ class DailyMarketScheduler:
         except QueueTaskDeferred:
             raise
         except Exception as exc:  # noqa: BLE001 - report task failure
+            if queue_attempt_id and not self.app.task_queue.is_attempt_active(task_id, queue_attempt_id):
+                return
             self.task_registry.update_task(task_id, status="failed", error=str(exc))
             self.task_registry.add_event(task_id, "failed", "每日股票数据更新失败。", {"error": str(exc)})
             with self.lock:
@@ -3728,6 +3740,7 @@ class KaipanlaScheduler:
                 str((payload or {}).get("trade_date") or today_yyyymmdd()),
                 list((payload or {}).get("features") or []),
                 dict((payload or {}).get("params_by_feature") or {}),
+                str((payload or {}).get("_queue_attempt_id") or ""),
             ),
             handler_version=2,
         )
@@ -3823,7 +3836,7 @@ class KaipanlaScheduler:
         )
         return self.status()
 
-    def _run_task(self, task_id: str, trigger: str, trade_date: str, features: list[str], params_by_feature: dict[str, dict]) -> None:
+    def _run_task(self, task_id: str, trigger: str, trade_date: str, features: list[str], params_by_feature: dict[str, dict], queue_attempt_id: str = "") -> None:
         try:
             result = run_kaipanla_batch(
                 features,
@@ -3839,6 +3852,8 @@ class KaipanlaScheduler:
                 ),
             )
             status = "succeeded" if result.get("ok") else "failed"
+            if queue_attempt_id and not self.task_queue.is_attempt_active(task_id, queue_attempt_id):
+                return
             self.task_registry.add_event(task_id, status, f"开盘啦抓取完成：成功 {result.get('succeeded', 0)}，失败 {result.get('failed', 0)}。", result)
             self.task_registry.update_task(task_id, status=status, error="" if result.get("ok") else "部分开盘啦功能抓取失败。", result=result)
             with self.lock:
@@ -3848,6 +3863,8 @@ class KaipanlaScheduler:
                 self.config["last_error"] = "" if result.get("ok") else "部分开盘啦功能抓取失败。"
                 self._write_config_locked()
         except Exception as exc:  # noqa: BLE001 - task registry should record readable failure
+            if queue_attempt_id and not self.task_queue.is_attempt_active(task_id, queue_attempt_id):
+                return
             self.task_registry.add_event(task_id, "failed", str(exc), {})
             self.task_registry.update_task(task_id, status="failed", error=str(exc))
             with self.lock:
