@@ -353,6 +353,15 @@ def test_heavy_io_guard_is_wired_to_heavy_start_routes_only():
     assert "_reject_if_heavy_io_running" not in kaipanla
 
 
+def test_manual_kaipanla_run_requires_data_fetch_approval():
+    source = (Path(__file__).resolve().parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    start = source.index("def _handle_admin_kaipanla_run")
+    handler = source[start : start + 900]
+
+    assert '_require_data_fetch_approval("/api/admin/kaipanla/run", payload)' in handler
+    assert "trade_date" in handler
+
+
 def test_admin_ops_frontend_is_read_only_and_linked():
     static = Path(__file__).resolve().parents[1] / "frontend" / "admin"
     html = (static / "admin-ops.html").read_text(encoding="utf-8")

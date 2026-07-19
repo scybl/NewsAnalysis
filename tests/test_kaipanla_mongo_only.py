@@ -383,6 +383,44 @@ def test_kaipanla_daily_overview_ignores_incomplete_current_packet(monkeypatch):
     assert {item["label"]: item["value"] for item in overview["kpis"]}["涨停"] == 36
 
 
+def test_kaipanla_daily_overview_keeps_explicit_realtime_trade_date(monkeypatch):
+    collection = FakeKaipanlaCollection(
+        [
+            {
+                "record_id": "daily:20260708",
+                "feature": "daily_data",
+                "label": "交易日完整数据",
+                "category": "核心数据",
+                "saved_at": "20260708_214500",
+                "run_id": "run",
+                "path": "mongodb://market/kaipanla_results/daily_data/20260708",
+                "ok": True,
+                "trade_date": "20260708",
+                "params": {"date": "2026-07-08"},
+                "payload": {"trade_date": "20260708", "result": {"涨停": 40}},
+            },
+            {
+                "record_id": "mood:20260708",
+                "feature": "realtime_market_mood",
+                "label": "实时市场情绪",
+                "category": "实时监控",
+                "saved_at": "20260708_100000",
+                "run_id": "run",
+                "path": "mongodb://market/kaipanla_results/realtime_market_mood/20260708",
+                "ok": True,
+                "trade_date": "20260708",
+                "params": {},
+                "payload": {"trade_date": "20260708", "result": {"score": 50}},
+            },
+        ]
+    )
+    monkeypatch.setattr(kaipanla, "_kaipanla_collection", lambda database=kaipanla.DEFAULT_DB: FakeContext(collection))
+
+    overview = kaipanla.kaipanla_daily_overview("2026-07-08")
+
+    assert "realtime_market_mood" in {item["feature"] for item in overview["sections"]["intraday"]}
+
+
 def test_kaipanla_daily_overview_extracts_temperature_kpis(monkeypatch):
     collection = FakeKaipanlaCollection(
         [
@@ -650,6 +688,26 @@ def test_kaipanla_batch_limits_ndays_to_trade_date_for_daily_runs(monkeypatch):
     assert calls[0][1]["end_date"] == "2026-06-29"
     assert calls[0][1]["num_days"] == 1
     assert calls[0][4] == "2026-06-29"
+
+
+def test_kaipanla_feature_replaces_default_date_for_manual_single_run(monkeypatch):
+    captured = {}
+
+    class FakeCrawler:
+        def get_daily_data(self, end_date, start_date=None, timeout=None):
+            captured["end_date"] = end_date
+            captured["start_date"] = start_date
+            captured["timeout"] = timeout
+            return {"涨停数": 1}
+
+    monkeypatch.setattr(kaipanla, "KaipanlaCrawler", FakeCrawler)
+
+    result = kaipanla.run_kaipanla_feature("daily_data", {}, save=False, run_id="run-1", trade_date="20260714")
+
+    assert result["trade_date"] == "20260714"
+    assert result["params"]["end_date"] == "2026-07-14"
+    assert result["params"]["timeout"] == 20
+    assert captured["end_date"] == "2026-07-14"
 
 
 def test_kaipanla_overview_renders_series_as_metric_rows():

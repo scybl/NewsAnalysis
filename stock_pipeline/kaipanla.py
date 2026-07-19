@@ -37,7 +37,7 @@ class KaipanlaFeature:
 
 
 KAIPANLA_FEATURES: dict[str, KaipanlaFeature] = {
-    "daily_data": KaipanlaFeature("daily_data", "交易日完整数据", "核心数据", "涨跌统计、大盘指数、连板梯队和回撤统计。", {"end_date": DEFAULT_DATE}),
+    "daily_data": KaipanlaFeature("daily_data", "交易日完整数据", "核心数据", "涨跌统计、大盘指数、连板梯队和回撤统计。", {"end_date": DEFAULT_DATE, "timeout": 20}),
     "new_high_data": KaipanlaFeature("new_high_data", "百日新高", "核心数据", "百日新高股票今日新增数量。", {"end_date": DEFAULT_DATE, "timeout": 20}),
     "market_sentiment": KaipanlaFeature("market_sentiment", "市场情绪统计", "传统接口", "市场涨跌停和情绪概览。", {"date": DEFAULT_DATE}),
     "market_index": KaipanlaFeature("market_index", "大盘指数", "传统接口", "上证指数等指数历史数据。", {"date": DEFAULT_DATE}),
@@ -148,6 +148,14 @@ def run_kaipanla_feature(
     crawler = KaipanlaCrawler()
     method = getattr(crawler, method_name)
     final_params = {**KAIPANLA_FEATURES[key].default_params, **(params or {})}
+    normalized_trade_date = _normalize_date_text(trade_date)
+    if not normalized_trade_date:
+        for date_key in ("trade_date", "date", "end_date"):
+            normalized_trade_date = _normalize_date_text(final_params.get(date_key))
+            if normalized_trade_date:
+                break
+    if normalized_trade_date:
+        final_params = _params_with_trade_date(key, final_params, _display_date(normalized_trade_date))
     final_params = _filter_params(method, final_params)
     started = date.today().isoformat()
     result = method(**final_params)
@@ -159,7 +167,6 @@ def run_kaipanla_feature(
         "run_date": started,
         "result": to_jsonable(result),
     }
-    normalized_trade_date = _normalize_date_text(trade_date)
     if normalized_trade_date:
         payload["trade_date"] = normalized_trade_date
     if save:
@@ -541,9 +548,10 @@ def _kaipanla_records_for_date(collection: Any, normalized_date: str) -> list[di
             "archived": {"$ne": True},
             "$or": [
                 {"trade_date": compact},
-                {"saved_at": {"$regex": f"^{compact}"}},
                 {"params.date": {"$in": [compact, dashed]}},
                 {"params.end_date": {"$in": [compact, dashed]}},
+                {"params.trade_date": {"$in": [compact, dashed]}},
+                {"payload.trade_date": {"$in": [compact, dashed]}},
             ]
         }
     cursor = collection.find(
@@ -560,6 +568,7 @@ def _kaipanla_records_for_date(collection: Any, normalized_date: str) -> list[di
             "path": 1,
             "ok": 1,
             "params": 1,
+            "payload.trade_date": 1,
             "payload.result": 1,
         },
     ).sort([("saved_at", DESCENDING), ("feature", ASCENDING)]).limit(500)
@@ -956,6 +965,8 @@ def _record_trade_date(record: dict[str, Any]) -> str:
         value = _normalize_date_text(params.get(key))
         if value:
             return value
+    if _is_realtime_feature(str(record.get("feature") or "")):
+        return ""
     saved = str(record.get("saved_at") or "")
     return _normalize_date_text(saved[:8])
 
@@ -963,7 +974,14 @@ def _record_trade_date(record: dict[str, Any]) -> str:
 def _record_matches_trade_date(record: dict[str, Any], compact_date: str) -> bool:
     trade_date = _normalize_date_text(record.get("trade_date"))
     if trade_date:
+        if _is_derived_realtime_trade_date(record, trade_date):
+            return False
         return trade_date == compact_date
+
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    payload_trade_date = _normalize_date_text(payload.get("trade_date"))
+    if payload_trade_date:
+        return payload_trade_date == compact_date
 
     params = record.get("params") if isinstance(record.get("params"), dict) else {}
     exact_dates = [
@@ -981,8 +999,31 @@ def _record_matches_trade_date(record: dict[str, Any], compact_date: str) -> boo
     if end_date:
         return compact_date == end_date
 
+    if _is_realtime_feature(str(record.get("feature") or "")):
+        return False
     saved = _normalize_date_text(str(record.get("saved_at") or "")[:8])
     return saved == compact_date
+
+
+def _is_derived_realtime_trade_date(record: dict[str, Any], trade_date: str) -> bool:
+    if not _is_realtime_feature(str(record.get("feature") or "")):
+        return False
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    params = record.get("params") if isinstance(record.get("params"), dict) else {}
+    explicit_dates = [
+        _normalize_date_text(payload.get("trade_date")),
+        *[_normalize_date_text(params.get(key)) for key in ("date", "end_date", "trade_date")],
+    ]
+    if any(value == trade_date for value in explicit_dates):
+        return False
+    return trade_date == _normalize_date_text(str(record.get("saved_at") or "")[:8])
+
+
+def _is_realtime_feature(feature_key: str) -> bool:
+    feature = KAIPANLA_FEATURES.get(str(feature_key or ""))
+    if feature and feature.category == "实时监控":
+        return True
+    return str(feature_key or "").startswith("realtime_")
 
 
 def _params_with_trade_date(feature_key: str, params: dict[str, Any], trade_date: str) -> dict[str, Any]:
@@ -1043,6 +1084,11 @@ class _KaipanlaCollectionContext:
 def _ensure_kaipanla_indexes(collection: Any) -> None:
     collection.create_index([("record_id", ASCENDING)], unique=True)
     collection.create_index([("feature", ASCENDING), ("saved_at", DESCENDING)])
+    collection.create_index([("trade_date", DESCENDING), ("feature", ASCENDING)])
+    collection.create_index([("params.date", DESCENDING), ("feature", ASCENDING)])
+    collection.create_index([("params.end_date", DESCENDING), ("feature", ASCENDING)])
+    collection.create_index([("params.trade_date", DESCENDING), ("feature", ASCENDING)])
+    collection.create_index([("payload.trade_date", DESCENDING), ("feature", ASCENDING)])
     collection.create_index([("run_id", ASCENDING)])
     collection.create_index([("path", ASCENDING)], sparse=True)
 

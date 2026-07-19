@@ -10,6 +10,7 @@ from .akshare_client import AkshareClient
 from .composite_client import ValidatingStockClient
 from .collector import StockDataCollector
 from .config import PROJECT_ROOT, get_settings
+from .data_sources import provider_available
 from .daily_k_coverage import ensure_indexes as ensure_daily_k_coverage_indexes
 from .daily_k_coverage import inspect_daily_k_coverage_gaps, refresh_daily_k_coverage
 from .deepseek_client import DeepSeekClient
@@ -39,7 +40,7 @@ from .secret_store import SECRET_ENV_MAP, get_secret_store
 from .ths_minute import build_config as build_ths_minute_config
 from .ths_minute import fetch_and_store_minutes
 from .totp import generate_totp_secret, normalize_totp_secret, otpauth_uri
-from .tushare_client import TushareClient
+from .tushare_client import TushareClient, TushareError
 from .tushare_kline import KlineBackfillConfig, fetch_all_stock_klines
 from .utils import ensure_dir, normalize_ts_code, read_json, timestamp, write_json
 from .value_speculation import VALUE_SPECULATION_QUESTION, build_value_speculation_dossier
@@ -264,10 +265,14 @@ def run_collect(args: argparse.Namespace) -> Path:
 
 
 def _public_stock_client(settings) -> ValidatingStockClient:
-    return ValidatingStockClient(
-        AkshareClient(pause=settings.tushare_pause_seconds),
-        [EastmoneyClient(pause=settings.tushare_pause_seconds)],
-    )
+    clients = []
+    if provider_available("akshare"):
+        clients.append(AkshareClient(pause=settings.tushare_pause_seconds))
+    if provider_available("eastmoney"):
+        clients.append(EastmoneyClient(pause=settings.tushare_pause_seconds))
+    if not clients:
+        raise TushareError("公开股票数据源 AkShare/Eastmoney 均未启用。请先启用至少一个。")
+    return ValidatingStockClient(clients[0], clients[1:])
 
 
 def run_analyze(args: argparse.Namespace) -> None:

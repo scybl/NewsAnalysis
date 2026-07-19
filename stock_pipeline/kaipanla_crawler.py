@@ -28,6 +28,20 @@ import time  # 添加time模块用于sleep延迟
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+DEFAULT_REQUEST_TIMEOUT = 20
+MAX_REQUEST_TIMEOUT = 60
+
+
+def _effective_timeout(timeout):
+    try:
+        seconds = float(timeout)
+    except (TypeError, ValueError):
+        return DEFAULT_REQUEST_TIMEOUT
+    if seconds <= 0:
+        return DEFAULT_REQUEST_TIMEOUT
+    return min(seconds, MAX_REQUEST_TIMEOUT)
+
+
 def _normalize_kaipanla_date_text(value):
     text = str(value or "").strip()
     digits = "".join(ch for ch in text if ch.isdigit())
@@ -120,7 +134,7 @@ class KaipanlaCrawler:
         Args:
             data_params: 请求参数
             date: 日期
-            timeout: 超时时间（秒），默认1600秒
+            timeout: 超时时间（秒），默认20秒，单请求最大60秒
         """
         params = {"apiv": "w42", "PhoneOSNew": "1", "VerSion": "5.21.0.2"}
         data = {
@@ -140,7 +154,7 @@ class KaipanlaCrawler:
                 headers=self.headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout  # 使用参数化的超时时间
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             return response.json()
@@ -148,7 +162,7 @@ class KaipanlaCrawler:
             print(f"请求失败 ({date}): {e}")
             return {}
     
-    def _get_single_day_data(self, date):
+    def _get_single_day_data(self, date, timeout=None):
         """
         获取单日完整数据
         
@@ -156,11 +170,11 @@ class KaipanlaCrawler:
             dict: 包含所有字段的字典
         """
         # 1. 获取涨跌统计数据
-        result1 = self._request({"a": "HisZhangFuDetail", "c": "HisHomeDingPan"}, date)
+        result1 = self._request({"a": "HisZhangFuDetail", "c": "HisHomeDingPan"}, date, timeout=_effective_timeout(timeout))
         info1 = result1.get("info", {}) if result1 else {}
         
         # 2. 获取大盘指数数据
-        result2 = self._request({"a": "GetZsReal", "c": "StockL2History"}, date)
+        result2 = self._request({"a": "GetZsReal", "c": "StockL2History"}, date, timeout=_effective_timeout(timeout))
         stock_list = result2.get("StockList", []) if result2 else []
         
         # 提取上证指数数据
@@ -171,11 +185,11 @@ class KaipanlaCrawler:
                 break
         
         # 3. 获取连板梯队数据
-        result3 = self._request({"a": "ZhangTingExpression", "c": "HisHomeDingPan"}, date)
+        result3 = self._request({"a": "ZhangTingExpression", "c": "HisHomeDingPan"}, date, timeout=_effective_timeout(timeout))
         info3 = result3.get("info", []) if result3 else []
         
         # 4. 获取大幅回撤数据
-        result4 = self._request({"a": "SharpWithdrawal", "c": "HisHomeDingPan"}, date)
+        result4 = self._request({"a": "SharpWithdrawal", "c": "HisHomeDingPan"}, date, timeout=_effective_timeout(timeout))
         withdrawal_num = result4.get("num", 0) if result4 else 0
         
         # 整合数据
@@ -202,7 +216,7 @@ class KaipanlaCrawler:
         
         return data
     
-    def get_daily_data(self, end_date, start_date=None):
+    def get_daily_data(self, end_date, start_date=None, timeout=None):
         """
         获取交易日数据
         
@@ -223,7 +237,7 @@ class KaipanlaCrawler:
         """
         # 只传结束日期，返回单日Series
         if start_date is None:
-            data = self._get_single_day_data(end_date)
+            data = self._get_single_day_data(end_date, timeout=_effective_timeout(timeout))
             return pd.Series(data)
         
         # 传了起始和结束日期，返回DataFrame
@@ -237,7 +251,7 @@ class KaipanlaCrawler:
         records = []
         for date in date_list:
             print(f"正在获取 {date} 的数据...")
-            data = self._get_single_day_data(date)
+            data = self._get_single_day_data(date, timeout=_effective_timeout(timeout))
             records.append(data)
         
         df = pd.DataFrame(records)
@@ -290,7 +304,7 @@ class KaipanlaCrawler:
                 headers=self.headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -485,7 +499,7 @@ class KaipanlaCrawler:
                 headers=self.sector_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -642,7 +656,7 @@ class KaipanlaCrawler:
                     headers=self.headers,
                     verify=False,
                     proxies={'http': None, 'https': None},
-                    timeout=timeout
+                    timeout=_effective_timeout(timeout)
                 )
                 response.raise_for_status()
                 result = response.json()
@@ -803,7 +817,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -996,7 +1010,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -1166,7 +1180,7 @@ class KaipanlaCrawler:
                 data=data,
                 headers=self.headers,
                 verify=False,
-                timeout=timeout or 60
+                timeout=_effective_timeout(timeout)
             )
             
             if response.status_code != 200:
@@ -1280,7 +1294,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -1390,7 +1404,7 @@ class KaipanlaCrawler:
             
             try:
                 # 获取该日期的板块排名数据
-                sector_data = self.get_sector_ranking(date, timeout=timeout)
+                sector_data = self.get_sector_ranking(date, timeout=_effective_timeout(timeout))
                 
                 if not sector_data or not sector_data.get("sectors"):
                     # 可能是非交易日，跳过
@@ -1476,7 +1490,7 @@ class KaipanlaCrawler:
                 headers=self.sector_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -1544,7 +1558,7 @@ class KaipanlaCrawler:
                 headers=self.sector_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -1631,7 +1645,7 @@ class KaipanlaCrawler:
                 headers=self.sector_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -1847,7 +1861,7 @@ class KaipanlaCrawler:
                 headers=self.sector_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -1935,7 +1949,7 @@ class KaipanlaCrawler:
                 headers=self.sector_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -2018,7 +2032,7 @@ class KaipanlaCrawler:
                 headers=self.sector_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -2108,7 +2122,7 @@ class KaipanlaCrawler:
                 headers=self.headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -2143,11 +2157,11 @@ class KaipanlaCrawler:
             date_str = latest[6]  # 日期
             
             # 使用正确的接口获取昨日涨停今表现 (801900)
-            zt_data = self.get_realtime_index_trend(stock_id="801900", time="15:00", timeout=timeout)
+            zt_data = self.get_realtime_index_trend(stock_id="801900", time="15:00", timeout=_effective_timeout(timeout))
             yesterday_limit_up_performance = zt_data.get("change_pct", 0.0) if zt_data else 0.0
             
             # 使用正确的接口获取昨日断板今日表现 (801903)
-            pb_data = self.get_realtime_index_trend(stock_id="801903", time="15:00", timeout=timeout)
+            pb_data = self.get_realtime_index_trend(stock_id="801903", time="15:00", timeout=_effective_timeout(timeout))
             yesterday_broken_performance = pb_data.get("change_pct", 0.0) if pb_data else 0.0
             
             return {
@@ -2240,7 +2254,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             
@@ -2379,7 +2393,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             
@@ -2545,7 +2559,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             
@@ -2757,7 +2771,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             
@@ -2939,7 +2953,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -3094,7 +3108,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -3189,7 +3203,7 @@ class KaipanlaCrawler:
                 plate_id=plate_id,
                 index=index,
                 page_size=page_size,
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             
             news_list = result.get("news_list", [])
@@ -3385,7 +3399,7 @@ class KaipanlaCrawler:
                 headers=api_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -3764,7 +3778,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -3902,7 +3916,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -4023,7 +4037,7 @@ class KaipanlaCrawler:
             print(f"上榜个股数量: {len(df)}")
             print(f"平均换手率: {df['turnover_ratio'].astype(float).mean():.2f}%")
         """
-        result = self.get_longhubang_stock_list(date, timeout=timeout)
+        result = self.get_longhubang_stock_list(date, timeout=_effective_timeout(timeout))
         
         if not result or not result.get("stocks"):
             print("未获取到龙虎榜数据")
@@ -4126,7 +4140,7 @@ class KaipanlaCrawler:
                 headers=self.headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -4259,7 +4273,7 @@ class KaipanlaCrawler:
                     headers=self.headers,
                     verify=False,
                     proxies={'http': None, 'https': None},
-                    timeout=timeout
+                    timeout=_effective_timeout(timeout)
                 )
                 response.raise_for_status()
                 result = response.json()
@@ -4398,7 +4412,7 @@ class KaipanlaCrawler:
                 headers=headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -4535,7 +4549,7 @@ class KaipanlaCrawler:
                 headers=self.sector_headers,
                 verify=False,
                 proxies={'http': None, 'https': None},
-                timeout=timeout
+                timeout=_effective_timeout(timeout)
             )
             response.raise_for_status()
             result = response.json()
@@ -4618,7 +4632,7 @@ class KaipanlaCrawler:
             index = page * 30
             
             # 获取当前页数据
-            page_data = self.get_etf_ranking(date=date, order=order, index=index, timeout=timeout)
+            page_data = self.get_etf_ranking(date=date, order=order, index=index, timeout=_effective_timeout(timeout))
             
             if not page_data['etfs']:
                 break
@@ -4724,7 +4738,8 @@ class KaipanlaCrawler:
             }
             
             response = None
-            request_timeout = (min(5, max(1, int(timeout or 1))), timeout)
+            effective_timeout = _effective_timeout(timeout)
+            request_timeout = (min(5, max(1, int(effective_timeout))), effective_timeout)
             for attempt in range(2):
                 try:
                     response = requests.get(

@@ -2,7 +2,7 @@ import json
 import threading
 import time
 
-from stock_pipeline.task_queue import HEAVY_IO, LIGHT_IO, NORMAL_IO, QUEUE_OWNER, QUEUE_SCHEMA_VERSION, ResourceAwareTaskQueue
+from stock_pipeline.task_queue import HEAVY_IO, LIGHT_IO, NORMAL_IO, QUEUE_OWNER, QUEUE_SCHEMA_VERSION, QueueTaskDeferred, ResourceAwareTaskQueue
 from stock_pipeline.web import TaskRegistry
 
 
@@ -167,6 +167,17 @@ def test_task_registry_preserves_queued_queue_tasks_across_restart(tmp_path):
     assert restarted.get_task("running-task")["status"] == "queued"
     assert restarted.get_task("running-task")["metadata"]["queue_status"] == "recovering"
     assert "等待资源队列恢复或放弃" in restarted.get_task("queued-task")["events"][-1]["message"]
+
+
+def test_task_registry_quarantines_corrupt_state_file(tmp_path):
+    path = tmp_path / "admin_tasks.json"
+    path.write_text("{broken", encoding="utf-8")
+
+    registry = TaskRegistry(path)
+
+    assert registry.list_tasks() == []
+    assert not path.exists()
+    assert list(tmp_path.glob("admin_tasks.json.corrupt.*.json"))
 
 
 def test_resource_queue_resumes_running_items_with_checkpoint_after_reload(tmp_path):
@@ -438,6 +449,33 @@ def test_resource_queue_force_retries_running_item_without_recent_heartbeat(tmp_
     assert item["payload"]["target_date"] == "20260714"
     assert registry.tasks["stuck"]["status"] == "queued"
     assert registry.tasks["stuck"]["metadata"]["queue_status"] == "forced_retry"
+    assert registry.tasks["stuck"]["metadata"]["queue_cancelled_attempt_id"]
+    assert item["cancelled_attempt_ids"]
+
+
+def test_resource_queue_checkpoint_rejects_cancelled_attempt_after_force_retry(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("stuck")
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0},
+        poll_seconds=0.1,
+        stuck_seconds_by_resource={NORMAL_IO: 10},
+    )
+    queue.enqueue(task_id="stuck", handler_key="handler", kind="test", title="Stuck", resource_level=NORMAL_IO)
+    attempt_id = queue._mark_running(queue.snapshot()["items"][0], {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0})
+    with queue.lock:
+        queue.items["stuck"]["updated_epoch"] = 100
+
+    queue.force_retry_stuck_tasks(now=111)
+
+    try:
+        queue.checkpoint("stuck", attempt_id=attempt_id, resource_level=NORMAL_IO, stage="old_attempt")
+    except QueueTaskDeferred as exc:
+        assert "取消" in exc.reason or "失效" in exc.reason
+    else:
+        raise AssertionError("cancelled attempt should stop at checkpoint")
 
 
 def test_resource_queue_fails_stuck_item_after_retry_limit(tmp_path):

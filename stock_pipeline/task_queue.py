@@ -18,6 +18,7 @@ QUEUE_SCHEMA_VERSION = 2
 CHECKPOINT_VERSION = 1
 DEFAULT_PAYLOAD_VERSION = 1
 DEFAULT_HANDLER_VERSION = 1
+MAX_CANCELLED_ATTEMPTS = 20
 DEFAULT_STUCK_SECONDS_BY_RESOURCE = {
     HEAVY_IO: 2 * 60 * 60,
     NORMAL_IO: 45 * 60,
@@ -195,6 +196,8 @@ class ResourceAwareTaskQueue:
             "active_attempt_id": "",
             "started_epoch": 0.0,
             "stuck_retry_count": 0,
+            "cancelled_attempt_ids": [],
+            "last_cancelled_attempt_id": "",
             "started_at": "",
             "finished_at": "",
             "error": "",
@@ -430,6 +433,9 @@ class ResourceAwareTaskQueue:
             if not reason:
                 return None
             retry_count = int(current.get("stuck_retry_count") or 0)
+            if current_attempt_id:
+                current["cancelled_attempt_ids"] = _remember_cancelled_attempt(current.get("cancelled_attempt_ids"), current_attempt_id)
+                current["last_cancelled_attempt_id"] = current_attempt_id
             if retry_count >= self.max_stuck_retries:
                 error = f"{reason}；已达到最大强制重试次数 {self.max_stuck_retries}。"
                 current["status"] = "failed"
@@ -468,6 +474,7 @@ class ResourceAwareTaskQueue:
                     "queue_status": "timed_out_failed",
                     "queue_force_retry_count": action["retry_count"],
                     "queue_stuck_reason": action["reason"],
+                    "queue_cancelled_attempt_id": current_attempt_id,
                 },
             )
             self.task_registry.add_event(
@@ -486,6 +493,7 @@ class ResourceAwareTaskQueue:
                     "queue_resume_pending": False,
                     "queue_force_retry_count": action["retry_count"],
                     "queue_stuck_reason": action["reason"],
+                    "queue_cancelled_attempt_id": current_attempt_id,
                 },
             )
             self.task_registry.add_event(
@@ -549,6 +557,7 @@ class ResourceAwareTaskQueue:
         self,
         task_id: str,
         *,
+        attempt_id: str = "",
         resource_level: str | None = None,
         stage: str = "",
         details: dict[str, Any] | None = None,
@@ -562,8 +571,10 @@ class ResourceAwareTaskQueue:
         pause_count = 0
         last_event_epoch = 0.0
         level = resource_level or self._item_resource_level(task_id)
-        checkpoint = self._record_checkpoint(task_id, stage=stage, details=details or {}, resource_level=level)
+        self._raise_if_attempt_inactive(task_id, attempt_id)
+        checkpoint = self._record_checkpoint(task_id, stage=stage, details=details or {}, resource_level=level, attempt_id=attempt_id)
         while not self.stop_event.is_set():
+            self._raise_if_attempt_inactive(task_id, attempt_id)
             pressure = self.pressure_reader()
             reasons = throttle_reasons(
                 pressure,
@@ -574,6 +585,7 @@ class ResourceAwareTaskQueue:
             if not reasons:
                 pause_seconds = int(time.time() - started)
                 if paused:
+                    self._raise_if_attempt_inactive(task_id, attempt_id)
                     self._mark_throttle_resumed(task_id, stage=stage, pause_seconds=pause_seconds, pressure=pressure)
                 return {"paused": paused, "pause_seconds": pause_seconds, "pressure": pressure, "checkpoint": checkpoint}
             pause_count += 1
@@ -591,6 +603,7 @@ class ResourceAwareTaskQueue:
                 )
             now = time.time()
             if not paused or now - last_event_epoch >= 60:
+                self._raise_if_attempt_inactive(task_id, attempt_id)
                 self._mark_throttled(
                     task_id,
                     reason=reason,
@@ -603,7 +616,21 @@ class ResourceAwareTaskQueue:
                 last_event_epoch = now
             paused = True
             self.sleep_func(delay)
+            self._raise_if_attempt_inactive(task_id, attempt_id)
         return {"paused": paused, "pause_seconds": int(time.time() - started), "pressure": {}, "checkpoint": checkpoint}
+
+    def _raise_if_attempt_inactive(self, task_id: str, attempt_id: str) -> None:
+        if not attempt_id:
+            return
+        with self.lock:
+            current = self.items.get(task_id)
+            if not current:
+                raise QueueTaskDeferred(task_id, "队列任务不存在，当前执行尝试停止。")
+            cancelled = {str(item) for item in current.get("cancelled_attempt_ids") or []}
+            if attempt_id in cancelled:
+                raise QueueTaskDeferred(task_id, "当前执行尝试已被 watchdog 取消，旧线程停止。")
+            if current.get("status") != "running" or str(current.get("active_attempt_id") or "") != attempt_id:
+                raise QueueTaskDeferred(task_id, "当前执行尝试已失效，旧线程停止。")
 
     def _yield_running_item(
         self,
@@ -663,6 +690,7 @@ class ResourceAwareTaskQueue:
         stage: str,
         details: dict[str, Any],
         resource_level: str,
+        attempt_id: str = "",
     ) -> dict[str, Any]:
         now_text = timestamp()
         checkpoint = {
@@ -676,6 +704,8 @@ class ResourceAwareTaskQueue:
         with self.lock:
             current = self.items.get(task_id)
             if current:
+                if attempt_id and (current.get("status") != "running" or str(current.get("active_attempt_id") or "") != attempt_id):
+                    raise QueueTaskDeferred(task_id, "当前执行尝试已失效，旧线程停止。")
                 checkpoint["handler_version"] = int(current.get("handler_version") or DEFAULT_HANDLER_VERSION)
                 checkpoint["payload_version"] = int(current.get("payload_version") or DEFAULT_PAYLOAD_VERSION)
                 current["checkpoint_version"] = CHECKPOINT_VERSION
@@ -770,7 +800,8 @@ class ResourceAwareTaskQueue:
             if changed:
                 self._write_items(loaded.values())
             return loaded
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - keep corrupt queue files visible for ops
+            self._abandon_queue_file([], f"队列文件无法解析，已隔离：{exc}")
             return {}
 
     def _normalize_loaded_item(self, item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -791,6 +822,8 @@ class ResourceAwareTaskQueue:
             "active_attempt_id": "",
             "started_epoch": 0.0,
             "stuck_retry_count": 0,
+            "cancelled_attempt_ids": [],
+            "last_cancelled_attempt_id": "",
         }.items():
             if key not in normalized:
                 normalized[key] = default
@@ -959,6 +992,13 @@ def _queue_order_key(item: dict[str, Any]) -> tuple[float, str]:
     except (TypeError, ValueError):
         enqueued_epoch = 0.0
     return enqueued_epoch, str(item.get("task_id") or "")
+
+
+def _remember_cancelled_attempt(values: Any, attempt_id: str) -> list[str]:
+    existing = [str(item) for item in (values or []) if str(item)]
+    if attempt_id and attempt_id not in existing:
+        existing.append(attempt_id)
+    return existing[-MAX_CANCELLED_ATTEMPTS:]
 
 
 def _compact_date_from_task_id(task_id: str) -> str:

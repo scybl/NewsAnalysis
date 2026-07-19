@@ -53,6 +53,61 @@ def test_realtime_index_list_parses_float_turnover(monkeypatch):
     assert result["indexes"][0]["turnover"] == 24126092789
 
 
+def test_daily_data_uses_default_request_timeout(monkeypatch):
+    crawler = KaipanlaCrawler()
+    timeouts = []
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(*_args, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        action = kwargs.get("data", {}).get("a")
+        if action == "HisZhangFuDetail":
+            return Response({"date": "2026-07-14", "info": {"ZT": 1, "SJZT": 1, "DT": 0, "SJDT": 0, "SZJS": 2, "XDJS": 3, "0": 4}})
+        if action == "GetZsReal":
+            return Response({"StockList": [{"StockID": "SH000001", "last_px": "3000", "increase_rate": "1.0%", "turnover": "100"}]})
+        if action == "ZhangTingExpression":
+            return Response({"info": [1, 2, 3, 4, 5]})
+        return Response({"num": 6})
+
+    monkeypatch.setattr("stock_pipeline.kaipanla_crawler.requests.post", fake_post)
+
+    result = crawler.get_daily_data("2026-07-14")
+
+    assert result["涨停数"] == 1
+    assert timeouts == [20, 20, 20, 20]
+
+
+def test_kaipanla_request_timeout_is_capped(monkeypatch):
+    crawler = KaipanlaCrawler()
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"errcode": "0", "x": []}
+
+    def fake_post(*_args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return Response()
+
+    monkeypatch.setattr("stock_pipeline.kaipanla_crawler.requests.post", fake_post)
+
+    crawler.get_new_high_data("2026-07-14", timeout=1600)
+
+    assert captured["timeout"] == 60
+
+
 def test_ths_hot_rank_raises_when_browser_unavailable(monkeypatch):
     crawler = KaipanlaCrawler()
 

@@ -425,6 +425,7 @@ def sync_daily_market_for_existing_stocks(
         result["items"].append(item)
     _run_checkpoint(checkpoint, stage="before_coverage_refresh", current=len(selected), total=len(selected), target_date=date)
     result["daily_coverage"] = _refresh_daily_k_coverage_safe(selected, date)
+    result["ok"] = int(result.get("failed") or 0) == 0
     return result
 
 

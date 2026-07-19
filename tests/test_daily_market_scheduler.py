@@ -129,6 +129,24 @@ def test_daily_market_scheduler_records_stock_list_and_quote_result(monkeypatch,
     assert any(event["details"].get("stock_list_count") == 2 for event in scheduler.task_registry.events)
 
 
+def test_daily_market_scheduler_marks_partial_batch_failure(monkeypatch, tmp_path):
+    scheduler = make_scheduler(tmp_path)
+    monkeypatch.setattr(web, "_public_stock_client", lambda settings: SimpleNamespace(source="public"))
+    monkeypatch.setattr(
+        web,
+        "sync_daily_market_for_existing_stocks",
+        lambda client, target_date=None, checkpoint=None, resume_checkpoint=None: {"ok": False, "updated": 1, "skipped": 0, "no_data": 0, "failed": 1},
+    )
+
+    scheduler._run_task("task-1", "20260629", "scheduled")
+
+    assert scheduler.task_registry.updates[-1]["status"] == "failed"
+    assert scheduler.config["last_run_date"] == ""
+    assert scheduler.config["last_failed_date"] == "20260629"
+    assert scheduler.config["next_retry_epoch"] > 0
+    assert "部分失败" in scheduler.config["last_error"]
+
+
 def test_daily_market_scheduler_forwards_resume_checkpoint(monkeypatch, tmp_path):
     scheduler = make_scheduler(tmp_path)
     captured = {}
@@ -187,7 +205,7 @@ def test_daily_market_scheduler_ignores_stale_queue_attempt(monkeypatch, tmp_pat
 def test_daily_market_scheduler_fails_when_market_stock_list_is_empty(monkeypatch, tmp_path):
     scheduler = make_scheduler(tmp_path)
     scheduler.app.index.stocks = lambda *, refresh: []
-    monkeypatch.setattr(web, "provider_available", lambda provider: False)
+    monkeypatch.setattr(web, "provider_available", lambda provider: provider == "eastmoney")
     monkeypatch.setattr(web, "EastmoneyClient", lambda pause=0: SimpleNamespace(source="eastmoney"))
 
     scheduler._run_task("task-2", "20260629", "manual")
@@ -221,3 +239,41 @@ def test_kaipanla_scheduler_ignores_stale_queue_attempt(monkeypatch, tmp_path):
 
     assert not scheduler.task_registry.updates
     assert scheduler.config["last_run_date"] == ""
+
+
+def test_kaipanla_scheduler_marks_partial_failure_without_success_date(monkeypatch, tmp_path):
+    scheduler = make_kaipanla_scheduler(tmp_path)
+    monkeypatch.setattr(
+        web,
+        "run_kaipanla_batch",
+        lambda *_args, **_kwargs: {"ok": False, "succeeded": 1, "failed": 1},
+    )
+
+    scheduler._run_task("task-1", "scheduled", "20260714", ["daily_data"], {})
+
+    assert scheduler.task_registry.updates[-1]["status"] == "failed"
+    assert scheduler.config["last_run_date"] == ""
+    assert scheduler.config["last_failed_date"] == "20260714"
+    assert scheduler.config["next_retry_epoch"] > 0
+    assert "部分开盘啦功能抓取失败" in scheduler.config["last_error"]
+
+
+def test_public_stock_client_respects_provider_status(monkeypatch):
+    monkeypatch.setattr(web, "provider_available", lambda key: key == "eastmoney")
+    monkeypatch.setattr(web, "EastmoneyClient", lambda pause=0: SimpleNamespace(source_name="eastmoney"))
+    monkeypatch.setattr(web, "AkshareClient", lambda pause=0: (_ for _ in ()).throw(AssertionError("akshare should be disabled")))
+
+    client = web._public_stock_client(SimpleNamespace(tushare_pause_seconds=0))
+
+    assert client.source_name == "eastmoney"
+
+
+def test_public_stock_client_fails_when_public_providers_disabled(monkeypatch):
+    monkeypatch.setattr(web, "provider_available", lambda _key: False)
+
+    try:
+        web._public_stock_client(SimpleNamespace(tushare_pause_seconds=0))
+    except web.TushareError as exc:
+        assert "均未启用" in str(exc)
+    else:
+        raise AssertionError("disabled public providers should fail loudly")

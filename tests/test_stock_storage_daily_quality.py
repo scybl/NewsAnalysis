@@ -180,3 +180,19 @@ def test_sync_daily_market_batch_resumes_from_checkpoint(monkeypatch):
     assert result["resumed"] is True
     assert result["updated"] == 2
     assert checkpoints[0]["current"] == 2
+
+
+def test_sync_daily_market_batch_reports_not_ok_when_stock_fails(monkeypatch):
+    monkeypatch.setattr(stock_storage, "list_local_stock_codes", lambda: ["000001.SZ"])
+
+    def fail_stock(*_args, **_kwargs):
+        raise RuntimeError("upstream timeout")
+
+    monkeypatch.setattr(stock_storage, "sync_daily_market_for_stock", fail_stock)
+    monkeypatch.setattr(stock_storage, "_refresh_daily_k_coverage_safe", lambda codes, date: {"codes": list(codes), "date": date})
+
+    result = stock_storage.sync_daily_market_for_existing_stocks(_FakeClient({}), target_date="20260714")
+
+    assert result["ok"] is False
+    assert result["failed"] == 1
+    assert result["items"][0]["error"] == "upstream timeout"

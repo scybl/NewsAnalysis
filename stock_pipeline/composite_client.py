@@ -58,7 +58,14 @@ REQUIRED_FIELDS_BY_API = {
 }
 
 MERGEABLE_APIS = {
+    "daily",
+    "weekly",
+    "monthly",
     "daily_basic",
+    "adj_factor",
+    "stk_limit",
+    "moneyflow",
+    "margin_detail",
     "income",
     "balancesheet",
     "cashflow",

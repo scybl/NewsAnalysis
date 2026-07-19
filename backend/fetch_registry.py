@@ -127,6 +127,14 @@ FETCH_METHODS: dict[str, FetchMethodSpec] = {
         resource="normal_io",
         default_provider="kaipanla",
     ),
+    "market.kaipanla.feature.run": FetchMethodSpec(
+        key="market.kaipanla.feature.run",
+        data_key="market.kaipanla",
+        label="立即执行开盘啦单项抓取",
+        route="/api/admin/kaipanla/run",
+        resource="normal_io",
+        default_provider="kaipanla",
+    ),
     "news.library.refetch": FetchMethodSpec(
         key="news.library.refetch",
         data_key="news.raw_article",

@@ -84,6 +84,7 @@ from .utils import CN_TZ, ensure_dir, normalize_ts_code, read_json, timestamp, t
 AGENT_GATEWAY_AVAILABLE = False
 DATA_DISTRIBUTION_AVAILABLE = False
 ANALYSIS_MODULE_STATUS_TEXT = "分析模块已拆分为外部项目，当前主站只保留数据资产和历史报告读取。"
+DEFAULT_SCHEDULER_RETRY_SECONDS = 15 * 60
 SENSITIVE_LOCAL_PATH_KEYS = {
     "local_dir",
     "stock_dir",
@@ -167,10 +168,14 @@ def _readonly_admin_account(settings, username: str, password: str) -> dict | No
 
 
 def _public_stock_client(settings) -> ValidatingStockClient:
-    return ValidatingStockClient(
-        AkshareClient(pause=settings.tushare_pause_seconds),
-        [EastmoneyClient(pause=settings.tushare_pause_seconds)],
-    )
+    clients = []
+    if provider_available("akshare"):
+        clients.append(AkshareClient(pause=settings.tushare_pause_seconds))
+    if provider_available("eastmoney"):
+        clients.append(EastmoneyClient(pause=settings.tushare_pause_seconds))
+    if not clients:
+        raise TushareError("公开股票数据源 AkShare/Eastmoney 均未启用。请先在数据源管理中启用至少一个。")
+    return ValidatingStockClient(clients[0], clients[1:])
 
 
 def _stock_metadata_age_seconds(updated_at: str) -> int | None:
@@ -1864,7 +1869,16 @@ class StockWebApp:
                     if not isinstance(params, dict):
                         self._json({"ok": False, "error": "开盘啦参数必须是 JSON object。"}, status=400)
                         return
-                    self._json(run_kaipanla_feature(feature, params, save=save, run_id=timestamp()))
+                    if not self._require_data_fetch_approval("/api/admin/kaipanla/run", payload):
+                        return
+                    trade_date = str(
+                        payload.get("trade_date")
+                        or params.get("trade_date")
+                        or params.get("date")
+                        or params.get("end_date")
+                        or today_yyyymmdd()
+                    )
+                    self._json(run_kaipanla_feature(feature, params, save=save, run_id=timestamp(), trade_date=trade_date))
                 except Exception as exc:  # noqa: BLE001 - keep admin page readable
                     self._json({"ok": False, "error": str(exc)}, status=500)
 
@@ -2722,7 +2736,8 @@ class TaskRegistry:
                 for item in items
                 if isinstance(item, dict) and item.get("task_id")
             }
-        except Exception:
+        except Exception:  # noqa: BLE001 - corrupt state should be quarantined, not silently discarded
+            _quarantine_state_file(self.path, suffix="corrupt")
             return {}
 
     def _mark_interrupted_tasks(self) -> None:
@@ -2799,6 +2814,16 @@ class TaskRegistry:
         }
 
 
+def _quarantine_state_file(path: Path | None, *, suffix: str) -> None:
+    if not path:
+        return
+    target = path.with_name(f"{path.name}.{suffix}.{timestamp()}.json")
+    try:
+        path.rename(target)
+    except OSError:
+        pass
+
+
 def _task_registry_status(task_registry: Any, task_id: str) -> str:
     if not task_id:
         return ""
@@ -2824,7 +2849,11 @@ class IdleStockPrefetchScheduler:
         self.config = self._load_config()
         self.app.task_queue.register(
             "idle_stock_prefetch",
-            lambda task_id, payload: self._run_task(task_id, str((payload or {}).get("trigger") or "queued")),
+            lambda task_id, payload: self._run_task(
+                task_id,
+                str((payload or {}).get("trigger") or "queued"),
+                str((payload or {}).get("_queue_attempt_id") or ""),
+            ),
         )
         self.thread = threading.Thread(target=self._loop, name="idle-stock-prefetch-scheduler", daemon=True)
         self.thread.start()
@@ -2914,7 +2943,7 @@ class IdleStockPrefetchScheduler:
         )
         return self.status()
 
-    def _run_task(self, task_id: str, trigger: str) -> None:
+    def _run_task(self, task_id: str, trigger: str, queue_attempt_id: str = "") -> None:
         ts_code = ""
         candidate_name = ""
         try:
@@ -2935,7 +2964,7 @@ class IdleStockPrefetchScheduler:
                 f"开始{'刷新' if force_refresh else '预抓'} {ts_code} 全量资料包。",
                 {"ts_code": ts_code, "full_history": True, "reason": candidate_reason, "force": force_refresh},
             )
-            self.app.task_queue.checkpoint(task_id, resource_level=QUEUE_NORMAL_IO, stage="stock_package_before_sync", details={"ts_code": ts_code})
+            self.app.task_queue.checkpoint(task_id, attempt_id=queue_attempt_id, resource_level=QUEUE_NORMAL_IO, stage="stock_package_before_sync", details={"ts_code": ts_code})
             client = self.app.tushare if provider_available("tushare") and self.app.settings.tushare_token else _public_stock_client(self.app.settings)
             payload = sync_stock_data(
                 client,
@@ -2948,9 +2977,10 @@ class IdleStockPrefetchScheduler:
                     resource_level=QUEUE_NORMAL_IO,
                     stage=f"stock_package_{details.get('stage') or 'checkpoint'}",
                     details=details,
+                    attempt_id=queue_attempt_id,
                 ),
             )
-            minutes_result = self._prefetch_minutes(ts_code, task_id)
+            minutes_result = self._prefetch_minutes(ts_code, task_id, queue_attempt_id)
             result = {
                 "ok": True,
                 "status": "succeeded",
@@ -2966,6 +2996,8 @@ class IdleStockPrefetchScheduler:
             self.task_registry.update_task(task_id, status="succeeded", result=result)
             self.task_registry.add_event(task_id, "succeeded", f"空闲预抓完成：{ts_code}。", result)
             self._remember_result(result)
+        except QueueTaskDeferred:
+            raise
         except Exception as exc:  # noqa: BLE001 - keep task readable
             result = {
                 "ok": False,
@@ -2979,7 +3011,7 @@ class IdleStockPrefetchScheduler:
             self.task_registry.add_event(task_id, "failed", "空闲股票预抓失败。", result)
             self._remember_result(result)
 
-    def _prefetch_minutes(self, ts_code: str, task_id: str) -> dict:
+    def _prefetch_minutes(self, ts_code: str, task_id: str, queue_attempt_id: str = "") -> dict:
         minutes_enabled = bool(self.config.get("minutes_enabled", self.app.settings.idle_stock_prefetch_minutes_enabled))
         if not minutes_enabled:
             return {"ok": True, "status": "skipped", "reason": "minutes_disabled"}
@@ -2994,7 +3026,7 @@ class IdleStockPrefetchScheduler:
             {"ts_code": ts_code, "source": source, "pages": pages, "page_size": page_size},
         )
         try:
-            self.app.task_queue.checkpoint(task_id, resource_level=QUEUE_HEAVY_IO, stage="minute_prefetch_before_fetch", details={"ts_code": ts_code})
+            self.app.task_queue.checkpoint(task_id, attempt_id=queue_attempt_id, resource_level=QUEUE_HEAVY_IO, stage="minute_prefetch_before_fetch", details={"ts_code": ts_code})
             result = fetch_and_store_minutes(
                 [ts_code],
                 config=build_ths_minute_config(),
@@ -3007,6 +3039,7 @@ class IdleStockPrefetchScheduler:
                     resource_level=QUEUE_HEAVY_IO,
                     stage=f"minute_prefetch_{details.get('stage') or 'checkpoint'}",
                     details=details,
+                    attempt_id=queue_attempt_id,
                 ),
             )
             item = next((row for row in result.get("results", []) if row.get("ts_code") == ts_code), {})
@@ -3029,6 +3062,8 @@ class IdleStockPrefetchScheduler:
             else:
                 self.task_registry.add_event(task_id, "warning", "分钟行情补抓失败，资料包预抓结果保留。", summary)
             return summary
+        except QueueTaskDeferred:
+            raise
         except Exception as exc:  # noqa: BLE001 - minutes are useful but must not fail the whole dossier prefetch
             summary = {"ok": False, "status": "failed", "source": source, "error": str(exc)}
             self.task_registry.add_event(task_id, "warning", "分钟行情补抓失败，资料包预抓结果保留。", summary)
@@ -3135,6 +3170,7 @@ class DataRandomAuditScheduler:
                 str((payload or {}).get("trigger") or "queued"),
                 max(1, min(200, int((payload or {}).get("sample_size") or 20))),
                 max(0, min(10, int((payload or {}).get("cold_read_samples") or 0))),
+                str((payload or {}).get("_queue_attempt_id") or ""),
             ),
         )
         self.thread = threading.Thread(target=self._loop, name="data-random-audit-scheduler", daemon=True)
@@ -3236,7 +3272,7 @@ class DataRandomAuditScheduler:
         )
         return self.status()
 
-    def _run_task(self, task_id: str, trigger: str, sample_size: int, cold_read_samples: int) -> None:
+    def _run_task(self, task_id: str, trigger: str, sample_size: int, cold_read_samples: int, queue_attempt_id: str = "") -> None:
         client = None
         try:
             if trigger != "manual" and self._heavy_io_blockers(task_id):
@@ -3247,11 +3283,11 @@ class DataRandomAuditScheduler:
                 return
             config = build_ths_minute_config(database="market_data", collection="minute_day_buckets")
             client = pymongo.MongoClient(config.mongo_uri, serverSelectionTimeoutMS=8000)
-            self.app.task_queue.checkpoint(task_id, resource_level=QUEUE_NORMAL_IO, stage="data_random_audit_before_build", details={"sample_size": sample_size})
+            self.app.task_queue.checkpoint(task_id, attempt_id=queue_attempt_id, resource_level=QUEUE_NORMAL_IO, stage="data_random_audit_before_build", details={"sample_size": sample_size})
 
             def progress(message: str) -> None:
                 self.task_registry.add_event(task_id, "running", str(message), {})
-                self.app.task_queue.checkpoint(task_id, resource_level=QUEUE_NORMAL_IO, stage="data_random_audit_progress", details={"message": str(message)})
+                self.app.task_queue.checkpoint(task_id, attempt_id=queue_attempt_id, resource_level=QUEUE_NORMAL_IO, stage="data_random_audit_progress", details={"message": str(message)})
 
             payload = build_random_audit_payload(
                 client,
@@ -3274,6 +3310,8 @@ class DataRandomAuditScheduler:
             self.task_registry.update_task(task_id, status=status, error="" if payload.get("ok") else "数据抽检发现危险项。", result=result)
             self.task_registry.add_event(task_id, status, f"数据抽检完成：{summary.get('status', 'unknown')}，异常 {summary.get('anomalies', 0)} 个。", result)
             self._remember_result(result)
+        except QueueTaskDeferred:
+            raise
         except Exception as exc:  # noqa: BLE001 - keep task readable
             result = {"ok": False, "status": "failed", "trigger": trigger, "error": str(exc)}
             self.task_registry.update_task(task_id, status="failed", error=str(exc), result=result)
@@ -3346,6 +3384,7 @@ class StockStorageHealthScheduler:
                 str((payload or {}).get("trigger") or "queued"),
                 max(1, min(200, int((payload or {}).get("sample_size") or 30))),
                 _stock_storage_cold_compare_sample_count((payload or {}).get("cold_compare_samples")),
+                str((payload or {}).get("_queue_attempt_id") or ""),
             ),
         )
         self.thread = threading.Thread(target=self._loop, name="stock-storage-health-scheduler", daemon=True)
@@ -3427,7 +3466,7 @@ class StockStorageHealthScheduler:
         )
         return self.status()
 
-    def _run_task(self, task_id: str, trigger: str, sample_size: int, cold_compare_samples: int) -> None:
+    def _run_task(self, task_id: str, trigger: str, sample_size: int, cold_compare_samples: int, queue_attempt_id: str = "") -> None:
         try:
             if trigger != "manual" and self._heavy_io_blockers(task_id):
                 result = {"ok": True, "status": "skipped", "reason": "heavy_io_running", "trigger": trigger}
@@ -3443,6 +3482,7 @@ class StockStorageHealthScheduler:
                     resource_level=QUEUE_NORMAL_IO,
                     stage=f"stock_storage_health_{details.get('stage') or 'checkpoint'}",
                     details=details,
+                    attempt_id=queue_attempt_id,
                 ),
             )
             status = "succeeded" if result.get("ok") else "failed"
@@ -3454,6 +3494,8 @@ class StockStorageHealthScheduler:
                 result,
             )
             self._remember_result(result)
+        except QueueTaskDeferred:
+            raise
         except Exception as exc:  # noqa: BLE001 - keep task readable
             result = {"ok": False, "status": "failed", "trigger": trigger, "error": str(exc)}
             self.task_registry.update_task(task_id, status="failed", error=str(exc), result=result)
@@ -3577,6 +3619,10 @@ class DailyMarketScheduler:
                 "last_target_date": config.get("last_target_date") or "",
                 "last_target_reason": config.get("last_target_reason") or "",
                 "last_started_at": config.get("last_started_at") or "",
+                "last_error": config.get("last_error") or "",
+                "last_failed_date": config.get("last_failed_date") or "",
+                "last_failed_at": config.get("last_failed_at") or "",
+                "next_retry_epoch": config.get("next_retry_epoch") or 0,
                 "last_task_id": config.get("last_task_id") or "",
                 "last_result": config.get("last_result") or {},
                 "running": running,
@@ -3593,12 +3639,13 @@ class DailyMarketScheduler:
                     enabled = bool(self.config.get("enabled"))
                     schedule_time = str(self.config.get("time") or "21:30")
                     last_run_date = str(self.config.get("last_run_date") or "")
+                    next_retry_epoch = float(self.config.get("next_retry_epoch") or 0)
                     active = bool(self.worker and self.worker.is_alive()) or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or ""))
                 if not enabled or active:
                     continue
                 now = datetime.now(CN_TZ).strftime("%H:%M")
                 today = today_yyyymmdd()
-                if now >= schedule_time and last_run_date != today:
+                if now >= schedule_time and last_run_date != today and time.time() >= next_retry_epoch:
                     self._start_run(trigger="scheduled")
             except Exception as exc:  # noqa: BLE001 - scheduler must keep ticking
                 with self.lock:
@@ -3616,6 +3663,7 @@ class DailyMarketScheduler:
             self.config["last_target_date"] = target_date
             self.config["last_target_reason"] = target_info.get("reason") or ""
             self.config["last_started_at"] = timestamp()
+            self.config["next_retry_epoch"] = 0
             self._write_config_locked()
         self.task_registry.create_task(
             task_id,
@@ -3661,25 +3709,37 @@ class DailyMarketScheduler:
                     resource_level=QUEUE_HEAVY_IO,
                     stage=f"daily_market_{details.get('stage') or 'checkpoint'}",
                     details=details,
+                    attempt_id=queue_attempt_id,
                     yield_on_pressure=True,
                 ),
             )
             result["stock_list_count"] = len(stock_list)
             result["trigger"] = trigger
+            result["ok"] = bool(result.get("ok", int(result.get("failed") or 0) == 0))
+            status = "succeeded" if result["ok"] else "failed"
+            error = "" if result["ok"] else f"每日股票数据更新部分失败：失败 {result.get('failed', 0)} 只。"
             if queue_attempt_id and not self.app.task_queue.is_attempt_active(task_id, queue_attempt_id):
                 return
-            self.task_registry.update_task(task_id, status="succeeded", result=result)
+            self.task_registry.update_task(task_id, status=status, error=error, result=result)
             self.task_registry.add_event(
                 task_id,
-                "succeeded",
+                status,
                 f"每日股票数据更新完成：列表 {result.get('stock_list_count')}，行情更新 {result.get('updated')}，跳过 {result.get('skipped')}，无数据 {result.get('no_data')}，失败 {result.get('failed')}。",
                 result,
             )
             with self.lock:
-                self.config["last_run_date"] = target_date
-                self.config["last_run_at"] = timestamp()
+                now_text = timestamp()
+                if result["ok"]:
+                    self.config["last_run_date"] = target_date
+                    self.config["last_run_at"] = now_text
+                    self.config["last_error"] = ""
+                    self.config["next_retry_epoch"] = 0
+                else:
+                    self.config["last_failed_date"] = target_date
+                    self.config["last_failed_at"] = now_text
+                    self.config["last_error"] = error
+                    self.config["next_retry_epoch"] = time.time() + DEFAULT_SCHEDULER_RETRY_SECONDS
                 self.config["last_result"] = result
-                self.config["last_error"] = ""
                 self._write_config_locked()
         except QueueTaskDeferred:
             raise
@@ -3690,6 +3750,9 @@ class DailyMarketScheduler:
             self.task_registry.add_event(task_id, "failed", "每日股票数据更新失败。", {"error": str(exc)})
             with self.lock:
                 self.config["last_error"] = str(exc)
+                self.config["last_failed_date"] = target_date
+                self.config["last_failed_at"] = timestamp()
+                self.config["next_retry_epoch"] = time.time() + DEFAULT_SCHEDULER_RETRY_SECONDS
                 self._write_config_locked()
 
     def _load_config(self) -> dict:
@@ -3698,10 +3761,11 @@ class DailyMarketScheduler:
                 data = read_json(self.config_path)
                 data["time"] = self._validate_time(str(data.get("time") or "21:30"))
                 data["enabled"] = data.get("enabled", True) is not False
+                data.setdefault("next_retry_epoch", 0)
                 return data
             except Exception:
                 pass
-        return {"enabled": True, "time": "21:30", "last_run_date": "", "last_run_at": "", "last_task_id": "", "last_result": {}}
+        return {"enabled": True, "time": "21:30", "last_run_date": "", "last_run_at": "", "last_task_id": "", "last_result": {}, "next_retry_epoch": 0}
 
     def _write_config_locked(self) -> None:
         write_json(self.config_path, self.config)
@@ -3789,6 +3853,9 @@ class KaipanlaScheduler:
                 "last_task_id": config.get("last_task_id") or "",
                 "last_result": config.get("last_result") or {},
                 "last_error": config.get("last_error") or "",
+                "last_failed_date": config.get("last_failed_date") or "",
+                "last_failed_at": config.get("last_failed_at") or "",
+                "next_retry_epoch": config.get("next_retry_epoch") or 0,
                 "running": running,
                 "queued": queued,
             }
@@ -3801,12 +3868,13 @@ class KaipanlaScheduler:
                     enabled = bool(self.config.get("enabled"))
                     schedule_time = str(self.config.get("time") or "21:45")
                     last_run_date = str(self.config.get("last_run_date") or "")
+                    next_retry_epoch = float(self.config.get("next_retry_epoch") or 0)
                     active = bool(self.worker and self.worker.is_alive()) or _task_registry_active(self.task_registry, str(self.config.get("last_task_id") or ""))
                 if not enabled or active:
                     continue
                 now = datetime.now(CN_TZ).strftime("%H:%M")
                 today = today_yyyymmdd()
-                if now >= schedule_time and last_run_date != today:
+                if now >= schedule_time and last_run_date != today and time.time() >= next_retry_epoch:
                     self._start_run(trigger="scheduled")
             except Exception as exc:  # noqa: BLE001 - scheduler must keep ticking
                 with self.lock:
@@ -3824,6 +3892,8 @@ class KaipanlaScheduler:
             task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
             trade_date = today_yyyymmdd()
             self.config["last_task_id"] = task_id
+            self.config["last_started_at"] = timestamp()
+            self.config["next_retry_epoch"] = 0
             self._write_config_locked()
         self.task_registry.create_task(task_id, "kaipanla", "开盘啦数据抓取", metadata={"trigger": trigger, "features": features, "trade_date": trade_date})
         self.task_queue.enqueue(
@@ -3849,19 +3919,31 @@ class KaipanlaScheduler:
                     resource_level=QUEUE_LIGHT_IO,
                     stage=f"kaipanla_{details.get('stage') or 'checkpoint'}",
                     details=details,
+                    attempt_id=queue_attempt_id,
                 ),
             )
             status = "succeeded" if result.get("ok") else "failed"
+            error = "" if result.get("ok") else "部分开盘啦功能抓取失败。"
             if queue_attempt_id and not self.task_queue.is_attempt_active(task_id, queue_attempt_id):
                 return
             self.task_registry.add_event(task_id, status, f"开盘啦抓取完成：成功 {result.get('succeeded', 0)}，失败 {result.get('failed', 0)}。", result)
-            self.task_registry.update_task(task_id, status=status, error="" if result.get("ok") else "部分开盘啦功能抓取失败。", result=result)
+            self.task_registry.update_task(task_id, status=status, error=error, result=result)
             with self.lock:
-                self.config["last_run_date"] = trade_date
-                self.config["last_run_at"] = timestamp()
+                now_text = timestamp()
+                if result.get("ok"):
+                    self.config["last_run_date"] = trade_date
+                    self.config["last_run_at"] = now_text
+                    self.config["last_error"] = ""
+                    self.config["next_retry_epoch"] = 0
+                else:
+                    self.config["last_failed_date"] = trade_date
+                    self.config["last_failed_at"] = now_text
+                    self.config["last_error"] = error
+                    self.config["next_retry_epoch"] = time.time() + DEFAULT_SCHEDULER_RETRY_SECONDS
                 self.config["last_result"] = {**result, "trigger": trigger}
-                self.config["last_error"] = "" if result.get("ok") else "部分开盘啦功能抓取失败。"
                 self._write_config_locked()
+        except QueueTaskDeferred:
+            raise
         except Exception as exc:  # noqa: BLE001 - task registry should record readable failure
             if queue_attempt_id and not self.task_queue.is_attempt_active(task_id, queue_attempt_id):
                 return
@@ -3869,6 +3951,9 @@ class KaipanlaScheduler:
             self.task_registry.update_task(task_id, status="failed", error=str(exc))
             with self.lock:
                 self.config["last_error"] = str(exc)
+                self.config["last_failed_date"] = trade_date
+                self.config["last_failed_at"] = timestamp()
+                self.config["next_retry_epoch"] = time.time() + DEFAULT_SCHEDULER_RETRY_SECONDS
                 self._write_config_locked()
 
     def _load_config(self) -> dict:
@@ -3878,6 +3963,7 @@ class KaipanlaScheduler:
                 if isinstance(data, dict):
                     data.setdefault("features", ["daily_data", "market_limit_up_ladder", "sector_ranking"])
                     data.setdefault("params_by_feature", {})
+                    data.setdefault("next_retry_epoch", 0)
                     data["enabled"] = data.get("enabled", False) is True
                     data["time"] = self._validate_time(str(data.get("time") or "21:45"))
                     return data
@@ -3893,6 +3979,7 @@ class KaipanlaScheduler:
             "last_task_id": "",
             "last_result": {},
             "last_error": "",
+            "next_retry_epoch": 0,
         }
 
     def _write_config_locked(self) -> None:

@@ -391,6 +391,64 @@ def test_validating_client_uses_akshare_primary_and_fills_missing_fields():
     assert result.records == [{"end_date": "20241231", "total_revenue": 100, "n_income": 10, "source": "akshare+validated:eastmoney"}]
 
 
+def test_validating_client_fills_missing_daily_k_fields_without_replacing_primary_prices():
+    primary = SimpleNamespace(
+        source_name="akshare",
+        query=lambda api_name, params, fields: TushareResult(
+            api_name=api_name,
+            fields=["trade_date", "open", "high", "low", "close", "vol", "amount", "source"],
+            records=[
+                {
+                    "trade_date": "20260714",
+                    "open": 10,
+                    "high": 11,
+                    "low": 9,
+                    "close": 10.5,
+                    "vol": 1000,
+                    "amount": None,
+                    "source": "akshare",
+                }
+            ],
+        ),
+    )
+    validator = SimpleNamespace(
+        source_name="eastmoney",
+        query=lambda api_name, params, fields: TushareResult(
+            api_name=api_name,
+            fields=["trade_date", "open", "high", "low", "close", "vol", "amount", "turnover_rate", "source"],
+            records=[
+                {
+                    "trade_date": "20260714",
+                    "open": 10.1,
+                    "high": 11.1,
+                    "low": 9.1,
+                    "close": 10.6,
+                    "vol": 1001,
+                    "amount": 8888,
+                    "turnover_rate": 2.3,
+                    "source": "eastmoney",
+                }
+            ],
+        ),
+    )
+
+    result = ValidatingStockClient(primary, [validator]).query("daily", {"ts_code": "000001.SZ"})
+
+    assert result.records == [
+        {
+            "trade_date": "20260714",
+            "open": 10,
+            "high": 11,
+            "low": 9,
+            "close": 10.5,
+            "vol": 1000,
+            "amount": 8888,
+            "turnover_rate": 2.3,
+            "source": "akshare+validated:eastmoney",
+        }
+    ]
+
+
 def test_validating_client_keeps_safe_empty_optional_dataset_when_primary_fails():
     def fail(api_name, params, fields):
         raise TushareError("akshare unsupported")

@@ -1,6 +1,6 @@
 # 数据源字段映射台账
 
-最后更新：2026-07-14
+最后更新：2026-07-19
 
 本文档是 ValueScope DataHub 的字段映射台账，用来持续记录每个数据源返回的 key、DataHub 统一后的 key，以及最终写入 MongoDB 的位置和形态。字段名、dataset 名、collection 名、provider/API 名保留英文，便于和代码、数据库、测试直接对照。
 
@@ -33,11 +33,11 @@
 当前公共数据链路：
 
 1. `AkshareClient` 是主数据源。
-2. `EastmoneyClient` 负责验证和补齐 merge-safe dataset 中缺失字段；只有主数据质量低于阈值时，才替换主结果。
+2. `EastmoneyClient` 负责验证和补齐 merge-safe dataset 中缺失字段；管理页的数据源 `status` 会直接决定 `_public_stock_client` 是否启用 AkShare/Eastmoney，禁用后不会被后台硬编码继续调用。
 3. 腾讯行情在 `EastmoneyClient` 内部作为 daily/weekly/monthly K 线 fallback。
 4. `TushareClient` 已归档，只在明确重新启用时使用。
 
-`ValidatingStockClient` 中允许 merge/fill 的 dataset：`daily_basic`、`income`、`balancesheet`、`cashflow`、`fina_indicator`、`dividend`、`anns_d`、`stock_basic`、`stock_company`、`stk_holdernumber`、`share_float`、`top10_holders`。
+`ValidatingStockClient` 中允许 merge/fill 的 dataset：`daily`、`weekly`、`monthly`、`daily_basic`、`adj_factor`、`stk_limit`、`moneyflow`、`margin_detail`、`income`、`balancesheet`、`cashflow`、`fina_indicator`、`dividend`、`anns_d`、`stock_basic`、`stock_company`、`stk_holdernumber`、`share_float`、`top10_holders`。合并只填同一 identity row 的缺失值，不覆盖主源已有值。
 
 `safe empty` dataset：`suspend_d`、`disclosure_date`、`pledge_stat`、`pledge_detail`、`repurchase`、`sw_daily`。当 AkShare 未映射或失败、Eastmoney 明确返回空 rows 时，DataHub 保留同名空 dataset，不把它记作抓取异常；这表示“该股票/区间可合法无事件”，不是表示上游有非空数据。
 
@@ -48,13 +48,13 @@
 | `stock_company` | `ts_code`, `com_name`, `exchange`, `chairman`, `manager`, `secretary`, `reg_capital`, `setup_date`, `province`, `city`, `introduction`, `website`, `email`, `office`, `employees`, `main_business`, `business_scope`, `source`, optional `raw` | `ts_code` | `ts_code`, `com_name` |
 | `stk_managers` | `ts_code`, `name`, `title`, `gender`, `lev`, `reward`, `hold_vol`, `edu`, `age`, `begin_date`, `source` | 不 merge | 无 |
 | `stk_rewards` | 与高管薪酬 row 形态一致 | 不 merge | 无 |
-| `daily`, `weekly`, `monthly` | `ts_code`, `trade_date`, `open`, `close`, `high`, `low`, `vol`, `amount`, `pct_chg`, `change`, optional `turnover_rate`, `source` | `ValidatingStockClient` 不 merge；storage daily merge 选择质量更高的 row | `trade_date`, `open`, `high`, `low`, `close`, `vol`, `amount` |
+| `daily`, `weekly`, `monthly` | `ts_code`, `trade_date`, `open`, `close`, `high`, `low`, `vol`, `amount`, `pct_chg`, `change`, optional `turnover_rate`, `source` | `trade_date`；validator 只补缺失字段，不覆盖主源已有 OHLC/volume | `trade_date`, `open`, `high`, `low`, `close`, `vol`, `amount` |
 | `daily_basic` | `ts_code`, `trade_date`, `close`, `turnover_rate`, optional `volume_ratio`, `pe`, `pe_ttm`, `pb`, `total_mv`, `circ_mv`, `source` | `trade_date` | `trade_date`, `close`, `turnover_rate` |
-| `adj_factor` | `ts_code`, `trade_date`, `adj_factor`, `source` | 不 merge | 无 |
-| `stk_limit` | `ts_code`, `trade_date`, `up_limit`, `down_limit`, `source` | 不 merge | 无 |
+| `adj_factor` | `ts_code`, `trade_date`, `adj_factor`, `source` | `trade_date` | 无 |
+| `stk_limit` | `ts_code`, `trade_date`, `up_limit`, `down_limit`, `source` | `trade_date` | 无 |
 | `suspend_d` | `ts_code`, `suspend_date`, `resume_date`, `suspend_timing`, `resume_timing`, `suspend_type`, `reason`, `source` | 不 merge | 无 |
-| `moneyflow` | `ts_code`, `trade_date`, `close`, `pct_chg`, `net_mf_amount`, `net_mf_vol`, `buy_elg_amount`, `buy_lg_amount`, `buy_md_amount`, `buy_sm_amount`, optional volume detail, `net_mf_ratio`, `source` | 不 merge | `trade_date`, `net_mf_amount`, `buy_elg_amount`, `buy_lg_amount`, `buy_md_amount`, `buy_sm_amount` |
-| `margin_detail` | `ts_code`, `trade_date`, `rzye`, `rqye`, `rzmre`, `rzche`, `rzjme`, `rqyl`, `rqmcl`, `rqchl`, `rzrqye`, `source` | 不 merge | 无 |
+| `moneyflow` | `ts_code`, `trade_date`, `close`, `pct_chg`, `net_mf_amount`, `net_mf_vol`, `buy_elg_amount`, `buy_lg_amount`, `buy_md_amount`, `buy_sm_amount`, optional volume detail, `net_mf_ratio`, `source` | `trade_date` | `trade_date`, `net_mf_amount`, `buy_elg_amount`, `buy_lg_amount`, `buy_md_amount`, `buy_sm_amount` |
+| `margin_detail` | `ts_code`, `trade_date`, `rzye`, `rqye`, `rzmre`, `rzche`, `rzjme`, `rqyl`, `rqmcl`, `rqchl`, `rzrqye`, `source` | `trade_date` | 无 |
 | `income` | `ts_code`, `ann_date`, `f_ann_date`, `end_date`, `report_type`, `total_revenue`, `revenue`, `oper_cost`, `operate_profit`, `total_profit`, `n_income`, `n_income_attr_p`, `income_tax`, `basic_eps`, `diluted_eps`, `source`, optional `raw` | `end_date` | `end_date`, `total_revenue`, `n_income` |
 | `balancesheet` | `ts_code`, `ann_date`, `f_ann_date`, `end_date`, `report_type`, `total_assets`, `total_liab`, `total_hldr_eqy_exc_min_int`, `total_hldr_eqy_inc_min_int`, `money_cap`, `accounts_receiv`, `inventories`, `total_cur_assets`, `total_cur_liab`, `fix_assets`, `source`, optional `raw` | `end_date` | `end_date`, `total_assets`, `total_liab` |
 | `cashflow` | `ts_code`, `ann_date`, `f_ann_date`, `end_date`, `report_type`, `net_profit`, `n_cashflow_act`, `n_cashflow_inv_act`, `n_cash_flows_fnc_act`, `c_cash_equ_end_period`, `source`, optional `raw` | `end_date` | `end_date`, `n_cashflow_act` |
@@ -162,6 +162,8 @@ Eastmoney 作为同一批 dataset key 的 validator/fallback，同时也提供�
 
 开盘啦 feature 请求如果遇到上游错误、登录/浏览器依赖缺失、HTTP 失败、空响应或无法解析，应该作为 failed run 暴露，不应保存为 `ok=True` 的空 payload。`run_kaipanla_batch` 负责把单个 feature 异常汇总到 `results[].ok=False`。
 
+开盘啦 daily/scheduled run 会把 `trade_date` 写入 `payload.trade_date` 和 top-level `trade_date`。overview 查询只信任显式日期字段：`trade_date`、`payload.trade_date`、`params.date`、`params.end_date`、`params.trade_date`。实时 feature 如果没有显式交易日，不再用 `saved_at` 推导交易日，避免把盘中实时记录误当成日终数据。
+
 维护规则：如果某个开盘啦 feature 要升级成一张一等标准表，必须先在本文档新增 canonical dataset/table 章节，再改 UI 或 downstream consumer。
 
 ## NewsCrawler 原文映射
@@ -184,7 +186,7 @@ NewsCrawler 负责新闻采集。DataHub 通过 `MongoRawNewsRepository` 读取 
 | Stock package 标准 row | 已统一 | 所有 public stock client 在写 Mongo 前返回相同 dataset 名和标准 key。 |
 | Stock package Mongo rows | envelope 已统一，row 原样保留 | `stock_dataset_rows.row` 是标准化 row；top-level Mongo 字段只作为搜索/index envelope。 |
 | 财报 raw 字段 | 部分保留 | AkShare 财报 row 保留完整 `raw`，未映射字段可供未来补充。 |
-| Daily K 复权口径 | 需要显式关注 | AkShare `stock_zh_a_hist` 当前使用不复权价格；Eastmoney 主 K 线可用时使用复权价格。没有明确 `adjust` policy 时，不要混合 merge 复权和不复权 row。 |
+| Daily K 复权口径 | 需要显式关注 | AkShare `stock_zh_a_hist` 当前使用不复权价格；Eastmoney 主 K 线可用时使用复权价格。validator 只补主源缺失字段，不覆盖已有 OHLC；没有明确 `adjust` policy 时，不要替换混合复权和不复权 row。 |
 | Market payloads | 未完全统一 | 开盘啦 feature payload 按 feature 保留；只有 downstream consumer 需要稳定字段时才升级为 canonical table。 |
 | News | 已统一 | NewsCrawler provider 统一为 `news.v1`；source-specific details 保存在 `raw_metadata`。 |
 

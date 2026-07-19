@@ -26,6 +26,7 @@ def test_backend_fetch_registry_uses_canonical_data_keys():
     assert FETCH_METHODS["stock.package.sync"].default_provider == "akshare"
     assert FETCH_METHODS["stock.package.sync"].data_key == "stock.package"
     assert "AkShare" in DATA_FETCH_ACTIONS["/api/sync-stock-data"]
+    assert DATA_FETCH_ACTIONS["/api/admin/kaipanla/run"] == "立即执行开盘啦单项抓取"
     assert "Tushare" in FETCH_METHODS["stock.package.sync"].notes
 
 
