@@ -98,5 +98,7 @@ def test_ci_workflow_is_split_but_keeps_validate_gate():
     for dependency in ("hygiene", "tests", "frontend_contract", "compose", "docker_build"):
         assert f"needs.{dependency}.result" in workflow
     assert "python -m pytest -q tests NewsCrawler/tests" in workflow
+    assert "-i frontend/admin/tailwind.input.css" in workflow
+    assert "stock_pipeline/web_static" not in workflow
     assert "docker compose -f docker-compose.prod.yml config --quiet" in workflow
     assert "docker build --tag valuescope:ci ." in workflow

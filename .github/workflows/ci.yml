@@ -74,7 +74,7 @@ jobs:
         run: |
           npm ci
           ./node_modules/.bin/tailwindcss \
-            -i stock_pipeline/web_static/tailwind.input.css \
+            -i frontend/admin/tailwind.input.css \
             -o /tmp/valuescope-tailwind.css
           test -s /tmp/valuescope-tailwind.css
 
