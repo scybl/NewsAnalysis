@@ -1,6 +1,7 @@
 import json
+import time
 
-from stock_pipeline.task_queue import HEAVY_IO, NORMAL_IO, QUEUE_OWNER, ResourceAwareTaskQueue
+from stock_pipeline.task_queue import HEAVY_IO, LIGHT_IO, NORMAL_IO, QUEUE_OWNER, QUEUE_SCHEMA_VERSION, ResourceAwareTaskQueue
 from stock_pipeline.web import TaskRegistry
 
 
@@ -58,6 +59,55 @@ def test_resource_queue_runs_fifo_when_pressure_is_ok(tmp_path):
     assert queue.snapshot()["counts"]["succeeded"] == 2
 
 
+def test_resource_queue_prioritizes_earliest_scheduled_task_when_switching(tmp_path):
+    registry = FakeTaskRegistry()
+    for task_id in ["manual", "scheduled-a", "scheduled-b"]:
+        registry.create_task(task_id)
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0},
+        poll_seconds=0.1,
+    )
+    seen = []
+
+    def handler(task_id, _payload):
+        seen.append(task_id)
+        registry.update_task(task_id, status="succeeded")
+
+    queue.register("handler", handler)
+    queue.enqueue(
+        task_id="manual",
+        handler_key="handler",
+        kind="manual",
+        title="Manual",
+        payload={"trigger": "manual"},
+        resource_level=NORMAL_IO,
+    )
+    queue.enqueue(
+        task_id="scheduled-a",
+        handler_key="handler",
+        kind="scheduled",
+        title="Scheduled A",
+        payload={"trigger": "scheduled"},
+        resource_level=NORMAL_IO,
+    )
+    queue.enqueue(
+        task_id="scheduled-b",
+        handler_key="handler",
+        kind="scheduled",
+        title="Scheduled B",
+        payload={"trigger": "scheduled"},
+        resource_level=NORMAL_IO,
+    )
+
+    queue._run_or_defer(queue._next_ready_item())
+    queue._run_or_defer(queue._next_ready_item())
+    queue._run_or_defer(queue._next_ready_item())
+
+    assert seen == ["scheduled-a", "scheduled-b", "manual"]
+
+
 def test_resource_queue_defers_head_task_when_memory_is_pressured(tmp_path):
     registry = FakeTaskRegistry()
     registry.create_task("heavy")
@@ -81,11 +131,11 @@ def test_resource_queue_defers_head_task_when_memory_is_pressured(tmp_path):
     assert any("资源承压" in event["message"] for event in registry.events)
 
 
-def test_resource_queue_keeps_later_tasks_behind_deferred_head(tmp_path):
+def test_resource_queue_allows_ready_light_task_behind_deferred_heavy_head(tmp_path):
     registry = FakeTaskRegistry()
     registry.create_task("heavy")
-    registry.create_task("normal")
-    pressure = {"mem_available_mb": 300, "swap_used_percent": 80, "load_1m": 20}
+    registry.create_task("light")
+    pressure = {"mem_available_mb": 300, "swap_used_percent": 80, "load_1m": 1}
     queue = ResourceAwareTaskQueue(
         tmp_path / "task_queue.json",
         registry,
@@ -95,12 +145,12 @@ def test_resource_queue_keeps_later_tasks_behind_deferred_head(tmp_path):
     seen = []
     queue.register("handler", lambda task_id, _payload: seen.append(task_id))
     queue.enqueue(task_id="heavy", handler_key="handler", kind="test", title="Heavy", resource_level=HEAVY_IO)
-    queue.enqueue(task_id="normal", handler_key="handler", kind="test", title="Normal", resource_level=NORMAL_IO)
+    queue.enqueue(task_id="light", handler_key="handler", kind="test", title="Light", resource_level=LIGHT_IO)
 
     queue._run_or_defer(queue._next_ready_item())
+    queue._run_or_defer(queue._next_ready_item())
 
-    assert seen == []
-    assert queue._next_ready_item() is None
+    assert seen == ["light"]
 
 
 def test_task_registry_preserves_queued_queue_tasks_across_restart(tmp_path):
@@ -113,31 +163,129 @@ def test_task_registry_preserves_queued_queue_tasks_across_restart(tmp_path):
     restarted = TaskRegistry(path)
 
     assert restarted.get_task("queued-task")["status"] == "queued"
-    assert restarted.get_task("running-task")["status"] == "failed"
-    assert "队列任务保留" in restarted.get_task("queued-task")["events"][-1]["message"]
+    assert restarted.get_task("running-task")["status"] == "queued"
+    assert restarted.get_task("running-task")["metadata"]["queue_status"] == "recovering"
+    assert "等待资源队列恢复或放弃" in restarted.get_task("queued-task")["events"][-1]["message"]
 
 
-def test_resource_queue_marks_running_items_failed_when_queue_file_is_reloaded(tmp_path):
+def test_resource_queue_resumes_running_items_with_checkpoint_after_reload(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("a", metadata={"queued_by": QUEUE_OWNER})
     path = tmp_path / "task_queue.json"
     path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": QUEUE_SCHEMA_VERSION,
                 "items": [
-                    {"task_id": "a", "status": "running", "updated_epoch": 1},
-                    {"task_id": "b", "status": "queued", "updated_epoch": 2},
+                    {
+                        "task_id": "a",
+                        "handler_key": "handler",
+                        "status": "running",
+                        "updated_epoch": 1,
+                        "checkpoint": {"version": 1, "stage": "unit", "details": {"cursor": 2}},
+                    },
                 ],
             }
         ),
         encoding="utf-8",
     )
 
-    queue = ResourceAwareTaskQueue(path, FakeTaskRegistry(), poll_seconds=0.1)
+    queue = ResourceAwareTaskQueue(path, registry, poll_seconds=0.1)
     items = {item["task_id"]: item for item in queue.snapshot()["items"]}
 
-    assert items["a"]["status"] == "failed"
-    assert "服务重启" in items["a"]["error"]
-    assert items["b"]["status"] == "queued"
+    assert items["a"]["status"] == "queued"
+    assert items["a"]["resume_count"] == 1
+    assert items["a"]["payload"]["resume_checkpoint"]["details"]["cursor"] == 2
+    assert registry.tasks["a"]["status"] == "queued"
+    assert registry.tasks["a"]["metadata"]["queue_resume_pending"] is True
+
+
+def test_resource_queue_abandons_running_items_without_checkpoint_after_reload(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("a", metadata={"queued_by": QUEUE_OWNER})
+    path = tmp_path / "task_queue.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": QUEUE_SCHEMA_VERSION,
+                "items": [{"task_id": "a", "handler_key": "handler", "status": "running", "updated_epoch": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    queue = ResourceAwareTaskQueue(path, registry, poll_seconds=0.1)
+    items = {item["task_id"]: item for item in queue.snapshot()["items"]}
+
+    assert items["a"]["status"] == "abandoned"
+    assert "缺少可恢复 checkpoint" in items["a"]["error"]
+    assert registry.tasks["a"]["status"] == "failed"
+    assert registry.tasks["a"]["metadata"]["queue_status"] == "abandoned_incompatible"
+
+
+def test_resource_queue_abandons_future_queue_file_version(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("future", metadata={"queued_by": QUEUE_OWNER})
+    path = tmp_path / "task_queue.json"
+    path.write_text(
+        json.dumps({"version": QUEUE_SCHEMA_VERSION + 100, "items": [{"task_id": "future", "status": "queued"}]}),
+        encoding="utf-8",
+    )
+
+    queue = ResourceAwareTaskQueue(path, registry, poll_seconds=0.1)
+
+    assert queue.snapshot()["items"] == []
+    assert not path.exists()
+    assert list(tmp_path.glob("task_queue.json.abandoned.*.json"))
+    assert registry.tasks["future"]["status"] == "failed"
+    assert "高于当前支持版本" in registry.tasks["future"]["error"]
+
+
+def test_resource_queue_abandons_recovering_registry_task_when_queue_item_is_missing(tmp_path):
+    tasks_path = tmp_path / "admin_tasks.json"
+    registry = TaskRegistry(tasks_path)
+    registry.create_task("running-task", "daily_market", "每日股票数据更新", metadata={"queued_by": QUEUE_OWNER})
+    registry.update_task("running-task", status="running")
+    restarted = TaskRegistry(tasks_path)
+
+    ResourceAwareTaskQueue(tmp_path / "missing_task_queue.json", restarted, poll_seconds=0.1)
+
+    task = restarted.get_task("running-task")
+    assert task["status"] == "failed"
+    assert "未找到对应队列项" in task["error"]
+
+
+def test_resource_queue_abandons_handler_version_mismatch_when_switching(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("old", metadata={"queued_by": QUEUE_OWNER})
+    path = tmp_path / "task_queue.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": QUEUE_SCHEMA_VERSION,
+                "items": [
+                    {
+                        "task_id": "old",
+                        "handler_key": "handler",
+                        "handler_version": 1,
+                        "status": "queued",
+                        "enqueued_epoch": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    queue = ResourceAwareTaskQueue(path, registry, poll_seconds=0.1)
+    seen = []
+    queue.register("handler", lambda task_id, _payload: seen.append(task_id), handler_version=2)
+
+    queue._run_or_defer(queue._next_ready_item())
+    items = {item["task_id"]: item for item in queue.snapshot()["items"]}
+
+    assert seen == []
+    assert items["old"]["status"] == "abandoned"
+    assert registry.tasks["old"]["status"] == "failed"
 
 
 def test_resource_queue_checkpoint_pauses_running_task_until_pressure_recovers(tmp_path):
@@ -164,8 +312,91 @@ def test_resource_queue_checkpoint_pauses_running_task_until_pressure_recovers(t
     result = queue.checkpoint("heavy", resource_level=HEAVY_IO, stage="unit_test")
 
     assert result["paused"] is True
+    assert result["checkpoint"]["stage"] == "unit_test"
     assert sleeps == [5.0, 10.0]
+    item = queue.snapshot()["items"][0]
+    assert item["checkpoint"]["version"] == 1
+    assert item["checkpoint"]["stage"] == "unit_test"
     stages = [event["stage"] for event in registry.events]
     assert "throttled" in stages
     assert "resumed" in stages
     assert registry.tasks["heavy"]["metadata"]["queue_status"] == "running"
+    assert registry.tasks["heavy"]["metadata"]["queue_checkpoint_stage"] == "unit_test"
+
+
+def test_resource_queue_checkpoint_can_yield_running_heavy_task(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("heavy")
+    registry.create_task("light")
+    pressure = {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0}
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: pressure,
+        poll_seconds=0.1,
+    )
+    seen = []
+
+    def heavy_handler(task_id, _payload):
+        nonlocal pressure
+        pressure = {"mem_available_mb": 300, "swap_used_percent": 90, "load_1m": 1}
+        queue.checkpoint(
+            task_id,
+            resource_level=HEAVY_IO,
+            stage="unit_test",
+            details={"stage": "before_stock", "current": 2},
+            yield_on_pressure=True,
+            defer_seconds=120,
+        )
+        seen.append("heavy-after-checkpoint")
+
+    def light_handler(task_id, _payload):
+        seen.append(task_id)
+        registry.update_task(task_id, status="succeeded")
+
+    queue.register("heavy_handler", heavy_handler)
+    queue.register("light_handler", light_handler)
+    queue.enqueue(task_id="heavy", handler_key="heavy_handler", kind="test", title="Heavy", resource_level=HEAVY_IO)
+    queue.enqueue(task_id="light", handler_key="light_handler", kind="test", title="Light", resource_level=LIGHT_IO)
+
+    queue._run_or_defer(queue._next_ready_item())
+    queue._run_or_defer(queue._next_ready_item())
+
+    items = {item["task_id"]: item for item in queue.snapshot()["items"]}
+    assert seen == ["light"]
+    assert items["heavy"]["status"] == "deferred"
+    assert items["heavy"]["payload"]["resume_checkpoint"]["details"]["current"] == 2
+    assert items["heavy"]["run_after_epoch"] > time.time()
+    assert registry.tasks["heavy"]["status"] == "queued"
+    assert registry.tasks["heavy"]["metadata"]["queue_resume_pending"] is True
+
+
+def test_resource_queue_migrates_old_kaipanla_items_to_light_io_with_trade_date(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("20260714_214524_abc12345", metadata={"queued_by": QUEUE_OWNER})
+    path = tmp_path / "task_queue.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": QUEUE_SCHEMA_VERSION,
+                "items": [
+                    {
+                        "task_id": "20260714_214524_abc12345",
+                        "handler_key": "kaipanla",
+                        "kind": "kaipanla",
+                        "status": "queued",
+                        "resource_level": NORMAL_IO,
+                        "payload": {"trigger": "scheduled", "features": ["daily_data"]},
+                        "enqueued_epoch": 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    queue = ResourceAwareTaskQueue(path, registry, poll_seconds=0.1)
+    item = queue.snapshot()["items"][0]
+
+    assert item["resource_level"] == LIGHT_IO
+    assert item["payload"]["trade_date"] == "20260714"

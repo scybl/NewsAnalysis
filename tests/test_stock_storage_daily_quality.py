@@ -155,3 +155,28 @@ def test_merge_trade_date_rows_prefers_richer_market_row():
 
     assert rows[0]["source"] == "eastmoney"
     assert rows[0]["amount"] == 88343021.0
+
+
+def test_sync_daily_market_batch_resumes_from_checkpoint(monkeypatch):
+    synced = []
+    checkpoints = []
+    monkeypatch.setattr(stock_storage, "list_local_stock_codes", lambda: ["000001.SZ", "000002.SZ", "000003.SZ"])
+    monkeypatch.setattr(
+        stock_storage,
+        "sync_daily_market_for_stock",
+        lambda _client, ts_code, _date: synced.append(ts_code) or {"ok": True, "ts_code": ts_code, "status": "updated"},
+    )
+    monkeypatch.setattr(stock_storage, "_refresh_daily_k_coverage_safe", lambda codes, date: {"codes": list(codes), "date": date})
+
+    result = stock_storage.sync_daily_market_for_existing_stocks(
+        _FakeClient({}),
+        target_date="20260714",
+        checkpoint=lambda details: checkpoints.append(details),
+        resume_checkpoint={"details": {"stage": "before_stock", "current": 2}},
+    )
+
+    assert synced == ["000002.SZ", "000003.SZ"]
+    assert [item["ts_code"] for item in result["items"]] == ["000002.SZ", "000003.SZ"]
+    assert result["resumed"] is True
+    assert result["updated"] == 2
+    assert checkpoints[0]["current"] == 2

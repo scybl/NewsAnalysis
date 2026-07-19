@@ -375,9 +375,22 @@ def sync_daily_market_for_existing_stocks(
     target_date: str | None = None,
     codes: list[str] | None = None,
     checkpoint: TaskCheckpoint | None = None,
+    resume_checkpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     date = target_date or today_yyyymmdd()
     selected = [normalize_ts_code(code) for code in (codes or list_local_stock_codes())]
+    resume_details = resume_checkpoint.get("details") if isinstance(resume_checkpoint, dict) else {}
+    resume_stage = str(resume_details.get("stage") or "")
+    start_index = 1
+    skip_stock_loop = False
+    if resume_stage == "before_stock":
+        try:
+            start_index = max(1, int(resume_details.get("current") or 1))
+        except (TypeError, ValueError):
+            start_index = 1
+    elif resume_stage == "before_coverage_refresh":
+        start_index = len(selected) + 1
+        skip_stock_loop = True
     result = {
         "ok": True,
         "target_date": date,
@@ -388,7 +401,13 @@ def sync_daily_market_for_existing_stocks(
         "failed": 0,
         "items": [],
     }
+    if resume_checkpoint:
+        result["resumed"] = True
+        result["resume_stage"] = resume_stage or str(resume_checkpoint.get("stage") or "")
+        result["resume_start_index"] = start_index
     for index, ts_code in enumerate(selected, start=1):
+        if index < start_index or skip_stock_loop:
+            continue
         _run_checkpoint(checkpoint, stage="before_stock", ts_code=ts_code, current=index, total=len(selected), target_date=date)
         try:
             item = sync_daily_market_for_stock(client, ts_code, date)

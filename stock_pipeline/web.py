@@ -70,8 +70,9 @@ from .stock_storage import (
 )
 from .stock_storage_repair import repair_stock_storage_issue, report_stock_storage_issue, run_stock_storage_health_check
 from .task_queue import HEAVY_IO as QUEUE_HEAVY_IO
+from .task_queue import LIGHT_IO as QUEUE_LIGHT_IO
 from .task_queue import NORMAL_IO as QUEUE_NORMAL_IO
-from .task_queue import QUEUE_OWNER, ResourceAwareTaskQueue
+from .task_queue import QUEUE_OWNER, QueueTaskDeferred, ResourceAwareTaskQueue
 from .ths_minute import build_config as build_ths_minute_config
 from .ths_minute import fetch_and_store_minutes
 from .tushare_client import TushareClient, TushareError
@@ -2732,11 +2733,24 @@ class TaskRegistry:
             if task.get("status") not in {"queued", "running", "stopping"}:
                 continue
             metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-            if task.get("status") == "queued" and metadata.get("queued_by") == QUEUE_OWNER:
+            if metadata.get("queued_by") == QUEUE_OWNER:
+                previous_status = str(task.get("status") or "")
+                task["status"] = "queued"
                 task["updated_at"] = now
                 task["updated_epoch"] = now_epoch
+                task_metadata = task.setdefault("metadata", {})
+                task_metadata["queue_status"] = (
+                    "recovering"
+                    if previous_status in {"running", "stopping"}
+                    else str(task_metadata.get("queue_status") or "queued")
+                )
                 task.setdefault("events", []).append(
-                    {"time": now, "stage": "queued", "message": "服务重启，队列任务保留等待重新调度。", "details": {}}
+                    {
+                        "time": now,
+                        "stage": "queued",
+                        "message": "服务重启，队列任务保留，等待资源队列恢复或放弃。",
+                        "details": {"previous_status": previous_status},
+                    }
                 )
                 changed = True
                 continue
@@ -3528,7 +3542,9 @@ class DailyMarketScheduler:
                 task_id,
                 str((payload or {}).get("target_date") or today_yyyymmdd()),
                 str((payload or {}).get("trigger") or "queued"),
+                dict((payload or {}).get("resume_checkpoint") or {}),
             ),
+            handler_version=2,
         )
         self.thread = threading.Thread(target=self._loop, name="daily-market-scheduler", daemon=True)
         self.thread.start()
@@ -3616,7 +3632,7 @@ class DailyMarketScheduler:
         )
         return self.status()
 
-    def _run_task(self, task_id: str, target_date: str, trigger: str) -> None:
+    def _run_task(self, task_id: str, target_date: str, trigger: str, resume_checkpoint: dict[str, Any] | None = None) -> None:
         try:
             client = _public_stock_client(self.app.settings)
             stock_list = self.app.index.stocks(refresh=False)
@@ -3631,11 +3647,13 @@ class DailyMarketScheduler:
             result = sync_daily_market_for_existing_stocks(
                 client,
                 target_date=target_date,
+                resume_checkpoint=resume_checkpoint or None,
                 checkpoint=lambda details: self.app.task_queue.checkpoint(
                     task_id,
                     resource_level=QUEUE_HEAVY_IO,
                     stage=f"daily_market_{details.get('stage') or 'checkpoint'}",
                     details=details,
+                    yield_on_pressure=True,
                 ),
             )
             result["stock_list_count"] = len(stock_list)
@@ -3653,6 +3671,8 @@ class DailyMarketScheduler:
                 self.config["last_result"] = result
                 self.config["last_error"] = ""
                 self._write_config_locked()
+        except QueueTaskDeferred:
+            raise
         except Exception as exc:  # noqa: BLE001 - report task failure
             self.task_registry.update_task(task_id, status="failed", error=str(exc))
             self.task_registry.add_event(task_id, "failed", "每日股票数据更新失败。", {"error": str(exc)})
@@ -3705,9 +3725,11 @@ class KaipanlaScheduler:
             lambda task_id, payload: self._run_task(
                 task_id,
                 str((payload or {}).get("trigger") or "queued"),
+                str((payload or {}).get("trade_date") or today_yyyymmdd()),
                 list((payload or {}).get("features") or []),
                 dict((payload or {}).get("params_by_feature") or {}),
             ),
+            handler_version=2,
         )
         self.thread = threading.Thread(target=self._loop, name="kaipanla-scheduler", daemon=True)
         self.thread.start()
@@ -3787,22 +3809,22 @@ class KaipanlaScheduler:
                 raise RuntimeError("尚未配置开盘啦抓取功能。")
             params_by_feature = dict(self.config.get("params_by_feature") or {})
             task_id = timestamp() + "_" + uuid.uuid4().hex[:8]
+            trade_date = today_yyyymmdd()
             self.config["last_task_id"] = task_id
             self._write_config_locked()
-        self.task_registry.create_task(task_id, "kaipanla", "开盘啦数据抓取", metadata={"trigger": trigger, "features": features})
+        self.task_registry.create_task(task_id, "kaipanla", "开盘啦数据抓取", metadata={"trigger": trigger, "features": features, "trade_date": trade_date})
         self.task_queue.enqueue(
             task_id=task_id,
             handler_key="kaipanla",
             kind="kaipanla",
             title="开盘啦数据抓取",
-            payload={"trigger": trigger, "features": features, "params_by_feature": params_by_feature},
-            resource_level=QUEUE_NORMAL_IO,
+            payload={"trigger": trigger, "trade_date": trade_date, "features": features, "params_by_feature": params_by_feature},
+            resource_level=QUEUE_LIGHT_IO,
         )
         return self.status()
 
-    def _run_task(self, task_id: str, trigger: str, features: list[str], params_by_feature: dict[str, dict]) -> None:
+    def _run_task(self, task_id: str, trigger: str, trade_date: str, features: list[str], params_by_feature: dict[str, dict]) -> None:
         try:
-            trade_date = today_yyyymmdd()
             result = run_kaipanla_batch(
                 features,
                 params_by_feature,
@@ -3811,7 +3833,7 @@ class KaipanlaScheduler:
                 trade_date=trade_date,
                 checkpoint=lambda details: self.task_queue.checkpoint(
                     task_id,
-                    resource_level=QUEUE_NORMAL_IO,
+                    resource_level=QUEUE_LIGHT_IO,
                     stage=f"kaipanla_{details.get('stage') or 'checkpoint'}",
                     details=details,
                 ),

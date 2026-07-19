@@ -60,6 +60,26 @@ def make_scheduler(tmp_path):
     return scheduler
 
 
+def make_kaipanla_scheduler(tmp_path):
+    scheduler = web.KaipanlaScheduler.__new__(web.KaipanlaScheduler)
+    scheduler.config_path = tmp_path / "kaipanla_scheduler.json"
+    scheduler.task_registry = FakeTaskRegistry()
+    scheduler.task_queue = FakeTaskQueue()
+    scheduler.lock = threading.Lock()
+    scheduler.worker = None
+    scheduler.config = {
+        "enabled": True,
+        "time": "21:45",
+        "features": ["daily_data"],
+        "params_by_feature": {"daily_data": {"date": "ignored"}},
+        "last_run_date": "",
+        "last_run_at": "",
+        "last_task_id": "",
+        "last_result": {},
+    }
+    return scheduler
+
+
 def test_daily_market_scheduler_start_uses_backfill_target(monkeypatch, tmp_path):
     scheduler = make_scheduler(tmp_path)
     monkeypatch.setattr(
@@ -90,7 +110,7 @@ def test_daily_market_scheduler_records_stock_list_and_quote_result(monkeypatch,
     monkeypatch.setattr(
         web,
         "sync_daily_market_for_existing_stocks",
-        lambda client, target_date=None, checkpoint=None: {"updated": 2, "skipped": 1, "no_data": 0, "failed": 0},
+        lambda client, target_date=None, checkpoint=None, resume_checkpoint=None: {"updated": 2, "skipped": 1, "no_data": 0, "failed": 0},
     )
 
     scheduler._run_task("task-1", "20260629", "manual")
@@ -105,6 +125,45 @@ def test_daily_market_scheduler_records_stock_list_and_quote_result(monkeypatch,
     assert any(event["details"].get("stock_list_count") == 2 for event in scheduler.task_registry.events)
 
 
+def test_daily_market_scheduler_forwards_resume_checkpoint(monkeypatch, tmp_path):
+    scheduler = make_scheduler(tmp_path)
+    captured = {}
+    resume_checkpoint = {"stage": "daily_market_before_stock", "details": {"stage": "before_stock", "current": 2}}
+    monkeypatch.setattr(web, "_public_stock_client", lambda settings: SimpleNamespace(source="public"))
+
+    def fake_sync(client, target_date=None, checkpoint=None, resume_checkpoint=None):
+        captured["target_date"] = target_date
+        captured["resume_checkpoint"] = resume_checkpoint
+        return {"updated": 1, "skipped": 0, "no_data": 0, "failed": 0}
+
+    monkeypatch.setattr(web, "sync_daily_market_for_existing_stocks", fake_sync)
+
+    scheduler._run_task("task-1", "20260629", "manual", resume_checkpoint)
+
+    assert captured["target_date"] == "20260629"
+    assert captured["resume_checkpoint"] == resume_checkpoint
+    assert scheduler.task_registry.updates[-1]["status"] == "succeeded"
+
+
+def test_daily_market_scheduler_propagates_queue_defer(monkeypatch, tmp_path):
+    scheduler = make_scheduler(tmp_path)
+    monkeypatch.setattr(web, "_public_stock_client", lambda settings: SimpleNamespace(source="public"))
+
+    def fake_sync(*_args, **_kwargs):
+        raise web.QueueTaskDeferred("task-1", "pressure")
+
+    monkeypatch.setattr(web, "sync_daily_market_for_existing_stocks", fake_sync)
+
+    try:
+        scheduler._run_task("task-1", "20260629", "manual")
+    except web.QueueTaskDeferred:
+        pass
+    else:
+        raise AssertionError("QueueTaskDeferred should propagate to the queue worker")
+
+    assert not scheduler.task_registry.updates
+
+
 def test_daily_market_scheduler_fails_when_market_stock_list_is_empty(monkeypatch, tmp_path):
     scheduler = make_scheduler(tmp_path)
     scheduler.app.index.stocks = lambda *, refresh: []
@@ -116,3 +175,14 @@ def test_daily_market_scheduler_fails_when_market_stock_list_is_empty(monkeypatc
     assert scheduler.config["last_error"]
     assert scheduler.task_registry.updates[-1]["status"] == "failed"
     assert "本地股票列表为空" in scheduler.task_registry.updates[-1]["error"]
+
+
+def test_kaipanla_scheduler_freezes_trade_date_in_queue_payload(monkeypatch, tmp_path):
+    scheduler = make_kaipanla_scheduler(tmp_path)
+    monkeypatch.setattr(web, "today_yyyymmdd", lambda: "20260714")
+
+    scheduler._start_run("scheduled")
+
+    assert scheduler.task_registry.created[-1]["metadata"]["trade_date"] == "20260714"
+    assert scheduler.task_queue.enqueued[-1]["payload"]["trade_date"] == "20260714"
+    assert scheduler.task_queue.enqueued[-1]["resource_level"] == web.QUEUE_LIGHT_IO

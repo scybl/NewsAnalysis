@@ -11,13 +11,25 @@ from .utils import ensure_dir, timestamp, write_json
 
 
 HEAVY_IO = "heavy_io"
+LIGHT_IO = "light_io"
 NORMAL_IO = "normal"
 QUEUE_OWNER = "resource_queue"
+QUEUE_SCHEMA_VERSION = 2
+CHECKPOINT_VERSION = 1
+DEFAULT_PAYLOAD_VERSION = 1
+DEFAULT_HANDLER_VERSION = 1
 
 TaskHandler = Callable[[str, dict[str, Any]], Any]
 PressureReader = Callable[[], dict[str, Any]]
 ExternalBlockers = Callable[[str], list[dict[str, Any]]]
 SleepFunc = Callable[[float], None]
+
+
+class QueueTaskDeferred(RuntimeError):
+    def __init__(self, task_id: str, reason: str):
+        super().__init__(reason)
+        self.task_id = task_id
+        self.reason = reason
 
 
 def read_system_pressure() -> dict[str, Any]:
@@ -50,10 +62,12 @@ def pressure_reasons(
     max_swap_used_percent: float | None = None,
     max_load_1m: float | None = None,
 ) -> list[str]:
-    heavy = resource_level == HEAVY_IO
-    min_available_mb = min_available_mb if min_available_mb is not None else (1200 if heavy else 700)
-    max_swap_used_percent = max_swap_used_percent if max_swap_used_percent is not None else (35.0 if heavy else 60.0)
-    max_load_1m = max_load_1m if max_load_1m is not None else (6.0 if heavy else 12.0)
+    level = str(resource_level or NORMAL_IO)
+    heavy = level == HEAVY_IO
+    light = level == LIGHT_IO
+    min_available_mb = min_available_mb if min_available_mb is not None else (1200 if heavy else (250 if light else 700))
+    max_swap_used_percent = max_swap_used_percent if max_swap_used_percent is not None else (35.0 if heavy else (95.0 if light else 60.0))
+    max_load_1m = max_load_1m if max_load_1m is not None else (6.0 if heavy else (16.0 if light else 12.0))
     reasons: list[str] = []
     mem_available = int(pressure.get("mem_available_mb") or 0)
     swap_used = float(pressure.get("swap_used_percent") or 0)
@@ -74,9 +88,11 @@ def throttle_reasons(
     min_available_mb: int | None = None,
     max_swap_used_percent: float | None = None,
 ) -> list[str]:
-    heavy = resource_level == HEAVY_IO
-    min_available_mb = min_available_mb if min_available_mb is not None else (700 if heavy else 350)
-    max_swap_used_percent = max_swap_used_percent if max_swap_used_percent is not None else (85.0 if heavy else 92.0)
+    level = str(resource_level or NORMAL_IO)
+    heavy = level == HEAVY_IO
+    light = level == LIGHT_IO
+    min_available_mb = min_available_mb if min_available_mb is not None else (700 if heavy else (200 if light else 350))
+    max_swap_used_percent = max_swap_used_percent if max_swap_used_percent is not None else (85.0 if heavy else (97.0 if light else 92.0))
     reasons: list[str] = []
     mem_available = int(pressure.get("mem_available_mb") or 0)
     swap_used = float(pressure.get("swap_used_percent") or 0)
@@ -107,14 +123,19 @@ class ResourceAwareTaskQueue:
         self.poll_seconds = max(0.1, float(poll_seconds))
         self.lock = threading.Lock()
         self.handlers: dict[str, TaskHandler] = {}
-        self.items: dict[str, dict[str, Any]] = self._load_items()
+        self.handler_versions: dict[str, int] = {}
+        self.items: dict[str, dict[str, Any]] = {}
+        self.items = self._load_items()
+        self._abandon_orphaned_recovering_tasks()
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         if autostart:
             self.start()
 
-    def register(self, handler_key: str, handler: TaskHandler) -> None:
-        self.handlers[str(handler_key)] = handler
+    def register(self, handler_key: str, handler: TaskHandler, *, handler_version: int = DEFAULT_HANDLER_VERSION) -> None:
+        key = str(handler_key)
+        self.handlers[key] = handler
+        self.handler_versions[key] = max(1, int(handler_version))
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -134,10 +155,13 @@ class ResourceAwareTaskQueue:
     ) -> dict[str, Any]:
         now = time.time()
         item = {
+            "queue_schema_version": QUEUE_SCHEMA_VERSION,
             "task_id": task_id,
             "handler_key": handler_key,
+            "handler_version": self.handler_versions.get(str(handler_key), DEFAULT_HANDLER_VERSION),
             "kind": kind,
             "title": title,
+            "payload_version": DEFAULT_PAYLOAD_VERSION,
             "payload": payload or {},
             "resource_level": resource_level,
             "status": "queued",
@@ -149,6 +173,8 @@ class ResourceAwareTaskQueue:
             "defer_count": 0,
             "last_pressure": {},
             "last_defer_reason": "",
+            "checkpoint_version": CHECKPOINT_VERSION,
+            "checkpoint": {},
             "started_at": "",
             "finished_at": "",
             "error": "",
@@ -162,7 +188,14 @@ class ResourceAwareTaskQueue:
             self._write_locked()
         self.task_registry.update_task(
             task_id,
-            metadata={"queued_by": QUEUE_OWNER, "queue_status": "queued", "resource_level": resource_level},
+            metadata={
+                "queued_by": QUEUE_OWNER,
+                "queue_status": "queued",
+                "resource_level": resource_level,
+                "queue_schema_version": QUEUE_SCHEMA_VERSION,
+                "queue_handler_version": item["handler_version"],
+                "queue_payload_version": DEFAULT_PAYLOAD_VERSION,
+            },
         )
         self.task_registry.add_event(
             task_id,
@@ -191,24 +224,41 @@ class ResourceAwareTaskQueue:
     def _next_ready_item(self) -> dict[str, Any] | None:
         now = time.time()
         with self.lock:
+            pending = [
+                item
+                for item in self.items.values()
+                if item.get("status") in {"queued", "deferred"}
+            ]
+            ready = [
+                item
+                for item in pending
+                if float(item.get("run_after_epoch") or 0) <= now
+            ]
+            if not ready:
+                return None
+            scheduled = sorted(
+                [item for item in ready if _is_scheduled_item(item)],
+                key=_queue_order_key,
+            )
+            if scheduled:
+                item = scheduled[0]
+                return json.loads(json.dumps(item, ensure_ascii=False, default=str))
             ordered = sorted(
-                [
-                    item
-                    for item in self.items.values()
-                    if item.get("status") in {"queued", "deferred"}
-                ],
-                key=lambda row: float(row.get("enqueued_epoch") or 0),
+                ready,
+                key=_queue_order_key,
             )
             if not ordered:
                 return None
             item = ordered[0]
-            if float(item.get("run_after_epoch") or 0) > now:
-                return None
             return json.loads(json.dumps(item, ensure_ascii=False, default=str))
 
     def _run_or_defer(self, item: dict[str, Any]) -> None:
         task_id = str(item.get("task_id") or "")
         handler_key = str(item.get("handler_key") or "")
+        version_error = self._handler_version_error(item)
+        if version_error:
+            self._abandon_item(task_id, version_error, item=item)
+            return
         handler = self.handlers.get(handler_key)
         if handler is None:
             self._defer(item, "任务处理器尚未注册，等待服务完成初始化。", {})
@@ -235,6 +285,8 @@ class ResourceAwareTaskQueue:
                     current["updated_at"] = timestamp()
                     current["updated_epoch"] = time.time()
                     self._write_locked()
+        except QueueTaskDeferred:
+            return
         except Exception as exc:  # noqa: BLE001 - queue must keep serving later tasks
             self.task_registry.update_task(task_id, status="failed", error=str(exc))
             self.task_registry.add_event(task_id, "failed", "队列任务执行失败。", {"error": str(exc)})
@@ -260,7 +312,7 @@ class ResourceAwareTaskQueue:
             current["updated_epoch"] = time.time()
             current["last_pressure"] = pressure
             self._write_locked()
-        self.task_registry.update_task(task_id, status="running", metadata={"queue_status": "running"})
+        self.task_registry.update_task(task_id, status="running", metadata={"queue_status": "running", "queue_resume_pending": False})
         self.task_registry.add_event(task_id, "running", "资源队列开始执行任务。", {"pressure": pressure})
 
     def _defer(self, item: dict[str, Any], reason: str, pressure: dict[str, Any]) -> None:
@@ -299,12 +351,15 @@ class ResourceAwareTaskQueue:
         details: dict[str, Any] | None = None,
         min_available_mb: int | None = None,
         max_swap_used_percent: float | None = None,
+        yield_on_pressure: bool = False,
+        defer_seconds: int | None = None,
     ) -> dict[str, Any]:
         started = time.time()
         paused = False
         pause_count = 0
         last_event_epoch = 0.0
         level = resource_level or self._item_resource_level(task_id)
+        checkpoint = self._record_checkpoint(task_id, stage=stage, details=details or {}, resource_level=level)
         while not self.stop_event.is_set():
             pressure = self.pressure_reader()
             reasons = throttle_reasons(
@@ -317,10 +372,20 @@ class ResourceAwareTaskQueue:
                 pause_seconds = int(time.time() - started)
                 if paused:
                     self._mark_throttle_resumed(task_id, stage=stage, pause_seconds=pause_seconds, pressure=pressure)
-                return {"paused": paused, "pause_seconds": pause_seconds, "pressure": pressure}
+                return {"paused": paused, "pause_seconds": pause_seconds, "pressure": pressure, "checkpoint": checkpoint}
             pause_count += 1
             delay = min(30.0, 5.0 * (2 ** min(pause_count - 1, 3)))
             reason = "；".join(reasons)
+            if yield_on_pressure:
+                self._yield_running_item(
+                    task_id,
+                    reason=reason,
+                    pressure=pressure,
+                    checkpoint=checkpoint,
+                    stage=stage,
+                    details=details or {},
+                    defer_seconds=defer_seconds,
+                )
             now = time.time()
             if not paused or now - last_event_epoch >= 60:
                 self._mark_throttled(
@@ -335,7 +400,90 @@ class ResourceAwareTaskQueue:
                 last_event_epoch = now
             paused = True
             self.sleep_func(delay)
-        return {"paused": paused, "pause_seconds": int(time.time() - started), "pressure": {}}
+        return {"paused": paused, "pause_seconds": int(time.time() - started), "pressure": {}, "checkpoint": checkpoint}
+
+    def _yield_running_item(
+        self,
+        task_id: str,
+        *,
+        reason: str,
+        pressure: dict[str, Any],
+        checkpoint: dict[str, Any],
+        stage: str,
+        details: dict[str, Any],
+        defer_seconds: int | None = None,
+    ) -> None:
+        with self.lock:
+            current = self.items.get(task_id)
+            if not current or current.get("status") != "running":
+                raise QueueTaskDeferred(task_id, reason)
+            defer_count = int(current.get("defer_count") or 0) + 1
+            delay = int(defer_seconds if defer_seconds is not None else min(1800, 60 * (2 ** min(defer_count - 1, 5))))
+            payload = dict(current.get("payload") or {})
+            payload["resume_checkpoint"] = checkpoint
+            current["payload"] = payload
+            current["status"] = "deferred"
+            current["defer_count"] = defer_count
+            current["run_after_epoch"] = time.time() + delay
+            current["last_defer_reason"] = reason
+            current["last_throttle_reason"] = reason
+            current["last_pressure"] = pressure
+            current["throttle_count"] = int(current.get("throttle_count") or 0) + 1
+            current["updated_at"] = timestamp()
+            current["updated_epoch"] = time.time()
+            self._write_locked()
+        self.task_registry.update_task(
+            task_id,
+            status="queued",
+            metadata={
+                "queue_status": "deferred",
+                "queue_resume_pending": True,
+                "queue_throttle_reason": reason,
+                "queue_throttle_stage": stage,
+                "queue_delay_seconds": delay,
+                "queue_defer_count": defer_count,
+            },
+        )
+        self.task_registry.add_event(
+            task_id,
+            "queued",
+            f"资源承压，当前任务让出队列，延后 {delay} 秒后从 checkpoint 恢复：{reason}",
+            {"stage": stage, "pressure": pressure, "details": details, "checkpoint": checkpoint, "delay_seconds": delay},
+        )
+        raise QueueTaskDeferred(task_id, reason)
+
+    def _record_checkpoint(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        details: dict[str, Any],
+        resource_level: str,
+    ) -> dict[str, Any]:
+        now_text = timestamp()
+        checkpoint = {
+            "version": CHECKPOINT_VERSION,
+            "stage": stage or "checkpoint",
+            "details": details or {},
+            "resource_level": resource_level,
+            "updated_at": now_text,
+            "updated_epoch": time.time(),
+        }
+        with self.lock:
+            current = self.items.get(task_id)
+            if current:
+                checkpoint["handler_version"] = int(current.get("handler_version") or DEFAULT_HANDLER_VERSION)
+                checkpoint["payload_version"] = int(current.get("payload_version") or DEFAULT_PAYLOAD_VERSION)
+                current["checkpoint_version"] = CHECKPOINT_VERSION
+                current["checkpoint"] = checkpoint
+                current["updated_at"] = now_text
+                current["updated_epoch"] = checkpoint["updated_epoch"]
+                self._write_locked()
+        self.task_registry.update_task(
+            task_id,
+            metadata={"queue_checkpoint_stage": checkpoint["stage"], "queue_checkpoint_at": now_text},
+        )
+        return checkpoint
 
     def _item_resource_level(self, task_id: str) -> str:
         with self.lock:
@@ -402,20 +550,75 @@ class ResourceAwareTaskQueue:
             return {}
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
+            queue_version = int(payload.get("version") or 1) if isinstance(payload, dict) else 1
             items = payload.get("items", []) if isinstance(payload, dict) else payload
-            loaded = {
-                str(item.get("task_id")): item
-                for item in items
-                if isinstance(item, dict) and item.get("task_id")
-            }
-            for item in loaded.values():
-                if item.get("status") == "running":
-                    item["status"] = "failed"
-                    item["error"] = item.get("error") or "服务重启，运行中的队列任务已中断。"
-                    item["finished_at"] = item.get("finished_at") or timestamp()
+            if queue_version > QUEUE_SCHEMA_VERSION:
+                self._abandon_queue_file(items, f"队列文件版本 {queue_version} 高于当前支持版本 {QUEUE_SCHEMA_VERSION}，已放弃。")
+                return {}
+            loaded: dict[str, dict[str, Any]] = {}
+            changed = queue_version != QUEUE_SCHEMA_VERSION
+            for item in items:
+                if not isinstance(item, dict) or not item.get("task_id"):
+                    continue
+                normalized, item_changed = self._normalize_loaded_item(item)
+                loaded[str(normalized["task_id"])] = normalized
+                changed = changed or item_changed
+            if changed:
+                self._write_items(loaded.values())
             return loaded
         except Exception:
             return {}
+
+    def _normalize_loaded_item(self, item: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        normalized = dict(item)
+        changed = False
+        task_id = str(normalized.get("task_id") or "")
+        for key, default in {
+            "queue_schema_version": QUEUE_SCHEMA_VERSION,
+            "handler_version": DEFAULT_HANDLER_VERSION,
+            "payload_version": DEFAULT_PAYLOAD_VERSION,
+            "checkpoint_version": CHECKPOINT_VERSION,
+        }.items():
+            if key not in normalized:
+                normalized[key] = default
+                changed = True
+        version_error = _item_version_error(normalized)
+        if version_error:
+            self._abandon_item(task_id, version_error, item=normalized)
+            normalized = dict(self.items.get(task_id) or normalized)
+            return normalized, True
+        if str(normalized.get("kind") or "") == "kaipanla":
+            if str(normalized.get("resource_level") or "") != LIGHT_IO:
+                normalized["resource_level"] = LIGHT_IO
+                changed = True
+            payload = normalized.get("payload") if isinstance(normalized.get("payload"), dict) else {}
+            if "trade_date" not in payload:
+                inferred_trade_date = _compact_date_from_task_id(task_id)
+                if inferred_trade_date:
+                    payload = dict(payload)
+                    payload["trade_date"] = inferred_trade_date
+                    normalized["payload"] = payload
+                    changed = True
+        if normalized.get("status") == "running":
+            if _can_resume_running_item(normalized):
+                normalized = _resume_running_item(normalized)
+                self.task_registry.update_task(
+                    task_id,
+                    status="queued",
+                    metadata={"queue_status": "queued", "queue_resume_pending": True},
+                )
+                self.task_registry.add_event(
+                    task_id,
+                    "queued",
+                    "服务重启，队列任务从 checkpoint 恢复，等待重新调度。",
+                    {"checkpoint": normalized.get("checkpoint") or {}},
+                )
+                changed = True
+            else:
+                self._abandon_item(task_id, "服务重启，运行中的队列任务缺少可恢复 checkpoint，已放弃。", item=normalized)
+                normalized = dict(self.items.get(task_id) or normalized)
+                changed = True
+        return normalized, changed
 
     def _trim_locked(self) -> None:
         if len(self.items) <= 300:
@@ -427,9 +630,94 @@ class ResourceAwareTaskQueue:
                 self.items.pop(task_id, None)
 
     def _write_locked(self) -> None:
+        self._write_items(self.items.values())
+
+    def _write_items(self, items) -> None:
         ensure_dir(self.path.parent)
-        write_json(self.path, {"version": 1, "items": list(self.items.values())})
+        write_json(self.path, {"version": QUEUE_SCHEMA_VERSION, "items": list(items)})
         os.chmod(self.path, 0o600)
+
+    def _handler_version_error(self, item: dict[str, Any]) -> str:
+        error = _item_version_error(item)
+        if error:
+            return error
+        handler_key = str(item.get("handler_key") or "")
+        current_handler_version = self.handler_versions.get(handler_key, DEFAULT_HANDLER_VERSION)
+        try:
+            item_handler_version = int(item.get("handler_version") or DEFAULT_HANDLER_VERSION)
+        except (TypeError, ValueError):
+            return "任务处理器版本字段不合法，已放弃。"
+        if item_handler_version != current_handler_version:
+            return f"任务处理器 {handler_key} 版本 {item_handler_version} 与当前版本 {current_handler_version} 不兼容，已放弃。"
+        return ""
+
+    def _abandon_item(self, task_id: str, reason: str, *, item: dict[str, Any] | None = None) -> None:
+        now_text = timestamp()
+        with self.lock:
+            current = self.items.get(task_id) or dict(item or {})
+            if not current:
+                current = {"task_id": task_id}
+            current["status"] = "abandoned"
+            current["error"] = reason
+            current["finished_at"] = current.get("finished_at") or now_text
+            current["updated_at"] = now_text
+            current["updated_epoch"] = time.time()
+            if task_id:
+                self.items[task_id] = current
+            self._write_locked()
+        self.task_registry.update_task(
+            task_id,
+            status="failed",
+            error=reason,
+            metadata={"queue_status": "abandoned_incompatible", "queue_abandoned_reason": reason},
+        )
+        self.task_registry.add_event(task_id, "failed", reason, {"queue_status": "abandoned_incompatible"})
+
+    def _abandon_queue_file(self, items, reason: str) -> None:
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and item.get("task_id"):
+                task_id = str(item.get("task_id") or "")
+                self.task_registry.update_task(
+                    task_id,
+                    status="failed",
+                    error=reason,
+                    metadata={"queue_status": "abandoned_incompatible", "queue_abandoned_reason": reason},
+                )
+                self.task_registry.add_event(task_id, "failed", reason, {"queue_status": "abandoned_incompatible"})
+        abandoned_path = _abandoned_queue_path(self.path)
+        try:
+            self.path.rename(abandoned_path)
+        except OSError:
+            pass
+
+    def _abandon_orphaned_recovering_tasks(self) -> None:
+        lister = getattr(self.task_registry, "list_tasks", None)
+        if not callable(lister):
+            return
+        try:
+            tasks = lister(limit=500)
+        except Exception:
+            return
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_id = str(task.get("task_id") or "")
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            if (
+                task_id
+                and task_id not in self.items
+                and task.get("status") == "queued"
+                and metadata.get("queued_by") == QUEUE_OWNER
+                and metadata.get("queue_status") == "recovering"
+            ):
+                reason = "服务重启后未找到对应队列项，无法从 checkpoint 恢复，已放弃。"
+                self.task_registry.update_task(
+                    task_id,
+                    status="failed",
+                    error=reason,
+                    metadata={"queue_status": "abandoned_incompatible", "queue_abandoned_reason": reason},
+                )
+                self.task_registry.add_event(task_id, "failed", reason, {"queue_status": "abandoned_incompatible"})
 
 
 def _read_meminfo() -> dict[str, int]:
@@ -443,3 +731,78 @@ def _read_meminfo() -> dict[str, int]:
     except OSError:
         return values
     return values
+
+
+def _is_scheduled_item(item: dict[str, Any]) -> bool:
+    payload = item.get("payload")
+    if isinstance(payload, dict) and str(payload.get("trigger") or "") == "scheduled":
+        return True
+    return str(item.get("trigger") or "") == "scheduled"
+
+
+def _queue_order_key(item: dict[str, Any]) -> tuple[float, str]:
+    try:
+        enqueued_epoch = float(item.get("enqueued_epoch") or 0)
+    except (TypeError, ValueError):
+        enqueued_epoch = 0.0
+    return enqueued_epoch, str(item.get("task_id") or "")
+
+
+def _compact_date_from_task_id(task_id: str) -> str:
+    prefix = str(task_id or "")[:8]
+    return prefix if prefix.isdigit() else ""
+
+
+def _item_version_error(item: dict[str, Any]) -> str:
+    versions = {
+        "queue_schema_version": (QUEUE_SCHEMA_VERSION, "队列项结构"),
+        "payload_version": (DEFAULT_PAYLOAD_VERSION, "任务参数"),
+        "checkpoint_version": (CHECKPOINT_VERSION, "checkpoint"),
+    }
+    for key, (current, label) in versions.items():
+        try:
+            value = int(item.get(key) or current)
+        except (TypeError, ValueError):
+            return f"{label}版本字段不合法，已放弃。"
+        if value > current:
+            return f"{label}版本 {value} 高于当前支持版本 {current}，已放弃。"
+    return ""
+
+
+def _can_resume_running_item(item: dict[str, Any]) -> bool:
+    checkpoint = item.get("checkpoint")
+    if not isinstance(checkpoint, dict) or not checkpoint:
+        return False
+    try:
+        checkpoint_version = int(checkpoint.get("version") or item.get("checkpoint_version") or 0)
+    except (TypeError, ValueError):
+        return False
+    return 0 < checkpoint_version <= CHECKPOINT_VERSION
+
+
+def _resume_running_item(item: dict[str, Any]) -> dict[str, Any]:
+    resumed = dict(item)
+    checkpoint = dict(resumed.get("checkpoint") or {})
+    payload = dict(resumed.get("payload") or {})
+    payload["resume_checkpoint"] = checkpoint
+    resumed["payload"] = payload
+    resumed["status"] = "queued"
+    resumed["run_after_epoch"] = time.time()
+    resumed["last_defer_reason"] = ""
+    resumed["error"] = ""
+    resumed["finished_at"] = ""
+    resumed["resume_count"] = int(resumed.get("resume_count") or 0) + 1
+    resumed["resumed_at"] = timestamp()
+    resumed["updated_at"] = resumed["resumed_at"]
+    resumed["updated_epoch"] = time.time()
+    return resumed
+
+
+def _abandoned_queue_path(path: Path) -> Path:
+    stamp = timestamp()
+    candidate = path.with_name(f"{path.name}.abandoned.{stamp}.json")
+    index = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}.abandoned.{stamp}.{index}.json")
+        index += 1
+    return candidate
