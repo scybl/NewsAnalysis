@@ -12,7 +12,9 @@ from typing import Any, Callable
 MINUTE_UPLOAD_LOG = "minute-cold-stock-year-upload.log"
 MINUTE_UPLOAD_PID = "minute-cold-stock-year-upload.pid"
 HEAVY_IO = "heavy_io"
+LIGHT_IO = "light_io"
 NORMAL_IO = "normal"
+MANUAL_PRIORITY_NORMAL = 100
 
 _LOG_LINE = re.compile(r"^\[(?P<prefix>[^\]]+)\]\[(?P<ts>[^\]]+)\]\s*(?P<body>.*)$")
 _RUNNING_STATUSES = {"queued", "running", "stopping", "running_unknown_pid"}
@@ -329,33 +331,83 @@ def _read_json_file(path: Path, resources: dict[str, Any]) -> tuple[Any | None, 
 def _task_queue_summary(path: Path, resources: dict[str, Any]) -> dict[str, Any]:
     payload, error = _read_json_file(path, resources)
     if error:
-        return {"status": "error", "counts": {}, "head": None, "error": error}
+        return {"status": "error", "counts": {}, "head": None, "items": [], "error": error}
     if payload is None:
-        return {"status": "missing", "counts": {}, "head": None, "error": ""}
+        return {"status": "missing", "counts": {}, "head": None, "items": [], "error": ""}
     items = payload.get("items") if isinstance(payload, dict) else payload
     if not isinstance(items, list):
-        return {"status": "error", "counts": {}, "head": None, "error": "队列文件格式无效。"}
+        return {"status": "error", "counts": {}, "head": None, "items": [], "error": "队列文件格式无效。"}
     counts: dict[str, int] = {}
     ordered = sorted(
         [item for item in items if isinstance(item, dict)],
-        key=lambda item: float(item.get("enqueued_epoch") or item.get("updated_epoch") or 0),
+        key=_queue_sort_key,
     )
     for item in ordered:
         status = str(item.get("status") or "unknown")
         counts[status] = counts.get(status, 0) + 1
+    active_items = [_queue_item_summary(item) for item in ordered if item.get("status") in {"queued", "deferred", "running"}][:50]
     head = None
-    for item in ordered:
-        if item.get("status") in {"queued", "deferred", "running"}:
-            head = {
-                "task_id": item.get("task_id") or "",
-                "title": item.get("title") or "",
-                "status": item.get("status") or "",
-                "resource_level": item.get("resource_level") or "",
-                "last_defer_reason": item.get("last_defer_reason") or "",
-                "defer_count": _int(item.get("defer_count")),
-            }
-            break
-    return {"status": "ok", "counts": counts, "head": head, "error": ""}
+    if active_items:
+        head = {
+            "task_id": active_items[0].get("task_id") or "",
+            "title": active_items[0].get("title") or "",
+            "status": active_items[0].get("status") or "",
+            "resource_level": active_items[0].get("resource_level") or "",
+            "last_defer_reason": active_items[0].get("last_defer_reason") or "",
+            "defer_count": _int(active_items[0].get("defer_count")),
+        }
+    return {"status": "ok", "counts": counts, "head": head, "items": active_items, "error": ""}
+
+
+def _queue_sort_key(item: dict[str, Any]) -> tuple[float, int, float, str]:
+    manual_priority = _float(item.get("manual_priority"))
+    if manual_priority is None:
+        manual_priority = float(MANUAL_PRIORITY_NORMAL)
+    payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+    scheduled = str(payload.get("trigger") or item.get("trigger") or "") == "scheduled"
+    epoch = _float(item.get("enqueued_epoch"))
+    if epoch is None:
+        epoch = _float(item.get("updated_epoch")) or 0.0
+    return manual_priority, 0 if scheduled else 1, epoch, str(item.get("task_id") or "")
+
+
+def _queue_item_summary(item: dict[str, Any]) -> dict[str, Any]:
+    status = str(item.get("status") or "unknown")
+    return {
+        "task_id": str(item.get("task_id") or ""),
+        "title": str(item.get("title") or ""),
+        "kind": str(item.get("kind") or ""),
+        "handler_key": str(item.get("handler_key") or ""),
+        "status": status,
+        "resource_level": str(item.get("resource_level") or NORMAL_IO),
+        "enqueued_at": str(item.get("enqueued_at") or ""),
+        "updated_at": str(item.get("updated_at") or ""),
+        "run_after_epoch": _float(item.get("run_after_epoch")) or 0,
+        "defer_count": _int(item.get("defer_count")),
+        "attempt_count": _int(item.get("attempt_count")),
+        "manual_priority": _int_or_none(item.get("manual_priority")),
+        "manual_order_index": _int_or_none(item.get("manual_order_index")),
+        "manual_priority_at": str(item.get("manual_priority_at") or ""),
+        "reorderable": status in {"queued", "deferred"},
+        "last_defer_reason": str(item.get("last_defer_reason") or ""),
+        "last_throttle_reason": str(item.get("last_throttle_reason") or ""),
+        "error": str(item.get("error") or ""),
+        "payload": _queue_payload_summary(item.get("payload") if isinstance(item.get("payload"), dict) else {}),
+    }
+
+
+def _queue_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in ("trigger", "trade_date", "target_date", "ts_code", "source"):
+        if key in payload:
+            summary[key] = payload.get(key)
+    features = payload.get("features")
+    if isinstance(features, list):
+        summary["features"] = len(features)
+    checkpoint = payload.get("resume_checkpoint")
+    if isinstance(checkpoint, dict):
+        summary["resume_stage"] = checkpoint.get("stage") or ""
+    return summary
 
 
 def _latest_task(admin_tasks: list[dict[str, Any]], kind: str, task_id: str = "") -> dict[str, Any] | None:

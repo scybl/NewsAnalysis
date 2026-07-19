@@ -1297,6 +1297,11 @@ class StockWebApp:
                         return
                     self._handle_admin_data_random_audit_scheduler()
                     return
+                if parsed.path == "/api/admin/task-queue":
+                    if not self._require_admin():
+                        return
+                    self._handle_admin_task_queue()
+                    return
                 if parsed.path == "/api/admin/stock-storage-repair":
                     if not self._require_admin():
                         return
@@ -2329,6 +2334,25 @@ class StockWebApp:
                     crawler_snapshot_fn=(lambda: crawler_status_snapshot(limit=5, failure_limit=50)) if include_crawler else None,
                 )
 
+            def _handle_admin_task_queue(self) -> None:
+                payload = self._read_json()
+                if not self._require_data_fetch_approval("/api/admin/task-queue", payload):
+                    return
+                action = str(payload.get("action") or "").strip()
+                task_id = str(payload.get("task_id") or "").strip()
+                delay_seconds = payload.get("delay_seconds")
+                try:
+                    result = app.task_queue.manual_adjust(
+                        task_id,
+                        action,
+                        delay_seconds=delay_seconds,
+                        task_ids=payload.get("task_ids"),
+                    )
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)}, status=400)
+                    return
+                self._json({"ok": True, "result": result, "snapshot": self._ops_snapshot()})
+
             def _reject_if_heavy_io_running(self, requested_task_id: str) -> bool:
                 blockers = _public_heavy_io_blockers(
                     active_heavy_io_tasks(self._ops_snapshot(include_crawler=False)),
@@ -2681,7 +2705,7 @@ class TaskRegistry:
             task["updated_epoch"] = time.time()
             if status:
                 task["status"] = status
-                if status in {"succeeded", "failed", "stopped"}:
+                if status in {"succeeded", "failed", "stopped", "cancelled"}:
                     task["finished_at"] = task.get("finished_at") or timestamp()
             if error is not None:
                 task["error"] = error

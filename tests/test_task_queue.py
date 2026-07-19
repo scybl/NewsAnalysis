@@ -109,6 +109,120 @@ def test_resource_queue_prioritizes_earliest_scheduled_task_when_switching(tmp_p
     assert seen == ["scheduled-a", "scheduled-b", "manual"]
 
 
+def test_resource_queue_manual_promote_overrides_scheduled_priority(tmp_path):
+    registry = FakeTaskRegistry()
+    for task_id in ["manual", "scheduled"]:
+        registry.create_task(task_id)
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0},
+        poll_seconds=0.1,
+    )
+    queue.register("handler", lambda task_id, _payload: registry.update_task(task_id, status="succeeded"))
+    queue.enqueue(
+        task_id="manual",
+        handler_key="handler",
+        kind="manual",
+        title="Manual",
+        payload={"trigger": "manual"},
+        resource_level=NORMAL_IO,
+    )
+    queue.enqueue(
+        task_id="scheduled",
+        handler_key="handler",
+        kind="scheduled",
+        title="Scheduled",
+        payload={"trigger": "scheduled"},
+        resource_level=NORMAL_IO,
+    )
+
+    result = queue.manual_adjust("manual", "promote")
+
+    assert result["action"] == "promoted"
+    assert queue._next_ready_item()["task_id"] == "manual"
+    assert registry.tasks["manual"]["metadata"]["queue_status"] == "manual_promoted"
+
+
+def test_resource_queue_manual_reorder_controls_ready_order(tmp_path):
+    registry = FakeTaskRegistry()
+    for task_id in ["a", "b", "c"]:
+        registry.create_task(task_id)
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0},
+        poll_seconds=0.1,
+    )
+    seen = []
+
+    def handler(task_id, _payload):
+        seen.append(task_id)
+        registry.update_task(task_id, status="succeeded")
+
+    queue.register("handler", handler)
+    queue.enqueue(task_id="a", handler_key="handler", kind="test", title="A", payload={"trigger": "scheduled"}, resource_level=NORMAL_IO)
+    queue.enqueue(task_id="b", handler_key="handler", kind="test", title="B", payload={"trigger": "scheduled"}, resource_level=NORMAL_IO)
+    queue.enqueue(task_id="c", handler_key="handler", kind="test", title="C", payload={"trigger": "manual"}, resource_level=NORMAL_IO)
+
+    result = queue.manual_adjust("", "reorder", task_ids=["c", "b", "a"])
+    assert result["action"] == "reordered"
+    assert registry.tasks["c"]["metadata"]["queue_status"] == "manual_reordered"
+    assert registry.tasks["c"]["metadata"]["queue_manual_order_index"] == 0
+    while True:
+        item = queue._next_ready_item()
+        if not item:
+            break
+        queue._run_or_defer(item)
+
+    assert seen == ["c", "b", "a"]
+
+
+def test_resource_queue_manual_delay_and_cancel_update_registry(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("a")
+    queue = ResourceAwareTaskQueue(tmp_path / "task_queue.json", registry, poll_seconds=0.1)
+    queue.enqueue(task_id="a", handler_key="handler", kind="test", title="A", resource_level=NORMAL_IO)
+
+    delayed = queue.manual_adjust("a", "delay", delay_seconds=600)
+    item = delayed["item"]
+
+    assert delayed["action"] == "delayed"
+    assert item["status"] == "deferred"
+    assert item["last_defer_reason"]
+    assert registry.tasks["a"]["metadata"]["queue_status"] == "manual_delayed"
+
+    cancelled = queue.manual_adjust("a", "cancel")
+
+    assert cancelled["action"] == "cancelled"
+    assert cancelled["item"]["status"] == "cancelled"
+    assert registry.tasks["a"]["status"] == "cancelled"
+    assert registry.tasks["a"]["metadata"]["queue_status"] == "manual_cancelled"
+
+
+def test_resource_queue_manual_retry_running_item_requeues_attempt(tmp_path):
+    registry = FakeTaskRegistry()
+    registry.create_task("running")
+    queue = ResourceAwareTaskQueue(
+        tmp_path / "task_queue.json",
+        registry,
+        pressure_reader=lambda: {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0},
+        poll_seconds=0.1,
+    )
+    queue.enqueue(task_id="running", handler_key="handler", kind="test", title="Running", resource_level=NORMAL_IO)
+    attempt_id = queue._mark_running(queue.snapshot()["items"][0], {"mem_available_mb": 4096, "swap_used_percent": 0, "load_1m": 0})
+
+    result = queue.manual_adjust("running", "retry")
+    item = queue.snapshot()["items"][0]
+
+    assert result["action"] == "requeued"
+    assert item["status"] == "queued"
+    assert item["manual_priority"] == 0
+    assert attempt_id in item["cancelled_attempt_ids"]
+    assert registry.tasks["running"]["status"] == "queued"
+    assert registry.tasks["running"]["metadata"]["queue_status"] == "manual_promoted"
+
+
 def test_resource_queue_defers_head_task_when_memory_is_pressured(tmp_path):
     registry = FakeTaskRegistry()
     registry.create_task("heavy")

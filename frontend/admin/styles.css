@@ -7766,6 +7766,152 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
   margin: 18px;
 }
 
+.ops-queue-card {
+  margin: 18px 18px 0;
+}
+
+.ops-queue-wrap {
+  overflow-x: auto;
+}
+
+.ops-queue-wrap table {
+  min-width: 1240px;
+  table-layout: fixed;
+}
+
+.ops-queue-drag-col {
+  width: 44px;
+}
+
+.ops-queue-task-col {
+  width: 26%;
+}
+
+.ops-queue-status-col {
+  width: 10%;
+}
+
+.ops-queue-priority-col {
+  width: 10%;
+}
+
+.ops-queue-run-col {
+  width: 12%;
+}
+
+.ops-queue-payload-col {
+  width: 22%;
+}
+
+.ops-queue-action-col {
+  width: 18%;
+}
+
+.ops-queue-wrap tbody tr.is-draggable {
+  cursor: grab;
+}
+
+.ops-queue-wrap tbody tr.is-dragging {
+  cursor: grabbing;
+  opacity: 0.58;
+  outline: 2px solid #2f80ed;
+  outline-offset: -2px;
+}
+
+.ops-queue-wrap table.is-drag-active tbody tr[data-queue-draggable="true"]:not(.is-dragging) {
+  transition: background-color 0.12s ease, transform 0.12s ease;
+}
+
+.ops-queue-wrap table.is-queue-saving {
+  opacity: 0.74;
+  pointer-events: none;
+}
+
+.ops-queue-drag-cell {
+  text-align: center;
+}
+
+.ops-drag-handle {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d0d7e2;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #667085;
+  font-size: 16px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+}
+
+.ops-drag-handle:hover {
+  border-color: #2f80ed;
+  color: #175cd3;
+}
+
+.ops-drag-handle.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.ops-drag-handle.is-disabled:hover {
+  border-color: #d0d7e2;
+  color: #667085;
+}
+
+.ops-queue-task-cell strong,
+.ops-queue-task-cell small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ops-queue-task-cell small {
+  margin-top: 4px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.ops-queue-payload-cell {
+  overflow-wrap: anywhere;
+}
+
+.ops-queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ops-queue-actions button {
+  min-height: 30px;
+  border: 1px solid #d0d7e2;
+  border-radius: 7px;
+  padding: 0 9px;
+  background: #ffffff;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ops-queue-actions button:hover:not(:disabled) {
+  border-color: #2f80ed;
+  color: #175cd3;
+}
+
+.ops-queue-actions button.is-danger:hover:not(:disabled) {
+  border-color: #fecdca;
+  color: #b42318;
+}
+
+.ops-queue-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .ops-table-wrap {
   overflow-x: auto;
 }
@@ -7926,7 +8072,8 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 
 .ops-status-badge.is-danger,
 .ops-status-badge.is-failed,
-.ops-status-badge.is-failed_or_stopped {
+.ops-status-badge.is-failed_or_stopped,
+.ops-status-badge.is-cancelled {
   border-color: #fecdca;
   background: #fef3f2;
   color: #b42318;
@@ -8065,6 +8212,7 @@ html.theme-dark .crawler-console .crawler-last-error.is-neutral {
 
 html.theme-dark .ops-grid,
 html.theme-dark .ops-data-card,
+html.theme-dark .ops-queue-card,
 html.theme-dark .ops-error-item,
 html.theme-dark .ops-data-grid article {
   border-color: rgba(148, 163, 184, 0.22);
@@ -8096,6 +8244,7 @@ html.theme-dark .ops-data-grid strong {
 
 html.theme-dark .ops-error-item p,
 html.theme-dark .ops-data-grid pre,
+html.theme-dark .ops-queue-task-cell small,
 html.theme-dark .ops-table-wrap small {
   color: #a8b3c7;
 }
@@ -8104,6 +8253,28 @@ html.theme-dark .ops-log-command button {
   border-color: rgba(148, 163, 184, 0.28);
   background: rgba(255, 255, 255, 0.04);
   color: #e5e7eb;
+}
+
+html.theme-dark .ops-queue-actions button {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e5e7eb;
+}
+
+html.theme-dark .ops-drag-handle {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.04);
+  color: #a8b3c7;
+}
+
+html.theme-dark .ops-drag-handle:hover {
+  border-color: #60a5fa;
+  color: #bfdbfe;
+}
+
+html.theme-dark .ops-drag-handle.is-disabled:hover {
+  border-color: rgba(148, 163, 184, 0.28);
+  color: #a8b3c7;
 }
 
 .data-audit-console {

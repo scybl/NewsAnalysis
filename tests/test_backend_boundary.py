@@ -27,6 +27,8 @@ def test_backend_fetch_registry_uses_canonical_data_keys():
     assert FETCH_METHODS["stock.package.sync"].data_key == "stock.package"
     assert "AkShare" in DATA_FETCH_ACTIONS["/api/sync-stock-data"]
     assert DATA_FETCH_ACTIONS["/api/admin/kaipanla/run"] == "立即执行开盘啦单项抓取"
+    assert DATA_FETCH_ACTIONS["/api/admin/task-queue"] == "手动调整后台任务队列"
+    assert FETCH_METHODS["ops.queue.adjust"].data_key == "ops.audit"
     assert "Tushare" in FETCH_METHODS["stock.package.sync"].notes
 
 

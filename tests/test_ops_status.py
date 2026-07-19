@@ -229,6 +229,7 @@ def test_ops_snapshot_keeps_scheduler_queue_state_separate_from_running(tmp_path
                         "last_defer_reason": "可用内存不足",
                         "defer_count": 2,
                         "enqueued_epoch": 1,
+                        "manual_order_index": 0,
                     }
                 ]
             },
@@ -246,6 +247,10 @@ def test_ops_snapshot_keeps_scheduler_queue_state_separate_from_running(tmp_path
     assert "daily_market_scheduler" in {item["id"] for item in active_heavy_io_tasks(snapshot)}
     assert snapshot["resources"]["task_queue"]["counts"]["deferred"] == 1
     assert snapshot["resources"]["task_queue"]["head"]["last_defer_reason"] == "可用内存不足"
+    assert snapshot["resources"]["task_queue"]["items"][0]["task_id"] == "daily-queued"
+    assert snapshot["resources"]["task_queue"]["items"][0]["payload"] == {}
+    assert snapshot["resources"]["task_queue"]["items"][0]["reorderable"] is True
+    assert snapshot["resources"]["task_queue"]["items"][0]["manual_order_index"] == 0
 
 
 def test_active_heavy_io_tasks_include_minute_upload_and_market_spider(tmp_path):
@@ -329,6 +334,21 @@ def test_ops_status_route_is_admin_only_and_read_only():
     assert "status=403" in require_admin
 
 
+def test_task_queue_adjust_route_requires_admin_and_approval():
+    source = (Path(__file__).resolve().parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
+    route_start = source.index('if parsed.path == "/api/admin/task-queue":')
+    route = source[route_start : route_start + 450]
+    handler_start = source.index("def _handle_admin_task_queue")
+    handler = source[handler_start : handler_start + 1000]
+
+    assert "if not self._require_admin()" in route
+    assert "self._handle_admin_task_queue()" in route
+    assert '_require_data_fetch_approval("/api/admin/task-queue", payload)' in handler
+    assert "app.task_queue.manual_adjust" in handler
+    assert "task_ids=payload.get(\"task_ids\")" in handler
+    assert '"snapshot": self._ops_snapshot()' in handler
+
+
 def test_heavy_io_guard_is_wired_to_heavy_start_routes_only():
     source = (Path(__file__).resolve().parents[1] / "stock_pipeline" / "web.py").read_text(encoding="utf-8")
     kaipanla_start = source.index("def _handle_admin_kaipanla_scheduler")
@@ -362,20 +382,28 @@ def test_manual_kaipanla_run_requires_data_fetch_approval():
     assert "trade_date" in handler
 
 
-def test_admin_ops_frontend_is_read_only_and_linked():
+def test_admin_ops_frontend_shows_status_and_controls_queue_only():
     static = Path(__file__).resolve().parents[1] / "frontend" / "admin"
     html = (static / "admin-ops.html").read_text(encoding="utf-8")
     script = (static / "admin-ops.js").read_text(encoding="utf-8")
     styles = (static / "styles.css").read_text(encoding="utf-8")
 
     assert "/api/admin/ops/status" in script
+    assert "/api/admin/task-queue" in script
     assert "/api/admin/market-fetch/start" not in script
     assert "/api/admin/market-fetch/stop" not in script
     assert "/api/admin/daily-market-scheduler" not in script
     assert "/api/admin/idle-stock-prefetch" not in script
+    assert "opsQueueTable" in html
+    assert "data-queue-action" in script
+    assert "data-queue-drag-handle" in script
+    assert "handleQueueDragStart" in script
+    assert 'action: "reorder"' in script
+    assert "opsAdminReadonly" in script
     assert "data-copy-tail" in script
     assert "opsTasksTable" in html
     assert ".ops-grid" in styles
+    assert ".ops-queue-card" in styles
     for path in static.glob("admin-*.html"):
         page = path.read_text(encoding="utf-8")
         if '<nav class="admin-nav"' not in page:

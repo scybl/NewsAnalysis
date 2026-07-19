@@ -194,7 +194,8 @@ def _date8(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    return text[:10].replace("-", "")
+    cleaned = text[:10].replace("-", "").replace("/", "")
+    return cleaned[:8] if len(cleaned) >= 8 and cleaned[:8].isdigit() else ""
 
 
 def _year(value: str) -> int | None:

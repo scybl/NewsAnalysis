@@ -26,6 +26,8 @@ DEFAULT_STUCK_SECONDS_BY_RESOURCE = {
 }
 DEFAULT_MAX_STUCK_RETRIES = 2
 DEFAULT_WATCHDOG_POLL_SECONDS = 5.0
+MANUAL_PRIORITY_TOP = 0
+MANUAL_PRIORITY_NORMAL = 100
 
 TaskHandler = Callable[[str, dict[str, Any]], Any]
 PressureReader = Callable[[], dict[str, Any]]
@@ -230,12 +232,249 @@ class ResourceAwareTaskQueue:
 
     def snapshot(self, limit: int = 80) -> dict[str, Any]:
         with self.lock:
-            items = sorted(self.items.values(), key=lambda item: float(item.get("enqueued_epoch") or 0))[:limit]
+            items = sorted(self.items.values(), key=_queue_order_key)[:limit]
             counts: dict[str, int] = {}
             for item in self.items.values():
                 status = str(item.get("status") or "unknown")
                 counts[status] = counts.get(status, 0) + 1
         return {"items": json.loads(json.dumps(items, ensure_ascii=False, default=str)), "counts": counts}
+
+    def manual_adjust(
+        self,
+        task_id: str,
+        action: str,
+        *,
+        delay_seconds: int | float | None = None,
+        task_ids: list[Any] | None = None,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        action = str(action or "").strip().lower()
+        if action not in {"promote", "delay", "cancel", "retry", "reorder"}:
+            raise ValueError(f"未知队列操作：{action}")
+        if action == "reorder":
+            return self._manual_reorder(task_ids or [], reason=reason or "管理员手动拖拽调整队列顺序。")
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            raise ValueError("缺少 task_id。")
+        if action == "retry":
+            return self._manual_retry(task_id, reason=reason or "管理员手动重试。")
+        if action == "cancel":
+            return self._manual_cancel(task_id, reason=reason or "管理员手动取消队列任务。")
+        if action == "promote":
+            return self._manual_promote(task_id, reason=reason or "管理员手动置顶队列任务。")
+        return self._manual_delay(task_id, delay_seconds=delay_seconds, reason=reason or "管理员手动延后队列任务。")
+
+    def _manual_reorder(self, task_ids: list[Any], *, reason: str) -> dict[str, Any]:
+        if not isinstance(task_ids, list):
+            raise ValueError("task_ids 必须是数组。")
+        ordered_ids: list[str] = []
+        seen: set[str] = set()
+        for raw_task_id in task_ids:
+            task_id = str(raw_task_id or "").strip()
+            if task_id and task_id not in seen:
+                ordered_ids.append(task_id)
+                seen.add(task_id)
+        if not ordered_ids:
+            raise ValueError("缺少 task_ids。")
+        now_value = time.time()
+        now_text = timestamp()
+        changed_items: list[dict[str, Any]] = []
+        with self.lock:
+            missing = [task_id for task_id in ordered_ids if task_id not in self.items]
+            if missing:
+                raise ValueError(f"队列任务不存在：{', '.join(missing[:3])}")
+            blocked = [
+                task_id
+                for task_id in ordered_ids
+                if str((self.items.get(task_id) or {}).get("status") or "") not in {"queued", "deferred"}
+            ]
+            if blocked:
+                raise ValueError("只有排队中或延后中的任务可以拖拽排序。")
+            for index, task_id in enumerate(ordered_ids):
+                current = self.items[task_id]
+                manual_priority = MANUAL_PRIORITY_TOP + index
+                current["manual_priority"] = manual_priority
+                current["manual_order_index"] = index
+                current["manual_priority_at"] = now_text
+                current["manual_priority_reason"] = reason
+                current["updated_at"] = now_text
+                current["updated_epoch"] = now_value
+                changed_items.append(json.loads(json.dumps(current, ensure_ascii=False, default=str)))
+            self._write_locked()
+        for item in changed_items:
+            task_id = str(item.get("task_id") or "")
+            self.task_registry.update_task(
+                task_id,
+                status="queued",
+                error="",
+                metadata={
+                    "queue_status": "manual_reordered",
+                    "queue_manual_priority": item.get("manual_priority"),
+                    "queue_manual_order_index": item.get("manual_order_index"),
+                },
+            )
+            self.task_registry.add_event(
+                task_id,
+                "queued",
+                reason,
+                {"action": "reorder", "manual_priority": item.get("manual_priority"), "manual_order_index": item.get("manual_order_index")},
+            )
+        return {"task_id": "", "action": "reordered", "task_ids": ordered_ids, "items": changed_items}
+
+    def _manual_promote(self, task_id: str, *, reason: str) -> dict[str, Any]:
+        now_value = time.time()
+        now_text = timestamp()
+        with self.lock:
+            current = self.items.get(task_id)
+            if not current:
+                raise ValueError("队列任务不存在。")
+            status = str(current.get("status") or "")
+            if status not in {"queued", "deferred"}:
+                raise ValueError("只有排队中或延后中的任务可以置顶。")
+            active_epochs = [
+                float(item.get("enqueued_epoch") or now_value)
+                for item in self.items.values()
+                if item is not current and item.get("status") in {"queued", "deferred"}
+            ]
+            current["status"] = "queued"
+            current["manual_priority"] = MANUAL_PRIORITY_TOP
+            current["manual_order_index"] = 0
+            current["manual_priority_at"] = now_text
+            current["manual_priority_reason"] = reason
+            current["run_after_epoch"] = now_value
+            current["enqueued_epoch"] = min(active_epochs + [now_value]) - 0.001
+            current["last_defer_reason"] = ""
+            current["error"] = ""
+            current["updated_at"] = now_text
+            current["updated_epoch"] = now_value
+            item = json.loads(json.dumps(current, ensure_ascii=False, default=str))
+            self._write_locked()
+        self.task_registry.update_task(
+            task_id,
+            status="queued",
+            error="",
+            metadata={"queue_status": "manual_promoted", "queue_manual_priority": MANUAL_PRIORITY_TOP},
+        )
+        self.task_registry.add_event(task_id, "queued", reason, {"action": "promote", "manual_priority": MANUAL_PRIORITY_TOP})
+        return {"task_id": task_id, "action": "promoted", "item": item}
+
+    def _manual_delay(self, task_id: str, *, delay_seconds: int | float | None, reason: str) -> dict[str, Any]:
+        delay = max(60, min(24 * 60 * 60, int(delay_seconds if delay_seconds is not None else 30 * 60)))
+        now_value = time.time()
+        now_text = timestamp()
+        with self.lock:
+            current = self.items.get(task_id)
+            if not current:
+                raise ValueError("队列任务不存在。")
+            status = str(current.get("status") or "")
+            if status not in {"queued", "deferred"}:
+                raise ValueError("只有排队中或延后中的任务可以延后。")
+            current["status"] = "deferred"
+            current["manual_priority"] = MANUAL_PRIORITY_NORMAL
+            current.pop("manual_order_index", None)
+            current["manual_priority_at"] = now_text
+            current["manual_priority_reason"] = reason
+            current["run_after_epoch"] = now_value + delay
+            current["last_defer_reason"] = reason
+            current["error"] = ""
+            current["updated_at"] = now_text
+            current["updated_epoch"] = now_value
+            item = json.loads(json.dumps(current, ensure_ascii=False, default=str))
+            self._write_locked()
+        self.task_registry.update_task(
+            task_id,
+            status="queued",
+            error="",
+            metadata={"queue_status": "manual_delayed", "queue_delay_seconds": delay, "queue_manual_priority": MANUAL_PRIORITY_NORMAL},
+        )
+        self.task_registry.add_event(task_id, "queued", f"{reason} 延后 {delay} 秒。", {"action": "delay", "delay_seconds": delay})
+        return {"task_id": task_id, "action": "delayed", "delay_seconds": delay, "item": item}
+
+    def _manual_cancel(self, task_id: str, *, reason: str) -> dict[str, Any]:
+        now_value = time.time()
+        now_text = timestamp()
+        with self.lock:
+            current = self.items.get(task_id)
+            if not current:
+                raise ValueError("队列任务不存在。")
+            status = str(current.get("status") or "")
+            if status not in {"queued", "deferred", "running"}:
+                raise ValueError("只有排队中、延后中或运行中的任务可以取消。")
+            attempt_id = str(current.get("active_attempt_id") or "")
+            if attempt_id:
+                current["cancelled_attempt_ids"] = _remember_cancelled_attempt(current.get("cancelled_attempt_ids"), attempt_id)
+                current["last_cancelled_attempt_id"] = attempt_id
+            current["status"] = "cancelled"
+            current["manual_priority"] = MANUAL_PRIORITY_NORMAL
+            current.pop("manual_order_index", None)
+            current["manual_priority_at"] = now_text
+            current["manual_priority_reason"] = reason
+            current["active_attempt_id"] = ""
+            current["error"] = reason
+            current["finished_at"] = now_text
+            current["updated_at"] = now_text
+            current["updated_epoch"] = now_value
+            item = json.loads(json.dumps(current, ensure_ascii=False, default=str))
+            self._write_locked()
+        self.task_registry.update_task(
+            task_id,
+            status="cancelled",
+            error=reason,
+            metadata={"queue_status": "manual_cancelled", "queue_cancelled_attempt_id": attempt_id},
+        )
+        self.task_registry.add_event(task_id, "cancelled", reason, {"action": "cancel", "attempt_id": attempt_id})
+        return {"task_id": task_id, "action": "cancelled", "item": item}
+
+    def _manual_retry(self, task_id: str, *, reason: str) -> dict[str, Any]:
+        with self.lock:
+            current = self.items.get(task_id)
+            if not current:
+                raise ValueError("队列任务不存在。")
+            status = str(current.get("status") or "")
+        if status == "running":
+            action = self._force_retry_stuck_item(task_id, reason=reason)
+            if not action:
+                raise ValueError("运行中任务当前无法重试。")
+            if action.get("action") == "requeued":
+                self._manual_promote(task_id, reason="管理员手动重试后置顶。")
+            return {"task_id": task_id, **action}
+        if status not in {"queued", "deferred", "failed", "cancelled"}:
+            raise ValueError("只有排队中、延后中、失败或已取消的任务可以重试。")
+        now_value = time.time()
+        now_text = timestamp()
+        with self.lock:
+            current = self.items.get(task_id)
+            if not current:
+                raise ValueError("队列任务不存在。")
+            payload = dict(current.get("payload") or {})
+            payload.pop("resume_checkpoint", None)
+            current["payload"] = payload
+            current["status"] = "queued"
+            current["active_attempt_id"] = ""
+            current["started_at"] = ""
+            current["started_epoch"] = 0.0
+            current["finished_at"] = ""
+            current["checkpoint"] = {}
+            current["stuck_retry_count"] = 0
+            current["manual_priority"] = MANUAL_PRIORITY_TOP
+            current["manual_order_index"] = 0
+            current["manual_priority_at"] = now_text
+            current["manual_priority_reason"] = reason
+            current["run_after_epoch"] = now_value
+            current["last_defer_reason"] = ""
+            current["error"] = ""
+            current["updated_at"] = now_text
+            current["updated_epoch"] = now_value
+            item = json.loads(json.dumps(current, ensure_ascii=False, default=str))
+            self._write_locked()
+        self.task_registry.update_task(
+            task_id,
+            status="queued",
+            error="",
+            metadata={"queue_status": "manual_retry", "queue_resume_pending": False, "queue_manual_priority": MANUAL_PRIORITY_TOP},
+        )
+        self.task_registry.add_event(task_id, "queued", reason, {"action": "retry", "manual_priority": MANUAL_PRIORITY_TOP})
+        return {"task_id": task_id, "action": "retried", "item": item}
 
     def _loop(self) -> None:
         while not self.stop_event.wait(self.poll_seconds):
@@ -275,17 +514,7 @@ class ResourceAwareTaskQueue:
             ]
             if not ready:
                 return None
-            scheduled = sorted(
-                [item for item in ready if _is_scheduled_item(item)],
-                key=_queue_order_key,
-            )
-            if scheduled:
-                item = scheduled[0]
-                return json.loads(json.dumps(item, ensure_ascii=False, default=str))
-            ordered = sorted(
-                ready,
-                key=_queue_order_key,
-            )
+            ordered = sorted(ready, key=_queue_order_key)
             if not ordered:
                 return None
             item = ordered[0]
@@ -986,12 +1215,18 @@ def _is_scheduled_item(item: dict[str, Any]) -> bool:
     return str(item.get("trigger") or "") == "scheduled"
 
 
-def _queue_order_key(item: dict[str, Any]) -> tuple[float, str]:
+def _queue_order_key(item: dict[str, Any]) -> tuple[float, int, float, str]:
+    raw_manual_priority = item.get("manual_priority")
+    try:
+        manual_priority = float(MANUAL_PRIORITY_NORMAL if raw_manual_priority is None or raw_manual_priority == "" else raw_manual_priority)
+    except (TypeError, ValueError):
+        manual_priority = float(MANUAL_PRIORITY_NORMAL)
+    scheduled_rank = 0 if _is_scheduled_item(item) else 1
     try:
         enqueued_epoch = float(item.get("enqueued_epoch") or 0)
     except (TypeError, ValueError):
         enqueued_epoch = 0.0
-    return enqueued_epoch, str(item.get("task_id") or "")
+    return manual_priority, scheduled_rank, enqueued_epoch, str(item.get("task_id") or "")
 
 
 def _remember_cancelled_attempt(values: Any, attempt_id: str) -> list[str]:

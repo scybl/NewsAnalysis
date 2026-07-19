@@ -160,6 +160,14 @@ FETCH_METHODS: dict[str, FetchMethodSpec] = {
         resource="normal_io",
         default_provider="newscrawler",
     ),
+    "ops.queue.adjust": FetchMethodSpec(
+        key="ops.queue.adjust",
+        data_key="ops.audit",
+        label="手动调整后台任务队列",
+        route="/api/admin/task-queue",
+        resource="runtime",
+        default_provider="datahub",
+    ),
     "analysis.single.run": FetchMethodSpec(
         key="analysis.single.run",
         data_key="stock.package",
